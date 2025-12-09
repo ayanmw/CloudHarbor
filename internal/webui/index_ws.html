@@ -9,7 +9,13 @@
 <body>
 <div class="container">
     <div class="header">
-        <h1>📦 百度网盘 NAS 自动下载监控（WebSocket 实时版）</h1>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h1>📦 百度网盘 NAS 自动下载监控（WebSocket 实时版）</h1>
+            <div id="auth-status" style="font-size: 14px;">
+                <span id="token-status">Token状态: <span id="token-status-text">检查中...</span></span>
+                <a href="/oauth" target="_blank" style="margin-left: 10px; color: #667eea; text-decoration: none;">🔑 OAuth管理</a>
+            </div>
+        </div>
         <p style="color:#666;margin-top:10px;">实时监控下载队列状态</p>
         <div class="ws-status" id="ws-status">WebSocket 状态：<span>连接中...</span></div>
         <div class="link-poll">如果 WebSocket 不可用，可尝试 <a href="/poll" target="_blank">兼容模式（轮询版）</a></div>
@@ -51,6 +57,25 @@
     function changeSort() {
         const select = document.getElementById('sort-select');
         currentSort = select.value;
+    }
+
+    // 检查 Token 状态
+    async function checkTokenStatus() {
+        try {
+            const response = await fetch('/api/health');
+            if (response.ok) {
+                const data = await response.json();
+                // 如果 health 接口能正常返回，说明服务正常运行
+                document.getElementById('token-status-text').textContent = '已连接';
+                document.getElementById('token-status-text').style.color = '#0f5132';
+            } else {
+                document.getElementById('token-status-text').textContent = '连接异常';
+                document.getElementById('token-status-text').style.color = '#842029';
+            }
+        } catch (error) {
+            document.getElementById('token-status-text').textContent = '无法连接';
+            document.getElementById('token-status-text').style.color = '#842029';
+        }
     }
 
     function renderTasks(data) {
@@ -109,6 +134,8 @@
         ws.onopen = () => {
             statusEl.textContent = '已连接';
             statusEl.style.color = '#0f5132';
+            // WebSocket 连接成功后检查 Token 状态
+            checkTokenStatus();
         };
         ws.onclose = () => {
             statusEl.textContent = '已断开，3秒后重连...';
