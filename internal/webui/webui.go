@@ -108,6 +108,7 @@ func (s *Server) sendStatus(conn *websocket.Conn) error {
 		StartTime      string `json:"start_time,omitempty"`
 		FinishTime     string `json:"finish_time,omitempty"`
 		Progress       int64  `json:"progress"`
+		Speed          int64  `json:"speed,omitempty"` // 添加速度信息
 	}
 
 	statuses := make([]TaskStatus, 0, len(tasks))
@@ -121,6 +122,7 @@ func (s *Server) sendStatus(conn *websocket.Conn) error {
 			LocalPath:      t.LocalPath,
 			Error:          t.Error,
 			Progress:       t.Progress,
+			Speed:          t.Speed, // 添加速度信息
 		}
 
 		if !t.StartTime.IsZero() {

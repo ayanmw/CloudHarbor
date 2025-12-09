@@ -22,6 +22,13 @@ type Task struct {
 	StartTime  time.Time
 	FinishTime time.Time
 	Progress   int64 // 已下载字节数
+
+	// 新增字段用于断点续传和速度计算
+	LastProgress     int64     // 上次记录的进度
+	LastProgressTime time.Time // 上次记录进度的时间
+	Speed            int64     // 当前下载速度 (bytes/sec)
+	ResumeSupported  bool      // 是否支持断点续传
+	MD5              string    // 文件MD5用于校验
 }
 
 // DownloadMode 下载后处理模式
@@ -37,9 +44,8 @@ const (
 
 // Downloader 下载器
 type Downloader struct {
-	cfg    *config.Config
-	client *baiduapi.Client
-	// ... existing code ...
+	cfg          *config.Config
+	client       *baiduapi.Client
 	tasks        map[int64]*Task // key: fs_id
 	taskMutex    sync.RWMutex
 	modeMutex    sync.RWMutex
@@ -179,9 +185,13 @@ func (d *Downloader) downloadFolder(folderInfo baiduapi.FileInfo) {
 // downloadFileToPath 下载文件到指定本地目录
 func (d *Downloader) downloadFileToPath(fileInfo baiduapi.FileInfo, localDir string) {
 	task := &Task{
-		FileInfo:  fileInfo,
-		Status:    "pending",
-		StartTime: time.Now(),
+		FileInfo:         fileInfo,
+		Status:           "pending",
+		StartTime:        time.Now(),
+		LastProgressTime: time.Now(),
+		Speed:            0,
+		ResumeSupported:  true,         // 默认支持断点续传
+		MD5:              fileInfo.MD5, // 从文件信息中获取MD5
 	}
 
 	d.taskMutex.Lock()
@@ -194,6 +204,26 @@ func (d *Downloader) downloadFileToPath(fileInfo baiduapi.FileInfo, localDir str
 	localPath := filepath.Join(localDir, filepath.Base(fileInfo.ServerFilename))
 	task.LocalPath = localPath
 
+	// 检查本地文件是否存在
+	var startOffset int64 = 0
+	if stat, err := os.Stat(localPath); err == nil {
+		// 文件已存在，检查是否已完成或需要断点续传
+		existingSize := stat.Size()
+
+		// 如果文件大小已经等于目标大小，认为已完成
+		if existingSize == fileInfo.Size {
+			log.Printf("[Downloader] 文件已存在且大小匹配，跳过下载: %s", localPath)
+			d.updateTaskStatus(fileInfo.FsID, "done", "")
+			return
+		}
+
+		// 如果文件存在但大小不匹配，尝试断点续传
+		startOffset = existingSize
+		task.Progress = existingSize
+		task.LastProgress = existingSize
+		log.Printf("[Downloader] 文件已存在，尝试断点续传: %s (已下载: %d/%d)", localPath, existingSize, fileInfo.Size)
+	}
+
 	// 获取下载链接
 	log.Printf("[Downloader] 获取下载链接: %s (fsid=%d)", fileInfo.Path, fileInfo.FsID)
 	dlink, err := d.client.GetDownloadLink(fileInfo.FsID)
@@ -202,9 +232,9 @@ func (d *Downloader) downloadFileToPath(fileInfo baiduapi.FileInfo, localDir str
 		return
 	}
 
-	// 下载文件
-	log.Printf("[Downloader] 开始下载: %s -> %s", fileInfo.Path, localPath)
-	rc, contentLen, err := d.client.DownloadFile(dlink)
+	// 下载文件（支持断点续传）
+	log.Printf("[Downloader] 开始下载: %s -> %s (偏移量: %d)", fileInfo.Path, localPath, startOffset)
+	rc, contentLen, err := d.client.DownloadFileWithRange(dlink, startOffset)
 	if err != nil {
 		log.Printf("[Downloader] 下载文件失败: %v", err)
 		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("下载文件失败: %v", err))
@@ -214,20 +244,30 @@ func (d *Downloader) downloadFileToPath(fileInfo baiduapi.FileInfo, localDir str
 
 	log.Printf("[Downloader] 下载流已获取，预期大小: %d 字节，开始写入文件", contentLen)
 
-	// 写入本地文件
-	outFile, err := os.Create(localPath)
+	// 打开或创建本地文件
+	var outFile *os.File
+	if startOffset > 0 {
+		// 断点续传模式，追加写入
+		outFile, err = os.OpenFile(localPath, os.O_APPEND|os.O_WRONLY, 0644)
+	} else {
+		// 全新下载，创建文件
+		outFile, err = os.Create(localPath)
+	}
 	if err != nil {
-		log.Printf("[Downloader] 创建本地文件失败: %v", err)
-		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("创建本地文件失败: %v", err))
+		log.Printf("[Downloader] 创建/打开本地文件失败: %v", err)
+		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("创建/打开本地文件失败: %v", err))
 		return
 	}
 	defer outFile.Close()
 
-	log.Printf("[Downloader] 本地文件已创建，开始复制数据")
+	log.Printf("[Downloader] 本地文件已打开，开始复制数据")
 
-	// 带进度的复制
+	// 带进度和速度计算的复制
 	buf := make([]byte, 32*1024)
-	var written int64
+	var written int64 = startOffset
+	lastSpeedCalcTime := time.Now()
+	lastWritten := startOffset
+
 	for {
 		nr, er := rc.Read(buf)
 		if nr > 0 {
@@ -236,6 +276,17 @@ func (d *Downloader) downloadFileToPath(fileInfo baiduapi.FileInfo, localDir str
 				written += int64(nw)
 				d.taskMutex.Lock()
 				task.Progress = written
+
+				// 每隔1秒计算一次速度
+				if time.Since(lastSpeedCalcTime) >= time.Second {
+					elapsed := time.Since(lastSpeedCalcTime).Seconds()
+					if elapsed > 0 {
+						task.Speed = int64(float64(written-lastWritten) / elapsed)
+					}
+					lastSpeedCalcTime = time.Now()
+					lastWritten = written
+				}
+
 				d.taskMutex.Unlock()
 			}
 			if ew != nil {
@@ -260,16 +311,20 @@ func (d *Downloader) downloadFileToPath(fileInfo baiduapi.FileInfo, localDir str
 		return
 	}
 
-	log.Printf("[Downloader] 下载完成: %s (size=%d/%d)", fileInfo.Path, written, contentLen)
+	log.Printf("[Downloader] 下载完成: %s (size=%d/%d)", fileInfo.Path, written, fileInfo.Size)
 	d.updateTaskStatus(fileInfo.FsID, "done", "")
 }
 
 // downloadFile 下载单个文件
 func (d *Downloader) downloadFile(fileInfo baiduapi.FileInfo) {
 	task := &Task{
-		FileInfo:  fileInfo,
-		Status:    "pending",
-		StartTime: time.Now(),
+		FileInfo:         fileInfo,
+		Status:           "pending",
+		StartTime:        time.Now(),
+		LastProgressTime: time.Now(),
+		Speed:            0,
+		ResumeSupported:  true,         // 默认支持断点续传
+		MD5:              fileInfo.MD5, // 从文件信息中获取MD5
 	}
 
 	d.taskMutex.Lock()
@@ -288,6 +343,26 @@ func (d *Downloader) downloadFile(fileInfo baiduapi.FileInfo) {
 	localPath := filepath.Join(d.cfg.LocalDownDir, fileInfo.ServerFilename)
 	task.LocalPath = localPath
 
+	// 检查本地文件是否存在
+	var startOffset int64 = 0
+	if stat, err := os.Stat(localPath); err == nil {
+		// 文件已存在，检查是否已完成或需要断点续传
+		existingSize := stat.Size()
+
+		// 如果文件大小已经等于目标大小，认为已完成
+		if existingSize == fileInfo.Size {
+			log.Printf("[Downloader] 文件已存在且大小匹配，跳过下载: %s", localPath)
+			d.updateTaskStatus(fileInfo.FsID, "done", "")
+			return
+		}
+
+		// 如果文件存在但大小不匹配，尝试断点续传
+		startOffset = existingSize
+		task.Progress = existingSize
+		task.LastProgress = existingSize
+		log.Printf("[Downloader] 文件已存在，尝试断点续传: %s (已下载: %d/%d)", localPath, existingSize, fileInfo.Size)
+	}
+
 	// 获取下载链接
 	log.Printf("[Downloader] 获取下载链接: %s (fsid=%d)", fileInfo.ServerFilename, fileInfo.FsID)
 	dlink, err := d.client.GetDownloadLink(fileInfo.FsID)
@@ -296,9 +371,9 @@ func (d *Downloader) downloadFile(fileInfo baiduapi.FileInfo) {
 		return
 	}
 
-	// 下载文件
-	log.Printf("[Downloader] 开始下载: %s -> %s", fileInfo.ServerFilename, localPath)
-	rc, contentLen, err := d.client.DownloadFile(dlink)
+	// 下载文件（支持断点续传）
+	log.Printf("[Downloader] 开始下载: %s -> %s (偏移量: %d)", fileInfo.ServerFilename, localPath, startOffset)
+	rc, contentLen, err := d.client.DownloadFileWithRange(dlink, startOffset)
 	if err != nil {
 		log.Printf("[Downloader] 下载文件失败: %v", err)
 		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("下载文件失败: %v", err))
@@ -308,20 +383,30 @@ func (d *Downloader) downloadFile(fileInfo baiduapi.FileInfo) {
 
 	log.Printf("[Downloader] 下载流已获取，预期大小: %d 字节", contentLen)
 
-	// 写入本地文件
-	outFile, err := os.Create(localPath)
+	// 打开或创建本地文件
+	var outFile *os.File
+	if startOffset > 0 {
+		// 断点续传模式，追加写入
+		outFile, err = os.OpenFile(localPath, os.O_APPEND|os.O_WRONLY, 0644)
+	} else {
+		// 全新下载，创建文件
+		outFile, err = os.Create(localPath)
+	}
 	if err != nil {
-		log.Printf("[Downloader] 创建本地文件失败: %v", err)
-		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("创建本地文件失败: %v", err))
+		log.Printf("[Downloader] 创建/打开本地文件失败: %v", err)
+		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("创建/打开本地文件失败: %v", err))
 		return
 	}
 	defer outFile.Close()
 
-	log.Printf("[Downloader] 本地文件已创建，开始复制数据")
+	log.Printf("[Downloader] 本地文件已打开，开始复制数据")
 
-	// 带进度的复制
+	// 带进度和速度计算的复制
 	buf := make([]byte, 32*1024)
-	var written int64
+	var written int64 = startOffset
+	lastSpeedCalcTime := time.Now()
+	lastWritten := startOffset
+
 	for {
 		nr, er := rc.Read(buf)
 		if nr > 0 {
@@ -330,6 +415,17 @@ func (d *Downloader) downloadFile(fileInfo baiduapi.FileInfo) {
 				written += int64(nw)
 				d.taskMutex.Lock()
 				task.Progress = written
+
+				// 每隔1秒计算一次速度
+				if time.Since(lastSpeedCalcTime) >= time.Second {
+					elapsed := time.Since(lastSpeedCalcTime).Seconds()
+					if elapsed > 0 {
+						task.Speed = int64(float64(written-lastWritten) / elapsed)
+					}
+					lastSpeedCalcTime = time.Now()
+					lastWritten = written
+				}
+
 				d.taskMutex.Unlock()
 			}
 			if ew != nil {
@@ -355,7 +451,7 @@ func (d *Downloader) downloadFile(fileInfo baiduapi.FileInfo) {
 		return
 	}
 
-	log.Printf("[Downloader] 下载完成: %s (size=%d/%d)", fileInfo.ServerFilename, written, contentLen)
+	log.Printf("[Downloader] 下载完成: %s (size=%d/%d)", fileInfo.ServerFilename, written, fileInfo.Size)
 
 	// 根据下载模式处理网盘中的文件
 	mode := d.GetDownloadMode()

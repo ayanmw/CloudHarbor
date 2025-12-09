@@ -23,6 +23,7 @@ type FileInfo struct {
 	Size           int64  `json:"size"`
 	IsDir          int    `json:"isdir"` // 1=目录，0=文件
 	Mtime          int64  `json:"mtime"`
+	MD5            string `json:"md5"` // 添加MD5字段
 }
 
 // ListResponse 列目录响应
@@ -162,6 +163,53 @@ func (c *Client) DownloadFile(dlink string) (io.ReadCloser, int64, error) {
 	}
 
 	fmt.Printf("[BaiduAPI] 下载响应成功，Content-Length=%d\n", resp.ContentLength)
+	return resp.Body, resp.ContentLength, nil
+}
+
+// DownloadFileWithRange 支持断点续传的下载文件内容
+func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.ReadCloser, int64, error) {
+	// 在 dlink 中添加 access_token 参数
+	if !strings.Contains(dlink, "access_token=") {
+		separator := "&"
+		if !strings.Contains(dlink, "?") {
+			separator = "?"
+		}
+		dlink = dlink + separator + "access_token=" + c.AccessToken
+	}
+
+	req, err := http.NewRequest("GET", dlink, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 设置 Range 头部支持断点续传
+	if startOffset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startOffset))
+	}
+
+	// 设置必要的请求头（模拟百度网盘官方客户端）
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", "https://pan.baidu.com/")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Connection", "keep-alive")
+
+	fmt.Printf("[BaiduAPI] 开始下载文件（支持断点续传，偏移量: %d）\n", startOffset)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("下载文件请求失败: %w", err)
+	}
+
+	// 检查响应状态码
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		resp.Body.Close()
+		// 读取错误响应体
+		body, _ := io.ReadAll(resp.Body)
+		return nil, 0, fmt.Errorf("下载文件失败 status=%d, body=%s", resp.StatusCode, string(body))
+	}
+
+	fmt.Printf("[BaiduAPI] 下载响应成功，Content-Length=%d, StatusCode=%d\n", resp.ContentLength, resp.StatusCode)
 	return resp.Body, resp.ContentLength, nil
 }
 
