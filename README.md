@@ -135,6 +135,7 @@ docker build -t baidu-nas-downloader .
 docker run -d \
   --name baidu-nas-downloader \
   -p 8080:8080 \
+  -e BAIDU_APP_ID=your_app_id \
   -e BAIDU_APP_KEY=your_app_key \
   -e BAIDU_SECRET_KEY=your_secret_key \
   -v $(pwd)/downloads:/下载 \

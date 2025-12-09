@@ -26,7 +26,7 @@ WORKDIR /root/
 # 从构建阶段复制二进制文件
 COPY --from=builder /app/baidu-downloader .
 # 创建必要的目录
-RUN mkdir -p /下载 /NAS_Download_Queue
+RUN mkdir -p /下载
 # 暴露端口
 EXPOSE 8080
 # 设置环境变量默认值

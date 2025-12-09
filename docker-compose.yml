@@ -8,6 +8,7 @@ services:
       - "8080:8080"
     environment:
       - BAIDU_ACCESS_TOKEN=${BAIDU_ACCESS_TOKEN}
+      - BAIDU_APP_ID=${BAIDU_APP_ID}
       - BAIDU_APP_KEY=${BAIDU_APP_KEY}
       - BAIDU_SECRET_KEY=${BAIDU_SECRET_KEY}
       - QUEUE_DIR=/NAS_Download_Queue
@@ -16,5 +17,4 @@ services:
       - SERVER_PORT=8080
     volumes:
       - ./downloads:/下载
-      - ./queue:/NAS_Download_Queue
     restart: unless-stopped
