@@ -34,13 +34,7 @@ func NewServer(dl *downloader.Downloader) *Server {
 	}
 }
 
-// HandlePage 返回主页面
-func (s *Server) HandlePage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(indexPage)
-}
-
-// HandlePageWS 返回 WebSocket 版本页面
+// HandlePageWS 返回 WebSocket 版本页面（默认页面）
 func (s *Server) HandlePageWS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(indexWS)

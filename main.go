@@ -42,8 +42,8 @@ func main() {
 	// 创建 WebUI 服务器
 	ui = webui.NewServer(dl)
 
-	// HTTP 路由
-	http.HandleFunc("/", ui.HandlePage)
+	// HTTP 路由 - 将 WebSocket 版本设为默认页面
+	http.HandleFunc("/", ui.HandlePageWS)
 	http.HandleFunc("/ws", ui.HandleWS)
 	http.HandleFunc("/poll", ui.HandlePagePoll)
 	http.HandleFunc("/api/health", handleHealth)
