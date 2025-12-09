@@ -148,6 +148,8 @@ func (c *Client) DownloadFile(dlink string) (io.ReadCloser, int64, error) {
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Connection", "keep-alive")
+	// 添加额外的请求头以避免403错误
+	req.Header.Set("Host", "d.pcs.baidu.com")
 
 	fmt.Printf("[BaiduAPI] 开始下载文件（已添加 access_token）\n")
 	resp, err := http.DefaultClient.Do(req)
@@ -194,6 +196,8 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Connection", "keep-alive")
+	// 添加额外的请求头以避免403错误
+	req.Header.Set("Host", "d.pcs.baidu.com")
 
 	fmt.Printf("[BaiduAPI] 开始下载文件（支持断点续传，偏移量: %d）\n", startOffset)
 	resp, err := http.DefaultClient.Do(req)

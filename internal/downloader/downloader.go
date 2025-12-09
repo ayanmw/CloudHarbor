@@ -312,6 +312,19 @@ func (d *Downloader) downloadFileToPath(fileInfo baiduapi.FileInfo, localDir str
 	}
 
 	log.Printf("[Downloader] 下载完成: %s (size=%d/%d)", fileInfo.Path, written, fileInfo.Size)
+
+	// 只有在下载完全成功的情况下才根据模式处理网盘中的文件
+	if written == fileInfo.Size || (fileInfo.Size == 0 && written == 0) {
+		// 对于文件夹内的文件，我们只重命名而不删除
+		log.Printf("[Downloader] 重命名网盘文件: %s", fileInfo.Path)
+		newName := fileInfo.ServerFilename + ".可删除"
+		if err := d.client.RenameFile(fileInfo.Path, newName); err != nil {
+			log.Printf("[Downloader] 重命名失败（不影响下载）: %v", err)
+		}
+	} else {
+		log.Printf("[Downloader] 下载不完整，跳过网盘文件处理: %s (已下载: %d, 总大小: %d)", fileInfo.Path, written, fileInfo.Size)
+	}
+
 	d.updateTaskStatus(fileInfo.FsID, "done", "")
 }
 
@@ -453,22 +466,27 @@ func (d *Downloader) downloadFile(fileInfo baiduapi.FileInfo) {
 
 	log.Printf("[Downloader] 下载完成: %s (size=%d/%d)", fileInfo.ServerFilename, written, fileInfo.Size)
 
-	// 根据下载模式处理网盘中的文件
-	mode := d.GetDownloadMode()
-	switch mode {
-	case DownloadModeDelete:
-		log.Printf("[Downloader] 模式=delete，删除网盘文件: %s", fileInfo.Path)
-		if err := d.client.DeleteFile(fileInfo.Path); err != nil {
-			log.Printf("[Downloader] 删除网盘文件失败（不影响本地下载）: %v", err)
+	// 只有在下载完全成功的情况下才根据模式处理网盘中的文件
+	if written == fileInfo.Size || (fileInfo.Size == 0 && written == 0) {
+		// 根据下载模式处理网盘中的文件
+		mode := d.GetDownloadMode()
+		switch mode {
+		case DownloadModeDelete:
+			log.Printf("[Downloader] 模式=delete，删除网盘文件: %s", fileInfo.Path)
+			if err := d.client.DeleteFile(fileInfo.Path); err != nil {
+				log.Printf("[Downloader] 删除网盘文件失败（不影响本地下载）: %v", err)
+			}
+		case DownloadModeKeep:
+			fallthrough
+		default:
+			log.Printf("[Downloader] 模式=keep，重命名网盘文件: %s", fileInfo.ServerFilename)
+			newName := fileInfo.ServerFilename + ".可删除"
+			if err := d.client.RenameFile(fileInfo.Path, newName); err != nil {
+				log.Printf("[Downloader] 重命名失败（不影响下载）: %v", err)
+			}
 		}
-	case DownloadModeKeep:
-		fallthrough
-	default:
-		log.Printf("[Downloader] 模式=keep，重命名网盘文件: %s", fileInfo.ServerFilename)
-		newName := fileInfo.ServerFilename + ".可删除"
-		if err := d.client.RenameFile(fileInfo.Path, newName); err != nil {
-			log.Printf("[Downloader] 重命名失败（不影响下载）: %v", err)
-		}
+	} else {
+		log.Printf("[Downloader] 下载不完整，跳过网盘文件处理: %s (已下载: %d, 总大小: %d)", fileInfo.ServerFilename, written, fileInfo.Size)
 	}
 
 	d.updateTaskStatus(fileInfo.FsID, "done", "")
