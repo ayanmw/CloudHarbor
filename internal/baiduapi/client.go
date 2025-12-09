@@ -136,23 +136,26 @@ func (c *Client) DownloadFile(dlink string) (io.ReadCloser, int64, error) {
 		dlink = dlink + separator + "access_token=" + c.AccessToken
 	}
 
+	// 创建支持跳转的客户端
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// 允许跳转，但保持必要的头部
+			req.Header.Set("User-Agent", "pan.baidu.com")
+			return nil
+		},
+	}
+
 	req, err := http.NewRequest("GET", dlink, nil)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// 设置必要的请求头（模拟百度网盘官方客户端）
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	req.Header.Set("Referer", "https://pan.baidu.com/")
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	req.Header.Set("Connection", "keep-alive")
-	// 添加额外的请求头以避免403错误
+	// 设置必要的请求头（根据百度官方文档要求）
+	req.Header.Set("User-Agent", "pan.baidu.com")
 	req.Header.Set("Host", "d.pcs.baidu.com")
 
 	fmt.Printf("[BaiduAPI] 开始下载文件（已添加 access_token）\n")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("下载文件请求失败: %w", err)
 	}
@@ -179,6 +182,18 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 		dlink = dlink + separator + "access_token=" + c.AccessToken
 	}
 
+	// 创建支持跳转的客户端
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// 允许跳转，但保持必要的头部
+			req.Header.Set("User-Agent", "pan.baidu.com")
+			if startOffset > 0 {
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startOffset))
+			}
+			return nil
+		},
+	}
+
 	req, err := http.NewRequest("GET", dlink, nil)
 	if err != nil {
 		return nil, 0, err
@@ -189,18 +204,12 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startOffset))
 	}
 
-	// 设置必要的请求头（模拟百度网盘官方客户端）
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	req.Header.Set("Referer", "https://pan.baidu.com/")
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	req.Header.Set("Connection", "keep-alive")
-	// 添加额外的请求头以避免403错误
+	// 设置必要的请求头（根据百度官方文档要求）
+	req.Header.Set("User-Agent", "pan.baidu.com")
 	req.Header.Set("Host", "d.pcs.baidu.com")
 
 	fmt.Printf("[BaiduAPI] 开始下载文件（支持断点续传，偏移量: %d）\n", startOffset)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("下载文件请求失败: %w", err)
 	}
