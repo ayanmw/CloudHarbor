@@ -282,6 +282,15 @@
             <div class="tasks-header">
                 <div>
                     <h2>📋 下载任务列表</h2>
+                    <div class="sort-controls" style="margin-top: 8px;">
+                        <span style="font-size: 13px; color: #666; margin-right: 10px;">排序:</span>
+                        <select id="sort-select" onchange="changeSort()" style="font-size: 12px; padding: 2px 6px; border-radius: 4px; border: 1px solid #ddd;">
+                            <option value="default">默认(按添加时间)</option>
+                            <option value="name">文件名</option>
+                            <option value="progress">下载进度</option>
+                            <option value="size">文件大小</option>
+                        </select>
+                    </div>
                     <span class="auto-refresh-indicator">
                         <span class="refresh-dot"></span>
                         自动刷新（每2秒）
@@ -302,6 +311,9 @@
     </div>
     
     <script>
+        // 添加全局变量存储排序方式
+        let currentSort = 'default';
+        
         function formatBytes(bytes) {
             if (bytes === 0) return '0 B';
             const k = 1024;
@@ -330,6 +342,35 @@
                 'failed': '失败'
             };
             return `<span class="status-badge ${status}">${statusMap[status] || status}</span>`;
+        }
+        
+        // 添加排序函数
+        function sortTasks(tasks) {
+            switch(currentSort) {
+                case 'name':
+                    return [...tasks].sort((a, b) => {
+                        const nameA = (a.path || a.server_filename || '').toLowerCase();
+                        const nameB = (b.path || b.server_filename || '').toLowerCase();
+                        return nameA.localeCompare(nameB);
+                    });
+                case 'progress':
+                    return [...tasks].sort((a, b) => {
+                        const progressA = a.size > 0 ? (a.progress / a.size) : 0;
+                        const progressB = b.size > 0 ? (b.progress / b.size) : 0;
+                        return progressB - progressA; // 降序排列，进度高的在前
+                    });
+                case 'size':
+                    return [...tasks].sort((a, b) => b.size - a.size); // 降序排列，大的在前
+                default:
+                    return tasks; // 默认顺序
+            }
+        }
+        
+        // 添加改变排序方式的函数
+        function changeSort() {
+            const select = document.getElementById('sort-select');
+            currentSort = select.value;
+            fetchStatus(); // 重新获取并渲染数据
         }
         
         async function fetchStatus() {
@@ -361,7 +402,10 @@
                     return;
                 }
                 
-                tasksList.innerHTML = data.tasks.map(task => {
+                // 对任务进行排序
+                const sortedTasks = sortTasks(data.tasks);
+                
+                tasksList.innerHTML = sortedTasks.map(task => {
                     const progress = task.size > 0 ? (task.progress / task.size * 100) : 0;
                     const progressText = `${formatBytes(task.progress)} / ${formatBytes(task.size)}`;
                     

@@ -30,6 +30,15 @@
     <div class="header">
         <h1>百度网盘 NAS 下载监控（轮询兼容版）</h1>
         <p style="font-size:13px;color:#666;">每 2 秒请求一次 /api/status 接口获取任务列表。</p>
+        <div style="margin: 8px 0;">
+            <span style="font-size: 13px; color: #666; margin-right: 10px;">排序:</span>
+            <select id="sort-select" onchange="changeSort()" style="font-size: 12px; padding: 2px 6px; border-radius: 4px; border: 1px solid #ddd;">
+                <option value="default">默认(按添加时间)</option>
+                <option value="name">文件名</option>
+                <option value="progress">下载进度</option>
+                <option value="size">文件大小</option>
+            </select>
+        </div>
         <p style="font-size:13px;color:#666;">主站点（WebSocket 实时版）：<a href="/" target="_blank">/</a></p>
     </div>
     <div class="tasks-container">
@@ -37,6 +46,9 @@
     </div>
 </div>
 <script>
+    // 添加全局变量存储排序方式
+    let currentSort = 'default';
+    
     function formatBytes(bytes) {
         if (bytes === 0) return '0 B';
         const k = 1024;
@@ -53,14 +65,47 @@
         const map={pending:'等待中',downloading:'下载中',done:'已完成',failed:'失败'};
         return `<span class="status-badge ${status}">${map[status]||status}</span>`;
     }
+    
+    // 添加排序函数
+    function sortTasks(tasks) {
+        switch(currentSort) {
+            case 'name':
+                return [...tasks].sort((a, b) => {
+                    const nameA = (a.path || a.server_filename || '').toLowerCase();
+                    const nameB = (b.path || b.server_filename || '').toLowerCase();
+                    return nameA.localeCompare(nameB);
+                });
+            case 'progress':
+                return [...tasks].sort((a, b) => {
+                    const progressA = a.size > 0 ? (a.progress / a.size) : 0;
+                    const progressB = b.size > 0 ? (b.progress / b.size) : 0;
+                    return progressB - progressA; // 降序排列，进度高的在前
+                });
+            case 'size':
+                return [...tasks].sort((a, b) => b.size - a.size); // 降序排列，大的在前
+            default:
+                return tasks; // 默认顺序
+        }
+    }
+    
+    // 添加改变排序方式的函数
+    function changeSort() {
+        const select = document.getElementById('sort-select');
+        currentSort = select.value;
+    }
+    
     async function fetchStatus() {
         try {
             const res = await fetch('/api/status');
             const data = await res.json();
             const tasks = data.tasks || [];
+            
+            // 对任务进行排序
+            const sortedTasks = sortTasks(tasks);
+            
             const list = document.getElementById('tasks-list');
-            if (tasks.length===0){ list.innerHTML='<div class="empty">暂无任务</div>'; return; }
-            list.innerHTML = tasks.map(t=>`
+            if (sortedTasks.length===0){ list.innerHTML='<div class="empty">暂无任务</div>'; return; }
+            list.innerHTML = sortedTasks.map(t=>`
 <div class="task-item ${t.status}">
   <div class="task-name">${getStatusBadge(t.status)} ${t.path || t.server_filename}</div>
   <div class="task-info">

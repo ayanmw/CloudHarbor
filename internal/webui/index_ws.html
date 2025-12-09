@@ -61,6 +61,15 @@
             <label><input type="radio" name="mode" value="keep" checked> 保留网盘文件并标记为 .可删除</label>
             <label><input type="radio" name="mode" value="delete"> 下载完成后删除网盘文件</label>
         </div>
+        <div style="margin: 8px 0;">
+            <span style="font-size: 13px; color: #666; margin-right: 10px;">排序:</span>
+            <select id="sort-select" onchange="changeSort()" style="font-size: 12px; padding: 2px 6px; border-radius: 4px; border: 1px solid #ddd;">
+                <option value="default">默认(按添加时间)</option>
+                <option value="name">文件名</option>
+                <option value="progress">下载进度</option>
+                <option value="size">文件大小</option>
+            </select>
+        </div>
         <div class="stats">
             <div class="stat-card"><div class="stat-label">总任务数</div><div class="stat-value" id="total-tasks">0</div></div>
             <div class="stat-card info"><div class="stat-label">下载中</div><div class="stat-value" id="downloading-tasks">0</div></div>
@@ -78,7 +87,9 @@
 <script>
     let ws;
     let currentMode = 'keep';
-
+    // 添加全局变量存储排序方式
+    let currentSort = 'default';
+    
     function formatBytes(bytes) {
         if (bytes === 0) return '0 B';
         const k = 1024;
@@ -97,20 +108,52 @@
         const map = {pending:'等待中',downloading:'下载中',done:'已完成',failed:'失败'};
         return `<span class="status-badge ${status}">${map[status] || status}</span>`;
     }
+    
+    // 添加排序函数
+    function sortTasks(tasks) {
+        switch(currentSort) {
+            case 'name':
+                return [...tasks].sort((a, b) => {
+                    const nameA = (a.path || a.server_filename || '').toLowerCase();
+                    const nameB = (b.path || b.server_filename || '').toLowerCase();
+                    return nameA.localeCompare(nameB);
+                });
+            case 'progress':
+                return [...tasks].sort((a, b) => {
+                    const progressA = a.size > 0 ? (a.progress / a.size) : 0;
+                    const progressB = b.size > 0 ? (b.progress / b.size) : 0;
+                    return progressB - progressA; // 降序排列，进度高的在前
+                });
+            case 'size':
+                return [...tasks].sort((a, b) => b.size - a.size); // 降序排列，大的在前
+            default:
+                return tasks; // 默认顺序
+        }
+    }
+    
+    // 添加改变排序方式的函数
+    function changeSort() {
+        const select = document.getElementById('sort-select');
+        currentSort = select.value;
+    }
 
     function renderTasks(data) {
         const tasks = data.tasks || [];
-        document.getElementById('total-tasks').textContent = tasks.length;
-        document.getElementById('downloading-tasks').textContent = tasks.filter(t=>t.status==='downloading').length;
-        document.getElementById('done-tasks').textContent = tasks.filter(t=>t.status==='done').length;
-        document.getElementById('failed-tasks').textContent = tasks.filter(t=>t.status==='failed').length;
+        
+        // 对任务进行排序
+        const sortedTasks = sortTasks(tasks);
+        
+        document.getElementById('total-tasks').textContent = sortedTasks.length;
+        document.getElementById('downloading-tasks').textContent = sortedTasks.filter(t=>t.status==='downloading').length;
+        document.getElementById('done-tasks').textContent = sortedTasks.filter(t=>t.status==='done').length;
+        document.getElementById('failed-tasks').textContent = sortedTasks.filter(t=>t.status==='failed').length;
 
         const list = document.getElementById('tasks-list');
-        if (tasks.length === 0) {
+        if (sortedTasks.length === 0) {
             list.innerHTML = '<div class="empty-state">暂无任务</div>';
             return;
         }
-        list.innerHTML = tasks.map(t => {
+        list.innerHTML = sortedTasks.map(t => {
             const progress = t.size > 0 ? (t.progress / t.size * 100) : 0;
             const progressText = `${formatBytes(t.progress)} / ${formatBytes(t.size)}`;
             return `
