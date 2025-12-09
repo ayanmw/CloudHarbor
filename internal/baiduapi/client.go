@@ -126,16 +126,29 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 
 // DownloadFile 下载文件内容
 func (c *Client) DownloadFile(dlink string) (io.ReadCloser, int64, error) {
+	// 在 dlink 中添加 access_token 参数
+	if !strings.Contains(dlink, "access_token=") {
+		separator := "&"
+		if !strings.Contains(dlink, "?") {
+			separator = "?"
+		}
+		dlink = dlink + separator + "access_token=" + c.AccessToken
+	}
+
 	req, err := http.NewRequest("GET", dlink, nil)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// 设置必要的请求头
-	req.Header.Set("User-Agent", "pan.baidu.com")
-	req.Header.Set("Referer", "https://pan.baidu.com")
+	// 设置必要的请求头（模拟百度网盘官方客户端）
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", "https://pan.baidu.com/")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Connection", "keep-alive")
 
-	fmt.Printf("[BaiduAPI] 开始下载文件: %s\n", dlink)
+	fmt.Printf("[BaiduAPI] 开始下载文件（已添加 access_token）\n")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("下载文件请求失败: %w", err)
