@@ -52,6 +52,7 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 	params.Set("limit", "1000")
 
 	fullURL := apiURL + "?" + params.Encode()
+	fmt.Printf("[BaiduAPI] 列目录请求: dir=%s, url=%s\n", dir, fullURL)
 	resp, err := http.Get(fullURL)
 	if err != nil {
 		return nil, fmt.Errorf("列目录请求失败: %w", err)
@@ -59,6 +60,7 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("[BaiduAPI] 列目录响应: %s\n", string(body))
 	var result ListResponse
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("解析列目录响应失败: %w, body=%s", err, string(body))
@@ -72,8 +74,10 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 }
 
 // GetDownloadLink 获取文件下载链接
+// 改用 PCS 接口直接构造下载链接
 func (c *Client) GetDownloadLink(fsid int64) (string, error) {
-	apiURL := "https://pan.baidu.com/rest/2.0/xpan/file"
+	// 方法1: 尝试使用 xpan multimedia 接口
+	apiURL := "https://pan.baidu.com/rest/2.0/xpan/multimedia"
 	params := url.Values{}
 	params.Set("method", "filemetas")
 	params.Set("access_token", c.AccessToken)
@@ -81,6 +85,7 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 	params.Set("dlink", "1")
 
 	fullURL := apiURL + "?" + params.Encode()
+	fmt.Printf("[BaiduAPI] 获取下载链接请求(multimedia): fsid=%d\n", fsid)
 	resp, err := http.Get(fullURL)
 	if err != nil {
 		return "", fmt.Errorf("获取下载链接请求失败: %w", err)
@@ -88,18 +93,32 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("[BaiduAPI] 获取下载链接响应: %s\n", string(body))
+	
 	var result struct {
-		Errno int `json:"errno"`
-		List  []struct {
+		Errno     int    `json:"errno"`
+		ErrorCode int    `json:"error_code"`
+		ErrorMsg  string `json:"error_msg"`
+		List      []struct {
 			Dlink string `json:"dlink"`
 		} `json:"list"`
 	}
+	
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("解析下载链接响应失败: %w, body=%s", err, string(body))
 	}
 
-	if result.Errno != 0 || len(result.List) == 0 {
-		return "", fmt.Errorf("获取下载链接失败 errno=%d, body=%s", result.Errno, string(body))
+	// 检查错误
+	if result.ErrorCode != 0 {
+		return "", fmt.Errorf("获取下载链接失败 error_code=%d, error_msg=%s", result.ErrorCode, result.ErrorMsg)
+	}
+	
+	if result.Errno != 0 {
+		return "", fmt.Errorf("获取下载链接失败 errno=%d", result.Errno)
+	}
+
+	if len(result.List) == 0 || result.List[0].Dlink == "" {
+		return "", fmt.Errorf("下载链接为空, body=%s", string(body))
 	}
 
 	return result.List[0].Dlink, nil

@@ -54,15 +54,9 @@ func (d *Downloader) ScanAndDownload() error {
 	log.Printf("[Downloader] 扫描到 %d 个文件/文件夹", len(files))
 
 	for _, f := range files {
-		// 跳过文件夹
-		if f.IsDir == 1 {
-			log.Printf("[Downloader] 跳过文件夹: %s", f.ServerFilename)
-			continue
-		}
-
-		// 跳过已标记 .可删除 的文件
+		// 跳过已标记 .可删除 的文件/文件夹
 		if strings.HasSuffix(f.ServerFilename, ".可删除") {
-			log.Printf("[Downloader] 跳过已标记文件: %s", f.ServerFilename)
+			log.Printf("[Downloader] 跳过已标记项: %s", f.ServerFilename)
 			continue
 		}
 
@@ -72,16 +66,166 @@ func (d *Downloader) ScanAndDownload() error {
 		d.taskMutex.RUnlock()
 
 		if exists && (task.Status == "done" || task.Status == "downloading") {
-			log.Printf("[Downloader] 文件 %s 已在任务列表 status=%s，跳过", f.ServerFilename, task.Status)
+			log.Printf("[Downloader] 项 %s 已在任务列表 status=%s，跳过", f.ServerFilename, task.Status)
 			continue
 		}
 
-		// 创建下载任务
-		log.Printf("[Downloader] 创建下载任务: %s (size=%d)", f.ServerFilename, f.Size)
-		go d.downloadFile(f)
+		// 如果是文件夹，递归下载
+		if f.IsDir == 1 {
+			log.Printf("[Downloader] 发现文件夹: %s，开始递归下载", f.ServerFilename)
+			go d.downloadFolder(f)
+		} else {
+			// 创建文件下载任务
+			log.Printf("[Downloader] 创建下载任务: %s (size=%d)", f.ServerFilename, f.Size)
+			go d.downloadFile(f)
+		}
 	}
 
 	return nil
+}
+
+// downloadFolder 递归下载文件夹
+func (d *Downloader) downloadFolder(folderInfo baiduapi.FileInfo) {
+	task := &Task{
+		FileInfo:  folderInfo,
+		Status:    "pending",
+		StartTime: time.Now(),
+	}
+
+	d.taskMutex.Lock()
+	d.tasks[folderInfo.FsID] = task
+	d.taskMutex.Unlock()
+
+	d.updateTaskStatus(folderInfo.FsID, "downloading", "")
+
+	// 创建本地文件夹
+	localFolderPath := filepath.Join(d.cfg.LocalDownDir, folderInfo.ServerFilename)
+	if err := os.MkdirAll(localFolderPath, 0755); err != nil {
+		d.updateTaskStatus(folderInfo.FsID, "failed", fmt.Sprintf("创建本地文件夹失败: %v", err))
+		return
+	}
+	task.LocalPath = localFolderPath
+
+	log.Printf("[Downloader] 列出文件夹内容: %s", folderInfo.Path)
+
+	// 列出文件夹内的所有文件
+	subFiles, err := d.client.ListDir(folderInfo.Path)
+	if err != nil {
+		d.updateTaskStatus(folderInfo.FsID, "failed", fmt.Sprintf("列出文件夹内容失败: %v", err))
+		return
+	}
+
+	log.Printf("[Downloader] 文件夹 %s 包含 %d 个项", folderInfo.ServerFilename, len(subFiles))
+
+	// 递归下载文件夹内的所有内容
+	for _, subFile := range subFiles {
+		if strings.HasSuffix(subFile.ServerFilename, ".可删除") {
+			continue
+		}
+
+		if subFile.IsDir == 1 {
+			// 递归下载子文件夹
+			subFolderInfo := subFile
+			subFolderInfo.ServerFilename = filepath.Join(folderInfo.ServerFilename, subFile.ServerFilename)
+			d.downloadFolder(subFolderInfo)
+		} else {
+			// 下载文件到对应的子目录
+			subFileInfo := subFile
+			subFileInfo.ServerFilename = filepath.Join(folderInfo.ServerFilename, subFile.ServerFilename)
+			d.downloadFileToPath(subFileInfo, localFolderPath)
+		}
+	}
+
+	// 文件夹下载完成后，重命名
+	log.Printf("[Downloader] 文件夹 %s 下载完成，重命名", folderInfo.ServerFilename)
+	newName := folderInfo.ServerFilename + ".可删除"
+	if err := d.client.RenameFile(folderInfo.Path, newName); err != nil {
+		log.Printf("[Downloader] 重命名文件夹失败（不影响下载）: %v", err)
+	}
+
+	d.updateTaskStatus(folderInfo.FsID, "done", "")
+}
+
+// downloadFileToPath 下载文件到指定本地目录
+func (d *Downloader) downloadFileToPath(fileInfo baiduapi.FileInfo, localDir string) {
+	task := &Task{
+		FileInfo:  fileInfo,
+		Status:    "pending",
+		StartTime: time.Now(),
+	}
+
+	d.taskMutex.Lock()
+	d.tasks[fileInfo.FsID] = task
+	d.taskMutex.Unlock()
+
+	d.updateTaskStatus(fileInfo.FsID, "downloading", "")
+
+	// 本地文件路径（使用传入的目录）
+	localPath := filepath.Join(localDir, filepath.Base(fileInfo.ServerFilename))
+	task.LocalPath = localPath
+
+	// 获取下载链接
+	log.Printf("[Downloader] 获取下载链接: %s (fsid=%d)", fileInfo.Path, fileInfo.FsID)
+	dlink, err := d.client.GetDownloadLink(fileInfo.FsID)
+	if err != nil {
+		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("获取下载链接失败: %v", err))
+		return
+	}
+
+	// 下载文件
+	log.Printf("[Downloader] 开始下载: %s -> %s", fileInfo.Path, localPath)
+	rc, contentLen, err := d.client.DownloadFile(dlink)
+	if err != nil {
+		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("下载文件失败: %v", err))
+		return
+	}
+	defer rc.Close()
+
+	// 写入本地文件
+	outFile, err := os.Create(localPath)
+	if err != nil {
+		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("创建本地文件失败: %v", err))
+		return
+	}
+	defer outFile.Close()
+
+	// 带进度的复制
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		nr, er := rc.Read(buf)
+		if nr > 0 {
+			nw, ew := outFile.Write(buf[0:nr])
+			if nw > 0 {
+				written += int64(nw)
+				d.taskMutex.Lock()
+				task.Progress = written
+				d.taskMutex.Unlock()
+			}
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+		}
+		if er != nil {
+			if er != io.EOF {
+				err = er
+			}
+			break
+		}
+	}
+
+	if err != nil {
+		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("写入文件失败: %v", err))
+		return
+	}
+
+	log.Printf("[Downloader] 下载完成: %s (size=%d/%d)", fileInfo.Path, written, contentLen)
+	d.updateTaskStatus(fileInfo.FsID, "done", "")
 }
 
 // downloadFile 下载单个文件
