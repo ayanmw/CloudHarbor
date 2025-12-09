@@ -29,7 +29,7 @@
 <div class="container">
     <div class="header">
         <h1>百度网盘 NAS 下载监控（轮询兼容版）</h1>
-        <p style="font-size:13px;color:#666;">每 2 秒请求一次 /status 接口获取任务列表。</p>
+        <p style="font-size:13px;color:#666;">每 2 秒请求一次 /api/status 接口获取任务列表。</p>
         <p style="font-size:13px;color:#666;">主站点（WebSocket 实时版）：<a href="/" target="_blank">/</a></p>
     </div>
     <div class="tasks-container">
@@ -55,7 +55,7 @@
     }
     async function fetchStatus() {
         try {
-            const res = await fetch('/status');
+            const res = await fetch('/api/status');
             const data = await res.json();
             const tasks = data.tasks || [];
             const list = document.getElementById('tasks-list');

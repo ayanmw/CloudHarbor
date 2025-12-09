@@ -46,9 +46,9 @@ func main() {
 	http.HandleFunc("/", ui.HandlePageWS)
 	http.HandleFunc("/poll", ui.HandlePagePoll)
 	http.HandleFunc("/ws", ui.HandleWS)
-	http.HandleFunc("/health", handleHealth)
-	http.HandleFunc("/status", handleStatus)
-	http.HandleFunc("/scan", handleScan)
+	http.HandleFunc("/api/health", handleHealth)
+	http.HandleFunc("/api/status", handleStatus)
+	http.HandleFunc("/api/scan", handleScan)
 
 	// 启动后台扫描任务
 	go func() {

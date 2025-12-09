@@ -334,7 +334,7 @@
         
         async function fetchStatus() {
             try {
-                const response = await fetch('/status');
+                const response = await fetch('/api/status');
                 const data = await response.json();
                 
                 // 更新统计数据
