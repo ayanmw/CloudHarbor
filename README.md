@@ -16,9 +16,9 @@
 - 自动跳过已存在的完整文件，避免重复下载
 
 ### 🖥️ 多种前端界面
-- **主页面**：功能完整的下载状态监控界面
-- **WebSocket 实时版**：通过 WebSocket 实现实时状态更新
+- **主页面**：功能完整的下载状态监控界面（WebSocket 实时版）
 - **轮询兼容版**：为不支持 WebSocket 的环境提供降级支持
+- **OAuth 管理页面**：通过网页界面获取和管理 Access Token
 
 ### 🔧 灵活的下载后处理
 - 支持两种下载后处理模式：
@@ -59,12 +59,21 @@
 - 可切换的下载后处理模式
 - 环境变量配置（Access Token、目录路径等）
 
+### 🔐 OAuth 认证管理
+- 提供基于网页的 OAuth 授权流程
+- 支持扫码登录获取 Access Token
+- 支持 Refresh Token 自动刷新
+- 可在运行时动态更新认证信息
+
 ## API 接口
 
 ### RESTful API
 - `GET /api/health` - 健康检查接口
 - `GET /api/status` - 获取下载任务状态
 - `POST /api/scan` - 手动触发扫描
+- `POST /api/oauth/device-code` - 获取 OAuth 设备码
+- `POST /api/oauth/token` - 获取 Access Token
+- `POST /api/oauth/refresh` - 刷新 Access Token
 
 ### WebSocket 接口
 - `/ws` - 实时状态推送通道
@@ -72,10 +81,9 @@
 ## 部署指南
 
 ### 环境准备
-1. 获取百度网盘 API Access Token
+1. 获取百度网盘 API App Key 和 Secret Key（可选，用于 OAuth）
 2. 配置环境变量：
    ```
-   BAIDU_ACCESS_TOKEN=your_access_token
    BAIDU_APP_KEY=your_app_key
    BAIDU_SECRET_KEY=your_secret_key
    QUEUE_DIR=/NAS_Download_Queue
@@ -84,7 +92,16 @@
    SERVER_PORT=8080
    ```
 
-### Access Token 获取工具
+### Access Token 获取方式
+
+#### 方式一：通过网页 OAuth（推荐）
+1. 启动服务后访问 `http://localhost:8080/oauth`
+2. 点击"获取授权码"
+3. 扫描二维码或点击链接进行授权
+4. 授权完成后点击"获取 Token"
+5. 系统会自动使用获取的 Token
+
+#### 方式二：命令行工具
 项目提供了一个便捷的命令行工具用于获取百度网盘的 Access Token：
 
 ```bash
@@ -118,7 +135,6 @@ docker build -t baidu-nas-downloader .
 docker run -d \
   --name baidu-nas-downloader \
   -p 8080:8080 \
-  -e BAIDU_ACCESS_TOKEN=your_access_token \
   -e BAIDU_APP_KEY=your_app_key \
   -e BAIDU_SECRET_KEY=your_secret_key \
   -v $(pwd)/downloads:/下载 \
@@ -131,7 +147,6 @@ docker run -d \
 
 ```bash
 # 设置环境变量
-export BAIDU_ACCESS_TOKEN=your_access_token
 export BAIDU_APP_KEY=your_app_key
 export BAIDU_SECRET_KEY=your_secret_key
 
@@ -165,11 +180,6 @@ spec:
         ports:
         - containerPort: 8080
         env:
-        - name: BAIDU_ACCESS_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: baidu-secrets
-              key: access-token
         - name: BAIDU_APP_KEY
           valueFrom:
             secretKeyRef:
@@ -210,7 +220,6 @@ spec:
 #### 创建 Secrets
 ```bash
 kubectl create secret generic baidu-secrets \
-  --from-literal=access-token=your_access_token \
   --from-literal=app-key=your_app_key \
   --from-literal=secret-key=your_secret_key
 ```
@@ -225,8 +234,9 @@ kubectl apply -f deployment.yaml
 1. 在百度网盘网页端安装油猴脚本
 2. 选中需要下载的文件/文件夹
 3. 点击油猴脚本按钮，文件将被移动到协同目录
-4. Go 服务端自动检测并开始下载
-5. 通过 Web 界面实时监控下载进度
+4. 如果尚未配置 Access Token，通过网页 OAuth 或命令行工具获取
+5. Go 服务端自动检测并开始下载
+6. 通过 Web 界面实时监控下载进度
 
 ## 项目结构
 
@@ -238,6 +248,7 @@ kubectl apply -f deployment.yaml
 │   ├── baiduapi/          # 百度 API 客户端
 │   ├── config/            # 配置管理
 │   ├── downloader/        # 核心下载器
+│   ├── oauth/             # OAuth 认证管理
 │   └── webui/            # Web 界面
 ├── .env.example           # 环境变量示例
 ├── go.mod/go.sum          # Go 模块依赖
@@ -249,7 +260,7 @@ kubectl apply -f deployment.yaml
 
 ## 注意事项
 
-1. 请妥善保管您的百度 Access Token
+1. 请妥善保管您的百度 App Key 和 Secret Key
 2. 确保 NAS 存储空间充足
 3. 遵守百度网盘使用条款，合理使用 API
 4. 建议定期清理已下载的标记文件
