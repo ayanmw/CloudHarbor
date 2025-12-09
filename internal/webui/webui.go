@@ -19,6 +19,9 @@ var indexWS []byte
 //go:embed index_poll.html
 var indexPoll []byte
 
+//go:embed index_oauth.html
+var indexOAuth []byte
+
 //go:embed res/*
 var resFiles embed.FS
 
@@ -46,6 +49,12 @@ func (s *Server) HandlePageWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) HandlePagePoll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(indexPoll)
+}
+
+// HandlePageOAuth 返回 OAuth 授权页面
+func (s *Server) HandlePageOAuth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexOAuth)
 }
 
 // HandleRes 静态资源文件服务

@@ -9,6 +9,7 @@ import (
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/config"
 	"web_browser_baidu_onekey_upload/internal/downloader"
+	"web_browser_baidu_onekey_upload/internal/oauth"
 	"web_browser_baidu_onekey_upload/internal/webui"
 )
 
@@ -24,11 +25,6 @@ func main() {
 
 	// 加载配置
 	cfg = config.Load()
-
-	// 检查必要配置
-	if cfg.AccessToken == "" {
-		log.Fatal("BAIDU_ACCESS_TOKEN 环境变量未设置，请先配置 Access Token")
-	}
 
 	log.Printf("配置加载完成: QueueDir=%s, LocalDownDir=%s, ScanInterval=%ds",
 		cfg.QueueDir, cfg.LocalDownDir, cfg.ScanInterval)
@@ -46,10 +42,16 @@ func main() {
 	http.HandleFunc("/", ui.HandlePageWS)
 	http.HandleFunc("/ws", ui.HandleWS)
 	http.HandleFunc("/poll", ui.HandlePagePoll)
-	http.HandleFunc("/res/", ui.HandleRes) // 使用单一处理器处理所有 /res/ 路径下的资源
+	http.HandleFunc("/oauth", ui.HandlePageOAuth) // 添加 OAuth 页面路由
+	http.HandleFunc("/res/", ui.HandleRes)        // 使用单一处理器处理所有 /res/ 路径下的资源
 	http.HandleFunc("/api/health", handleHealth)
 	http.HandleFunc("/api/status", handleStatus)
 	http.HandleFunc("/api/scan", handleScan)
+
+	// OAuth 相关路由
+	http.HandleFunc("/api/oauth/device-code", handleGetDeviceCode)
+	http.HandleFunc("/api/oauth/token", handleGetToken)
+	http.HandleFunc("/api/oauth/refresh", handleRefreshToken)
 
 	// 启动后台扫描任务
 	go func() {
@@ -167,4 +169,89 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "scan triggered",
 	})
+}
+
+// handleGetDeviceCode 获取设备码
+func handleGetDeviceCode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if cfg.BaiduAppKey == "" {
+		http.Error(w, "BAIDU_APP_KEY 未配置", http.StatusBadRequest)
+		return
+	}
+
+	deviceResp, err := oauth.GetDeviceCode(cfg.BaiduAppKey)
+	if err != nil {
+		http.Error(w, "获取设备码失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(deviceResp)
+}
+
+// handleGetToken 轮询获取 Token
+func handleGetToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if cfg.BaiduAppKey == "" || cfg.BaiduSecretKey == "" {
+		http.Error(w, "BAIDU_APP_KEY 或 BAIDU_SECRET_KEY 未配置", http.StatusBadRequest)
+		return
+	}
+
+	// 解析请求参数
+	var req struct {
+		DeviceCode string `json:"device_code"`
+		Interval   int    `json:"interval"`
+		ExpiresIn  int    `json:"expires_in"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "解析请求参数失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	tokenResp, err := oauth.PollForToken(cfg.BaiduAppKey, cfg.BaiduSecretKey, req.DeviceCode, req.Interval, req.ExpiresIn)
+	if err != nil {
+		http.Error(w, "获取 Token 失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tokenResp)
+}
+
+// handleRefreshToken 刷新 Token
+func handleRefreshToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if cfg.BaiduAppKey == "" || cfg.BaiduSecretKey == "" || cfg.RefreshToken == "" {
+		http.Error(w, "缺少必要的配置参数", http.StatusBadRequest)
+		return
+	}
+
+	tokenResp, err := oauth.RefreshToken(cfg.BaiduAppKey, cfg.BaiduSecretKey, cfg.RefreshToken)
+	if err != nil {
+		http.Error(w, "刷新 Token 失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 更新配置中的 Token
+	cfg.AccessToken = tokenResp.AccessToken
+	cfg.RefreshToken = tokenResp.RefreshToken
+
+	// 更新百度网盘客户端
+	dl.UpdateClient(baiduapi.NewClient(cfg.AccessToken, cfg.BaiduAppKey))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tokenResp)
 }

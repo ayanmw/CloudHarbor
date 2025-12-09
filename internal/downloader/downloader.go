@@ -78,6 +78,11 @@ func NewDownloader(cfg *config.Config, client *baiduapi.Client) *Downloader {
 	}
 }
 
+// UpdateClient 更新百度网盘客户端
+func (d *Downloader) UpdateClient(client *baiduapi.Client) {
+	d.client = client
+}
+
 // ScanAndDownload 扫描队列目录并下载
 func (d *Downloader) ScanAndDownload() error {
 	log.Printf("[Downloader] 开始扫描目录: %s", d.cfg.QueueDir)

@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>百度网盘 OAuth 授权</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/res/shared.css">
+    <style>
+        .oauth-container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .step {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .step h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: transform 0.2s;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .result {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+            word-break: break-all;
+        }
+        .qr-code {
+            text-align: center;
+            margin: 20px 0;
+        }
+        .qr-code img {
+            max-width: 200px;
+            height: auto;
+        }
+        .token-display {
+            background: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+        .token-display h4 {
+            margin-top: 0;
+        }
+        .token-value {
+            font-family: monospace;
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+<div class="oauth-container">
+    <div class="header">
+        <h1>🔑 百度网盘 OAuth 授权</h1>
+        <p>通过扫码登录获取 Access Token</p>
+    </div>
+
+    <div class="step">
+        <h3>第1步：获取授权码</h3>
+        <button id="getDeviceCodeBtn" class="btn" onclick="getDeviceCode()">获取授权码</button>
+        <div id="deviceCodeResult" class="result" style="display: none;"></div>
+    </div>
+
+    <div class="step">
+        <h3>第2步：扫码授权</h3>
+        <div id="qrCodeSection" style="display: none;">
+            <p>请使用手机扫描下方二维码进行授权：</p>
+            <div class="qr-code">
+                <img id="qrCodeImg" src="" alt="QR Code">
+            </div>
+            <p>或在浏览器中打开链接：<a id="authLink" href="#" target="_blank"></a></p>
+            <p>用户码：<strong id="userCode"></strong></p>
+            <button id="getTokenBtn" class="btn" onclick="getToken()" disabled>确认已授权，获取 Token</button>
+        </div>
+    </div>
+
+    <div class="step">
+        <h3>第3步：获取 Token</h3>
+        <div id="tokenResult" class="result" style="display: none;"></div>
+    </div>
+
+    <div class="step">
+        <h3>Token 信息</h3>
+        <div id="tokenDisplay" class="token-display" style="display: none;">
+            <h4>Access Token</h4>
+            <div class="token-value" id="accessToken"></div>
+            <h4>Refresh Token</h4>
+            <div class="token-value" id="refreshToken"></div>
+            <button id="refreshTokenBtn" class="btn" onclick="refreshToken()" style="margin-top: 15px;">刷新 Token</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let deviceCodeData = null;
+    let tokenData = null;
+
+    async function getDeviceCode() {
+        const btn = document.getElementById('getDeviceCodeBtn');
+        btn.disabled = true;
+        btn.textContent = '获取中...';
+
+        try {
+            const response = await fetch('/api/oauth/device-code', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(await response.text());
+            }
+
+            deviceCodeData = await response.json();
+            
+            document.getElementById('deviceCodeResult').innerHTML = `
+                <p><strong>设备码获取成功！</strong></p>
+                <p>设备码: ${deviceCodeData.device_code}</p>
+                <p>用户码: ${deviceCodeData.user_code}</p>
+                <p>有效期: ${deviceCodeData.expires_in} 秒</p>
+            `;
+            document.getElementById('deviceCodeResult').style.display = 'block';
+
+            // 显示二维码和授权链接
+            document.getElementById('qrCodeImg').src = deviceCodeData.qrcode_url;
+            document.getElementById('authLink').href = deviceCodeData.verification_url;
+            document.getElementById('authLink').textContent = deviceCodeData.verification_url;
+            document.getElementById('userCode').textContent = deviceCodeData.user_code;
+            document.getElementById('qrCodeSection').style.display = 'block';
+            document.getElementById('getTokenBtn').disabled = false;
+
+        } catch (error) {
+            alert('获取设备码失败: ' + error.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '获取授权码';
+        }
+    }
+
+    async function getToken() {
+        if (!deviceCodeData) {
+            alert('请先获取设备码');
+            return;
+        }
+
+        const btn = document.getElementById('getTokenBtn');
+        btn.disabled = true;
+        btn.textContent = '获取中...';
+
+        try {
+            const response = await fetch('/api/oauth/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    device_code: deviceCodeData.device_code,
+                    interval: deviceCodeData.interval,
+                    expires_in: deviceCodeData.expires_in
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(await response.text());
+            }
+
+            tokenData = await response.json();
+            
+            document.getElementById('tokenResult').innerHTML = `
+                <p><strong>Token 获取成功！</strong></p>
+                <p>Access Token: <span class="token-value">${tokenData.access_token}</span></p>
+                <p>Refresh Token: <span class="token-value">${tokenData.refresh_token}</span></p>
+                <p>有效期: ${tokenData.expires_in} 秒</p>
+            `;
+            document.getElementById('tokenResult').style.display = 'block';
+
+            // 显示 Token 信息
+            document.getElementById('accessToken').textContent = tokenData.access_token;
+            document.getElementById('refreshToken').textContent = tokenData.refresh_token;
+            document.getElementById('tokenDisplay').style.display = 'block';
+
+        } catch (error) {
+            alert('获取 Token 失败: ' + error.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '确认已授权，获取 Token';
+        }
+    }
+
+    async function refreshToken() {
+        if (!tokenData || !tokenData.refresh_token) {
+            alert('没有可用的 Refresh Token');
+            return;
+        }
+
+        const btn = document.getElementById('refreshTokenBtn');
+        btn.disabled = true;
+        btn.textContent = '刷新中...';
+
+        try {
+            const response = await fetch('/api/oauth/refresh', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(await response.text());
+            }
+
+            tokenData = await response.json();
+            
+            // 更新显示的 Token 信息
+            document.getElementById('accessToken').textContent = tokenData.access_token;
+            document.getElementById('refreshToken').textContent = tokenData.refresh_token;
+            
+            alert('Token 刷新成功！');
+
+        } catch (error) {
+            alert('刷新 Token 失败: ' + error.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '刷新 Token';
+        }
+    }
+</script>
+</body>
+</html>
