@@ -1,9 +1,11 @@
 package webui
 
 import (
-	_ "embed"
+	"embed"
 	"log"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -11,14 +13,14 @@ import (
 	"web_browser_baidu_onekey_upload/internal/downloader"
 )
 
-//go:embed index.html
-var indexPage []byte
-
 //go:embed index_ws.html
 var indexWS []byte
 
 //go:embed index_poll.html
 var indexPoll []byte
+
+//go:embed res/*
+var resFiles embed.FS
 
 type Server struct {
 	dl       *downloader.Downloader
@@ -44,6 +46,51 @@ func (s *Server) HandlePageWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) HandlePagePoll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(indexPoll)
+}
+
+// HandleRes 静态资源文件服务
+func (s *Server) HandleRes(w http.ResponseWriter, r *http.Request) {
+	// 移除前缀 /res/ 获取实际文件路径
+	path := strings.TrimPrefix(r.URL.Path, "/res/")
+
+	// 安全检查：防止路径遍历攻击
+	if strings.Contains(path, "..") {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// 从嵌入的文件系统中读取文件
+	content, err := resFiles.ReadFile("res/" + path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// 根据文件扩展名设置正确的 Content-Type
+	switch filepath.Ext(path) {
+	case ".css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".js":
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+	case ".jpg", ".jpeg":
+		w.Header().Set("Content-Type", "image/jpeg")
+	case ".gif":
+		w.Header().Set("Content-Type", "image/gif")
+	case ".svg":
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case ".ico":
+		w.Header().Set("Content-Type", "image/x-icon")
+	case ".woff":
+		w.Header().Set("Content-Type", "font/woff")
+	case ".woff2":
+		w.Header().Set("Content-Type", "font/woff2")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	w.Write(content)
 }
 
 type wsMessage struct {

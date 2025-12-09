@@ -4,25 +4,14 @@
     <meta charset="UTF-8">
     <title>百度网盘 NAS 下载监控 - 轮询兼容版</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/res/shared.css">
     <!-- 简化样式，复用主页面风格 -->
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: #f5f5f5; min-height: 100vh; padding: 20px; }
-        .container { max-width: 1000px; margin: 0 auto; }
-        .header { background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-        .header h1 { font-size: 22px; color: #333; margin-bottom: 8px; }
-        .tasks-container { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-        .task-item { background:#f8f9fa; border-radius:8px; padding:12px 15px; margin-bottom:10px; border-left:4px solid #667eea; }
-        .task-item.downloading { border-left-color:#4facfe; }
-        .task-item.done { border-left-color:#38ef7d; }
-        .task-item.failed { border-left-color:#f5576c; }
-        .task-name { font-size:14px; font-weight:600; margin-bottom:4px; }
-        .task-info { font-size:12px; color:#666; }
-        .status-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; margin-right:6px; }
-        .status-badge.downloading{background:#cfe2ff;color:#084298;}
-        .status-badge.done{background:#d1e7dd;color:#0f5132;}
-        .status-badge.failed{background:#f8d7da;color:#842029;}
-        .empty { text-align:center; color:#999; padding:40px 0; }
+        body { background: #f5f5f5; }
+        .header h1 { font-size: 22px; }
+        .task-info { font-size:12px; }
+        .status-badge { padding:2px 8px; border-radius:10px; font-size:11px; margin-right:6px; }
+        .empty { padding:40px 0; }
     </style>
 </head>
 <body>
@@ -44,61 +33,10 @@
         <div id="tasks-list" class="empty">正在加载...</div>
     </div>
 </div>
+<script src="/res/shared.js"></script>
 <script>
     // 添加全局变量存储排序方式，默认为文件名排序
     let currentSort = 'name';
-    
-    function formatBytes(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-    }
-    
-    function formatSpeed(bytesPerSecond) {
-        if (bytesPerSecond === 0) return '0 B/s';
-        const k = 1024;
-        const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-        const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
-        return Math.round(bytesPerSecond / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-    }
-    function formatTime(str) {
-        if (!str) return '—';
-        const d = new Date(str);
-        return d.toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    }
-    function getStatusBadge(status) {
-        const map={pending:'等待中',downloading:'下载中',done:'已完成',failed:'失败'};
-        return `<span class="status-badge ${status}">${map[status]||status}</span>`;
-    }
-    
-    // 添加排序函数
-    function sortTasks(tasks) {
-        switch(currentSort) {
-            case 'name':
-                return [...tasks].sort((a, b) => {
-                    const nameA = (a.path || a.server_filename || '').toLowerCase();
-                    const nameB = (b.path || b.server_filename || '').toLowerCase();
-                    return nameA.localeCompare(nameB);
-                });
-            case 'progress':
-                return [...tasks].sort((a, b) => {
-                    const progressA = a.size > 0 ? (a.progress / a.size) : 0;
-                    const progressB = b.size > 0 ? (b.progress / b.size) : 0;
-                    return progressB - progressA; // 降序排列，进度高的在前
-                });
-            case 'size':
-                return [...tasks].sort((a, b) => b.size - a.size); // 降序排列，大的在前
-            default:
-                // 默认使用文件名排序
-                return [...tasks].sort((a, b) => {
-                    const nameA = (a.path || a.server_filename || '').toLowerCase();
-                    const nameB = (b.path || b.server_filename || '').toLowerCase();
-                    return nameA.localeCompare(nameB);
-                });
-        }
-    }
     
     // 添加改变排序方式的函数
     function changeSort() {
@@ -113,7 +51,7 @@
             const tasks = data.tasks || [];
             
             // 对任务进行排序
-            const sortedTasks = sortTasks(tasks);
+            const sortedTasks = sortTasks(tasks, currentSort);
             
             const list = document.getElementById('tasks-list');
             if (sortedTasks.length===0){ list.innerHTML='<div class="empty">暂无任务</div>'; return; }

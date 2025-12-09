@@ -46,6 +46,7 @@ func main() {
 	http.HandleFunc("/", ui.HandlePageWS)
 	http.HandleFunc("/ws", ui.HandleWS)
 	http.HandleFunc("/poll", ui.HandlePagePoll)
+	http.HandleFunc("/res/", ui.HandleRes) // 使用单一处理器处理所有 /res/ 路径下的资源
 	http.HandleFunc("/api/health", handleHealth)
 	http.HandleFunc("/api/status", handleStatus)
 	http.HandleFunc("/api/scan", handleScan)
