@@ -1,5 +1,5 @@
 # 构建阶段
-FROM golang:1.21-alpine AS builder
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/golang:1.22-alpine AS builder
 
 # 设置工作目录
 WORKDIR /app
@@ -17,7 +17,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o baidu-downloader .
 
 # 最终阶段
-FROM alpine:latest
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/alpine:latest
 
 # 安装 ca-certificates 以支持 HTTPS 请求
 RUN apk --no-cache add ca-certificates
