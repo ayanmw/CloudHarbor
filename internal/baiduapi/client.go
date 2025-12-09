@@ -211,3 +211,49 @@ func (c *Client) RenameFile(path, newName string) error {
 
 	return nil
 }
+
+// DeleteFile 删除单个文件或空目录
+func (c *Client) DeleteFile(path string) error {
+	apiURL := "https://pan.baidu.com/rest/2.0/xpan/file"
+	params := url.Values{}
+	params.Set("method", "filemanager")
+	params.Set("access_token", c.AccessToken)
+	params.Set("opera", "delete")
+
+	opList := []map[string]string{
+		{
+			"path": path,
+		},
+	}
+	opListJSON, _ := json.Marshal(opList)
+
+	data := url.Values{}
+	data.Set("async", "0")
+	data.Set("filelist", string(opListJSON))
+
+	req, err := http.NewRequest("POST", apiURL+"?"+params.Encode(), strings.NewReader(data.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("删除请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var result struct {
+		Errno int `json:"errno"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("解析删除响应失败: %w, body=%s", err, string(body))
+	}
+
+	if result.Errno != 0 {
+		return fmt.Errorf("删除失败 errno=%d, body=%s", result.Errno, string(body))
+	}
+
+	return nil
+}

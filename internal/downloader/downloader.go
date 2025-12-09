@@ -14,7 +14,6 @@ import (
 	"web_browser_baidu_onekey_upload/internal/config"
 )
 
-// Task 下载任务
 type Task struct {
 	FileInfo   baiduapi.FileInfo
 	Status     string // pending, downloading, done, failed
@@ -25,12 +24,43 @@ type Task struct {
 	Progress   int64 // 已下载字节数
 }
 
+// DownloadMode 下载后处理模式
+// keep:  保留文件，重命名为 .可删除
+// delete: 下载完成后从网盘删除
+// mark_only: 仅重命名，不做其他处理（预留）
+type DownloadMode string
+
+const (
+	DownloadModeKeep   DownloadMode = "keep"
+	DownloadModeDelete DownloadMode = "delete"
+)
+
 // Downloader 下载器
 type Downloader struct {
-	cfg       *config.Config
-	client    *baiduapi.Client
-	tasks     map[int64]*Task // key: fs_id
-	taskMutex sync.RWMutex
+	cfg    *config.Config
+	client *baiduapi.Client
+	// ... existing code ...
+	tasks        map[int64]*Task // key: fs_id
+	taskMutex    sync.RWMutex
+	modeMutex    sync.RWMutex
+	downloadMode DownloadMode
+}
+
+// SetDownloadMode 设置下载后处理模式
+func (d *Downloader) SetDownloadMode(mode DownloadMode) {
+	d.modeMutex.Lock()
+	defer d.modeMutex.Unlock()
+	d.downloadMode = mode
+}
+
+// GetDownloadMode 获取当前下载模式
+func (d *Downloader) GetDownloadMode() DownloadMode {
+	d.modeMutex.RLock()
+	defer d.modeMutex.RUnlock()
+	if d.downloadMode == "" {
+		return DownloadModeKeep
+	}
+	return d.downloadMode
 }
 
 // NewDownloader 创建下载器
@@ -325,15 +355,24 @@ func (d *Downloader) downloadFile(fileInfo baiduapi.FileInfo) {
 		return
 	}
 
-	log.Printf("[Downloader] 文件写入完成，总计 %d 字节，预期 %d 字节", written, contentLen)
 	log.Printf("[Downloader] 下载完成: %s (size=%d/%d)", fileInfo.ServerFilename, written, contentLen)
 
-	// 重命名网盘文件加 .可删除 后缀
-	newName := fileInfo.ServerFilename + ".可删除"
-	log.Printf("[Downloader] 重命名网盘文件: %s -> %s", fileInfo.ServerFilename, newName)
-	if err := d.client.RenameFile(fileInfo.Path, newName); err != nil {
-		log.Printf("[Downloader] 重命名失败（不影响下载）: %v", err)
-		// 不视为失败，因为文件已经下载成功
+	// 根据下载模式处理网盘中的文件
+	mode := d.GetDownloadMode()
+	switch mode {
+	case DownloadModeDelete:
+		log.Printf("[Downloader] 模式=delete，删除网盘文件: %s", fileInfo.Path)
+		if err := d.client.DeleteFile(fileInfo.Path); err != nil {
+			log.Printf("[Downloader] 删除网盘文件失败（不影响本地下载）: %v", err)
+		}
+	case DownloadModeKeep:
+		fallthrough
+	default:
+		log.Printf("[Downloader] 模式=keep，重命名网盘文件: %s", fileInfo.ServerFilename)
+		newName := fileInfo.ServerFilename + ".可删除"
+		if err := d.client.RenameFile(fileInfo.Path, newName); err != nil {
+			log.Printf("[Downloader] 重命名失败（不影响下载）: %v", err)
+		}
 	}
 
 	d.updateTaskStatus(fileInfo.FsID, "done", "")

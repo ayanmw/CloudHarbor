@@ -1,6 +1,7 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -10,6 +11,9 @@ import (
 	"web_browser_baidu_onekey_upload/internal/config"
 	"web_browser_baidu_onekey_upload/internal/downloader"
 )
+
+//go:embed web/index.html
+var webFS embed.FS
 
 var (
 	cfg          *config.Config
@@ -38,6 +42,16 @@ func main() {
 	dl = downloader.NewDownloader(cfg, client)
 
 	// HTTP 路由
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// 从嵌入的文件系统读取 HTML
+		content, err := webFS.ReadFile("web/index.html")
+		if err != nil {
+			http.Error(w, "Page not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(content)
+	})
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/status", handleStatus)
 	http.HandleFunc("/scan", handleScan)
@@ -97,34 +111,29 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	// 转换为适合输出的格式
 	type TaskStatus struct {
-		FsID        int64  `json:"fs_id"`
-		Filename    string `json:"filename"`
-		Size        int64  `json:"size"`
-		Status      string `json:"status"`
-		LocalPath   string `json:"local_path,omitempty"`
-		Error       string `json:"error,omitempty"`
-		StartTime   string `json:"start_time,omitempty"`
-		FinishTime  string `json:"finish_time,omitempty"`
-		Progress    int64  `json:"progress,omitempty"`
-		ProgressPct int    `json:"progress_pct,omitempty"`
+		FsID           int64  `json:"fs_id"`
+		Path           string `json:"path"`
+		ServerFilename string `json:"server_filename"`
+		Size           int64  `json:"size"`
+		Status         string `json:"status"`
+		LocalPath      string `json:"local_path,omitempty"`
+		Error          string `json:"error,omitempty"`
+		StartTime      string `json:"start_time,omitempty"`
+		FinishTime     string `json:"finish_time,omitempty"`
+		Progress       int64  `json:"progress"`
 	}
 
 	statuses := make([]TaskStatus, 0, len(tasks))
 	for _, t := range tasks {
-		pct := 0
-		if t.FileInfo.Size > 0 {
-			pct = int(t.Progress * 100 / t.FileInfo.Size)
-		}
-
 		ts := TaskStatus{
-			FsID:        t.FileInfo.FsID,
-			Filename:    t.FileInfo.ServerFilename,
-			Size:        t.FileInfo.Size,
-			Status:      t.Status,
-			LocalPath:   t.LocalPath,
-			Error:       t.Error,
-			Progress:    t.Progress,
-			ProgressPct: pct,
+			FsID:           t.FileInfo.FsID,
+			Path:           t.FileInfo.Path,
+			ServerFilename: t.FileInfo.ServerFilename,
+			Size:           t.FileInfo.Size,
+			Status:         t.Status,
+			LocalPath:      t.LocalPath,
+			Error:          t.Error,
+			Progress:       t.Progress,
 		}
 
 		if !t.StartTime.IsZero() {
