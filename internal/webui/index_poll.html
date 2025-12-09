@@ -33,8 +33,7 @@
         <div style="margin: 8px 0;">
             <span style="font-size: 13px; color: #666; margin-right: 10px;">排序:</span>
             <select id="sort-select" onchange="changeSort()" style="font-size: 12px; padding: 2px 6px; border-radius: 4px; border: 1px solid #ddd;">
-                <option value="default">默认(按添加时间)</option>
-                <option value="name">文件名</option>
+                <option value="name" selected>文件名</option>
                 <option value="progress">下载进度</option>
                 <option value="size">文件大小</option>
             </select>
@@ -46,8 +45,8 @@
     </div>
 </div>
 <script>
-    // 添加全局变量存储排序方式
-    let currentSort = 'default';
+    // 添加全局变量存储排序方式，默认为文件名排序
+    let currentSort = 'name';
     
     function formatBytes(bytes) {
         if (bytes === 0) return '0 B';
@@ -84,7 +83,12 @@
             case 'size':
                 return [...tasks].sort((a, b) => b.size - a.size); // 降序排列，大的在前
             default:
-                return tasks; // 默认顺序
+                // 默认使用文件名排序
+                return [...tasks].sort((a, b) => {
+                    const nameA = (a.path || a.server_filename || '').toLowerCase();
+                    const nameB = (b.path || b.server_filename || '').toLowerCase();
+                    return nameA.localeCompare(nameB);
+                });
         }
     }
     
