@@ -1,0 +1,154 @@
+<div class="bd-left">
+                     
+    <div node-type="module" class="module-share-header">
+
+    <div class="slide-show-header clearfix">
+        <div class="slide-show-user-info module-share-person-info">
+            <div class="share-person-inner">
+                <!-- 头像 -->
+                <div class="share-person-avatar theme-share-page-head" style="border-color: rgb(248, 224, 181);">
+                    
+                        <a href="//pan.baidu.com/buy/center?tag=1&amp;from=sicon" class="svip-icon sicon" target="_blank"><em></em></a>
+                    
+                    <a href="javascript:void(0)" title="去Ta的分享主页" class="person-icon">
+                        <img class="theme-share-page-head" alt="de***ki" src="https://himg.bdimg.com/sys/portrait/item/public.1.90e1d8fd.ei_WvhNJOx_8V0J_9gF11g.jpg" style="border-color: rgb(248, 224, 181);">
+                        <span class="cert-info"></span>
+                    </a>
+                </div>
+                <!-- 用户名，vip图标 -->
+                <div class="share-person-data self">
+                    <div class="share-person-data-top">
+                        <a href="javascript:;" class="share-person-username global-ellipsis theme-share-page-name" style="color: rgb(64, 34, 0);">
+                            de***ki
+                        </a>
+                        
+                        <a href="//pan.baidu.com/buy/center?tag=8&amp;from=sicon" class="svip-icon sicon vipicon-2-9 vipicon" target="_blank"><em></em></a>
+                        
+                    </div>
+                </div>
+                <!-- 加好友按钮 -->
+                
+                
+                
+                    <div class="verify-friend theme-share-page-name-hover" style="background: rgb(255, 213, 140); color: rgb(64, 34, 0);">加为好友</div>
+                
+            </div>
+        </div>
+        <div class="slide-show-left v20">
+            <div class="files-icon-v20 dir"><img src="https://staticsns.cdn.bcebos.com/amis/2024-8/1722592402960/%E6%96%87%E4%BB%B6%E5%A4%B9%20(2).png"></div>
+            <div>
+                <h2 class="file-name v20" title=""><img style="vertical-align: top;" src="data:image/png;base64,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"></h2>
+                <div class="slide-show-other-infos">
+                    <div class="share-file-info v20">
+                        <span>2024-06-05 16:27</span>
+                    </div>
+                    <div class="risk-label">
+                        <div class="risk-tooltip">
+                            <div class="risk-tooltip-inner">
+                                部分文件违规，已被过滤
+                            </div>
+                        </div>
+                    </div>
+                    
+                        
+                            <div class="share-valid-check v20">过期时间：永久有效</div>
+                        
+                    
+                    <div class="report-bad">
+                        <svg width="14" height="15" viewBox="0 0 14 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <g clip-path="url(#clip0_1_4521)">
+                            <path d="M12.353 11.0926H1.64691" stroke="#030B1A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path>
+                            <path d="M2.38959 10.8268V6.61982C2.38959 4.29675 4.40562 2.41281 6.89171 2.41281C9.3778 2.41281 11.3938 4.29675 11.3938 6.61982V10.8268" stroke="#030B1A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path>
+                            <path d="M6.55655 5.44748L5.94135 7.05517H7.84305L7.22614 8.64078" stroke="#030B1A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path>
+                            </g>
+                            <defs>
+                            <clipPath id="clip0_1_4521">
+                            <rect width="14" height="14" fill="white" transform="translate(-6.10352e-05 0.378876)"></rect>
+                            </clipPath>
+                            </defs>
+                        </svg>举报
+                    </div>
+                    <div class="cert-user-share-list">来自企业的分享</div>
+                    <div class="cert-user-share-bind-info">
+                        <span class="cert-user-share-bind-info-head"></span>
+                        <span class="cert-user-share-bind-info-tail">已失效</span>
+                    </div>
+                    <div class="verify-user-protect-share-list icon icon-share-lock" style="display: none">
+                        <span class="verify-user-protect-share-list-text">密享</span>
+                    </div>
+                    
+
+                    <div class="slide-show-other-cns clearfix">
+                    <span class="title-funcs">
+                        
+                        <span class="funcs-share-area">
+                        </span>
+                    </span>
+                    </div>
+                    <div class="cb"></div>
+                </div>
+            </div>
+        </div>
+        <div class="slide-show-center">
+            
+                <div class="subscribe-btn" style="display: block; right: 183px; bottom: 32px;"><em class="icon noicon pdr3px noicon-yidingyue" title="已订阅"></em>已订阅</div>
+                <div class="subscribe-tips" style="right: 32px; bottom: -9px;">订阅后链接内容更新时您将收到实时通知</div>
+            
+        </div>
+        <div class="slide-show-right">
+            <span class="slide-header-funcs">
+            </span>
+            <div class="module-share-top-bar g-clearfix new-disk-share-bar">
+                
+                    <div class="bar" style="white-space: nowrap; position: relative;"><div class="button-box-mark" style="display:inline-block;*display:inline;*zoom:1;width:1px;height:1px;line-height:0;"></div><div class="x-button-box" node-type="undefined" style="position:absolute;top:0;line-height:normal;padding-top:0px;"><div style="display:none;width:100%;height:100%;z-index:30;position:absolute;top:0;left:0;"></div><a class="g-button tools-share-V20-btn hassep" data-button-id="b7" data-button-index="3" href="javascript:;" title="手机看" node-type="qrCode"><span class="g-button-right"><em class="icon noicon-shouji" title="手机看"></em><span class="text" style="width: auto;">手机看</span></span></a><a class="g-button tools-share-V20-btn hassep new-disk-call-client" data-button-id="b9" data-button-index="4" href="javascript:;" title="电脑端看" node-type="pcCallClient"><span class="g-button-right"><em class="icon noicon-pc" title="电脑端看"></em><span class="text" style="width: auto;">电脑端看</span></span><img src="https://staticsns.cdn.bcebos.com/amis/2025-9/1756822572307/50g2x.png" class="new-disk-call-client-img"></a><span class="g-dropdown-button  tools-more" style="display: none;"><a class="g-button " data-button-id="b11" data-button-index="" href="javascript:;" title="更多" node-type=""><span class="g-button-right"><em class="icon icon-more" title="更多"></em><span class="text" style="width: auto;">更多</span></span></a><span class="menu" style="width: 78px;"><a style="display:none;" data-menu-id="b-menu0" class="g-button-menu g-menu-hasIcon" href="javascript:;"><em class="icon noicon-shouji"></em>手机看</a><a style="display:none;" data-menu-id="b-menu1" class="g-button-menu g-menu-hasIcon" href="javascript:;"><em class="icon noicon-pc"></em>电脑端看</a></span></span></div></div>
+                
+            </div>
+        </div>
+        <div class="cb"></div>
+    </div>
+</div>
+
+                    
+    <div class="share-list" id="shareqr">
+        <div class="module-toolbar g-clearfix">
+    <div class="default-dom">
+        <div class="list-grid-switch list-switched-on">
+            <a class="list-switch" href="javascript:void(0)" node-type="sypnkVRo" style="display:none"></a>
+            <a class="grid-switch" href="javascript:void(0)" node-type="ecwDEG"></a>
+        </div>
+    </div>
+    <div class="after-dom"></div>
+    <div class="user-dom" style="display: none;">
+    </div>
+</div>
+
+
+<!--[if IE]><iframe id="historyIFrameEmulator" style="display: none"></iframe><![endif]-->
+<div node-type="KPDwCE" class="KPDwCE" style="height: 570px;"><div node-type="JDeHdxb" class="JDeHdxb"><span class="EgMMec">全部文件</span><span class="FcucHsb">已全部加载，共1个</span><ul class="FuIxtL" node-type="FuIxtL" style="display: none;"><li><a data-deep="-1" href="javascript:;">返回上一级</a><span class="EKIHPEb">|</span></li><li node-type="tbAudfb"></li></ul></div><div class="QxJxtg cazEfA"><div class="xGLMIab"><ul class="QAfdwP tvPMvPb" node-type="tvPMvPb"><li data-key="server_filename" class="fufHyA yfHIsP  EzubGg" style="width:60%;"><div node-type="fydGNC" class="Qxyfvg fydGNC"><span class="zbyDdwb"></span><span class="MIMvNNb">全选</span><span class="icon NbKJexb icon-checksmall"></span></div><span class="text">文件名</span><span class="xEuDywb"></span><span class="icon aHEytd icon-up"></span><span class="icon sFxCFbb icon-downtitle"></span></li><li data-key="size" class="fufHyA " style="width:16%;"><span class="text">大小</span><span class="xEuDywb"></span><span class="icon aHEytd icon-up"></span><span class="icon sFxCFbb icon-downtitle"></span></li><li data-key="time" class="fufHyA gObdAzb " style="width:23%;"><span class="text">修改日期</span><span class="xEuDywb"></span><span class="icon aHEytd icon-up"></span><span class="icon sFxCFbb icon-downtitle"></span></li></ul><ul class="vwCPvP tvPMvPb" node-type="tvPMvPb" style="display: none;"><li class="fufHyA yfHIsP EzubGg"><div node-type="fydGNC" class="Qxyfvg fydGNC"><span class="zbyDdwb"></span><span class="MIMvNNb">全选</span><span class="icon NbKJexb icon-checksmall"></span></div></li></ul><div class="FcQMwt global-clearfix"><span class="MdLxwM">已选中1个文件/文件夹</span><div class="KKtwaH" style="white-space: nowrap; position: relative;"><div class="button-box-mark" style="display:inline-block;*display:inline;*zoom:1;width:1px;height:1px;line-height:0;"></div><div class="x-button-box" node-type="undefined" style="position: absolute; top: 0px; line-height: normal; padding-top: 11px; display: block; visibility: visible; width: 815.469px; padding-left: 147.531px;"><div style="display:none;width:100%;height:100%;z-index:30;position:absolute;top:0;left:0;"></div><a class="g-button tools-share-V20-btn hassep first_btn last_btn last-button" data-button-id="b21" data-button-index="4" href="javascript:;" title="云打印" node-type="shareYunPrint" style="display: none;"><span class="g-button-right"><em class="icon noicon-yundayin" title="云打印"></em><span class="text" style="width: auto;">云打印</span></span></a><span class="g-dropdown-button  tools-more" style="display: none;"><a class="g-button " data-button-id="b23" data-button-index="" href="javascript:;" title="更多" node-type=""><span class="g-button-right"><em class="icon icon-more" title="更多"></em><span class="text" style="width: auto;">更多</span></span></a><span class="menu" style="width: 78px;"><a style="display:none;" data-menu-id="b-menu0" class="g-button-menu g-menu-hasIcon g-disabled" href="javascript:;"><em class="icon noicon-yundayin"></em>云打印</a></span></span></div></div></div></div></div><div class="zJMtAEb" style=""><div node-type="NHcGw" class="NHcGw" style="overflow-y: auto; height: 495px;"><div class="vdAfKMb" style="height: auto;"><dd class="g-clearfix AuPKyz JS-item-active open-enable" _position="0" _cmd_installed="1" _installed="1"><span node-type="EOGexf" class="EOGexf"></span><div class="JS-fileicon dir-small"></div><div class="file-name" style="width:60%"><div class="text"><a href="javascript:void(0);" class="filename" title="2_新手之跃">2_新手之跃</a></div><div class="sybxeNb"><div class="button-box-mark" style="display:inline-block;*display:inline;*zoom:1;width:1px;height:1px;line-height:0;"></div><div class="x-button-box" node-type="undefined" style="position:absolute;top:0;line-height:normal;padding-top:;"><div style="display:none;width:100%;height:100%;z-index:30;position:absolute;top:0;left:0;"></div><a class="g-button tools-share-unzip icon-share-V20-btn unzip_btn" data-button-id="b13" data-button-index="1" href="javascript:;" title="云解压" node-type="" style="display: none;"><span class="g-button-right"><em class="icon noicon-unzip_icon" title="云解压"></em><span class="text" style="width: auto;">云解压</span></span></a><a class="g-button " data-button-id="b15" data-button-index="2" href="javascript:;" title="下载" node-type=""><span class="g-button-right"><em class="icon noicon-xiazai" title="下载"></em><span class="text" style="width: auto;">下载</span></span></a><a class="g-button " data-button-id="b17" data-button-index="8" href="javascript:;" title="保存到我的百度网盘" node-type="shareSave"><span class="g-button-right"><em class="icon noicon-zhuancun_lan" title="保存到我的百度网盘"></em><span class="text" style="width: auto;">保存到我的百度网盘</span></span></a><span class="g-dropdown-button  tools-more" style="display: none;"><a class="g-button " data-button-id="b19" data-button-index="" href="javascript:;" title="更多" node-type=""><span class="g-button-right"><em class="icon icon-more" title="更多"></em><span class="text" style="width: auto;">更多</span></span></a><span class="menu" style="width: 78px;"><a style="display:none;" data-menu-id="b-menu0" class="g-button-menu g-menu-hasIcon" href="javascript:;"><em class="icon noicon-unzip_icon"></em>云解压</a><a style="display:none;" data-menu-id="b-menu1" class="g-button-menu g-menu-hasIcon" href="javascript:;"><em class="icon noicon-xiazai"></em>下载</a><a style="display:none;" data-menu-id="b-menu2" class="g-button-menu g-menu-hasIcon" href="javascript:;"><em class="icon noicon-zhuancun_lan"></em>保存到我的百度网盘</a></span></span></div></div></div><div class="file-size" style="width:16%">-</div><div class="ctime" style="width:23%">2024-06-05 16:26</div><div class="path-info" style="width:0%"><span class="search-feild" node-type="lspaka1g"></span></div></dd></div></div></div><div class="fyQgAEb" style="display: none;"><div node-type="BNfIyPb" class="BNfIyPb" style="height: 495px;"><div class="JKvHJMb"></div></div></div><div class="wPQwLCb" style="visibility: hidden;"><div class="gQNsDv"><svg class="spinner" width="26px" height="26px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30" style="stroke:#09aaff"></circle></svg></div></div></div>
+    </div>
+    <div class="ad-platform-tips ad-multi-tips" node-type="share-mutil-bottom" id="web-multi-bottom" node-id="web-sharemultibanner" style="display: none;">
+        <div style="margin: 0 auto; width: 960px;" id="cpro_u2164871"></div>
+    </div>
+    
+    
+        <div class="module-share-bottom-bar share-bottom-btns">
+    <div class="bottom-save-path-wrap">
+        <div class="bottom-save-path">保存到：
+            <div class="save-path">我的网盘/NAS_Download_Queue</div>
+        </div>
+        <div class="bottom-save-path-icon"></div>
+    </div>
+    <div class="bar" style="white-space: nowrap; position: relative;">
+        <div class="bar-tooltip">
+            <div class="bar-tooltip-inner">
+                保存和下载移动到这里啦
+                <div class="bar-tooltip-close-btn"></div>
+            </div>
+        </div>
+    <div class="button-box-mark" style="display:inline-block;*display:inline;*zoom:1;width:1px;height:1px;line-height:0;"></div><div class="x-button-box" node-type="undefined" style="position:absolute;top:0;line-height:normal;padding-top:0px;"><div style="display:none;width:100%;height:100%;z-index:30;position:absolute;top:0;left:0;"></div><a class="g-button tools-share-save-hb tools-share-V20-btn save_btn bottom_save_btn" data-button-id="b1" data-button-index="1" href="javascript:;" title="保存到网盘" node-type="bottomShareSave"><img src="https://staticwx.cdn.bcebos.com/mini-program%2Fimages%2Ftrans_btn_tag_lhb.png" class="btn-img-tips"><span class="g-button-right"><span class="text" style="width: auto;">保存到网盘</span></span></a><a class="g-button tools-share-V20-btn  bottom_download_btn" data-button-id="b3" data-button-index="2" href="javascript:;" title="下载" node-type=""><span class="g-button-right"><span class="text" style="width: auto;">下载</span></span></a><span class="g-dropdown-button  tools-more" style="display: none;"><a class="g-button " data-button-id="b5" data-button-index="" href="javascript:;" title="更多" node-type=""><span class="g-button-right"><em class="icon icon-more" title="更多"></em><span class="text" style="width: auto;">更多</span></span></a><span class="menu" style="width: 78px;"><a style="display:none;" data-menu-id="b-menu0" class="g-button-menu " href="javascript:;">保存到网盘</a><a style="display:none;" data-menu-id="b-menu1" class="g-button-menu " href="javascript:;">下载</a></span></span></div></div>
+</div>
+    
+ 
+    
+
+                </div>
