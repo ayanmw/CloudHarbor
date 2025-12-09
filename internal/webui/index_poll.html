@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>百度网盘 NAS 下载监控 - 轮询兼容版</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- 简化样式，复用主页面风格 -->
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: #f5f5f5; min-height: 100vh; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .header { background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .header h1 { font-size: 22px; color: #333; margin-bottom: 8px; }
+        .tasks-container { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .task-item { background:#f8f9fa; border-radius:8px; padding:12px 15px; margin-bottom:10px; border-left:4px solid #667eea; }
+        .task-item.downloading { border-left-color:#4facfe; }
+        .task-item.done { border-left-color:#38ef7d; }
+        .task-item.failed { border-left-color:#f5576c; }
+        .task-name { font-size:14px; font-weight:600; margin-bottom:4px; }
+        .task-info { font-size:12px; color:#666; }
+        .status-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; margin-right:6px; }
+        .status-badge.downloading{background:#cfe2ff;color:#084298;}
+        .status-badge.done{background:#d1e7dd;color:#0f5132;}
+        .status-badge.failed{background:#f8d7da;color:#842029;}
+        .empty { text-align:center; color:#999; padding:40px 0; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>百度网盘 NAS 下载监控（轮询兼容版）</h1>
+        <p style="font-size:13px;color:#666;">每 2 秒请求一次 /status 接口获取任务列表。</p>
+        <p style="font-size:13px;color:#666;">主站点（WebSocket 实时版）：<a href="/" target="_blank">/</a></p>
+    </div>
+    <div class="tasks-container">
+        <div id="tasks-list" class="empty">正在加载...</div>
+    </div>
+</div>
+<script>
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    }
+    function formatTime(str) {
+        if (!str) return '—';
+        const d = new Date(str);
+        return d.toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    }
+    function getStatusBadge(status) {
+        const map={pending:'等待中',downloading:'下载中',done:'已完成',failed:'失败'};
+        return `<span class="status-badge ${status}">${map[status]||status}</span>`;
+    }
+    async function fetchStatus() {
+        try {
+            const res = await fetch('/status');
+            const data = await res.json();
+            const tasks = data.tasks || [];
+            const list = document.getElementById('tasks-list');
+            if (tasks.length===0){ list.innerHTML='<div class="empty">暂无任务</div>'; return; }
+            list.innerHTML = tasks.map(t=>`
+<div class="task-item ${t.status}">
+  <div class="task-name">${getStatusBadge(t.status)} ${t.path || t.server_filename}</div>
+  <div class="task-info">
+    <div>大小：${formatBytes(t.size)}</div>
+    <div>开始：${formatTime(t.start_time)}${t.finish_time?`， 完成：${formatTime(t.finish_time)}`:''}</div>
+    ${t.local_path?`<div>本地：${t.local_path}</div>`:''}
+    ${t.error?`<div style="color:#f5576c;">错误：${t.error}</div>`:''}
+  </div>
+</div>`).join('');
+        } catch (e) {
+            document.getElementById('tasks-list').innerHTML = '<div class="empty" style="color:#f5576c;">获取状态失败</div>';
+        }
+    }
+    fetchStatus();
+    setInterval(fetchStatus, 2000);
+</script>
+</body>
+</html>

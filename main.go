@@ -1,7 +1,6 @@
 package main
 
 import (
-	"embed"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -10,14 +9,13 @@ import (
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/config"
 	"web_browser_baidu_onekey_upload/internal/downloader"
+	"web_browser_baidu_onekey_upload/internal/webui"
 )
-
-//go:embed web/index.html
-var webFS embed.FS
 
 var (
 	cfg          *config.Config
 	dl           *downloader.Downloader
+	ui           *webui.Server
 	lastScanTime time.Time
 )
 
@@ -41,17 +39,13 @@ func main() {
 	// 创建下载器
 	dl = downloader.NewDownloader(cfg, client)
 
+	// 创建 WebUI 服务器
+	ui = webui.NewServer(dl)
+
 	// HTTP 路由
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// 从嵌入的文件系统读取 HTML
-		content, err := webFS.ReadFile("web/index.html")
-		if err != nil {
-			http.Error(w, "Page not found", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(content)
-	})
+	http.HandleFunc("/", ui.HandlePageWS)
+	http.HandleFunc("/poll", ui.HandlePagePoll)
+	http.HandleFunc("/ws", ui.HandleWS)
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/status", handleStatus)
 	http.HandleFunc("/scan", handleScan)
