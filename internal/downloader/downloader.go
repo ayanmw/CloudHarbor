@@ -176,18 +176,24 @@ func (d *Downloader) downloadFileToPath(fileInfo baiduapi.FileInfo, localDir str
 	log.Printf("[Downloader] 开始下载: %s -> %s", fileInfo.Path, localPath)
 	rc, contentLen, err := d.client.DownloadFile(dlink)
 	if err != nil {
+		log.Printf("[Downloader] 下载文件失败: %v", err)
 		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("下载文件失败: %v", err))
 		return
 	}
 	defer rc.Close()
 
+	log.Printf("[Downloader] 下载流已获取，预期大小: %d 字节，开始写入文件", contentLen)
+
 	// 写入本地文件
 	outFile, err := os.Create(localPath)
 	if err != nil {
+		log.Printf("[Downloader] 创建本地文件失败: %v", err)
 		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("创建本地文件失败: %v", err))
 		return
 	}
 	defer outFile.Close()
+
+	log.Printf("[Downloader] 本地文件已创建，开始复制数据")
 
 	// 带进度的复制
 	buf := make([]byte, 32*1024)
@@ -264,18 +270,24 @@ func (d *Downloader) downloadFile(fileInfo baiduapi.FileInfo) {
 	log.Printf("[Downloader] 开始下载: %s -> %s", fileInfo.ServerFilename, localPath)
 	rc, contentLen, err := d.client.DownloadFile(dlink)
 	if err != nil {
+		log.Printf("[Downloader] 下载文件失败: %v", err)
 		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("下载文件失败: %v", err))
 		return
 	}
 	defer rc.Close()
 
+	log.Printf("[Downloader] 下载流已获取，预期大小: %d 字节", contentLen)
+
 	// 写入本地文件
 	outFile, err := os.Create(localPath)
 	if err != nil {
+		log.Printf("[Downloader] 创建本地文件失败: %v", err)
 		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("创建本地文件失败: %v", err))
 		return
 	}
 	defer outFile.Close()
+
+	log.Printf("[Downloader] 本地文件已创建，开始复制数据")
 
 	// 带进度的复制
 	buf := make([]byte, 32*1024)
@@ -308,10 +320,12 @@ func (d *Downloader) downloadFile(fileInfo baiduapi.FileInfo) {
 	}
 
 	if err != nil {
+		log.Printf("[Downloader] 写入文件失败: %v，已写入 %d 字节", err, written)
 		d.updateTaskStatus(fileInfo.FsID, "failed", fmt.Sprintf("写入文件失败: %v", err))
 		return
 	}
 
+	log.Printf("[Downloader] 文件写入完成，总计 %d 字节，预期 %d 字节", written, contentLen)
 	log.Printf("[Downloader] 下载完成: %s (size=%d/%d)", fileInfo.ServerFilename, written, contentLen)
 
 	// 重命名网盘文件加 .可删除 后缀

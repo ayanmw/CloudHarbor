@@ -94,7 +94,7 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 	fmt.Printf("[BaiduAPI] 获取下载链接响应: %s\n", string(body))
-	
+
 	var result struct {
 		Errno     int    `json:"errno"`
 		ErrorCode int    `json:"error_code"`
@@ -103,7 +103,7 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 			Dlink string `json:"dlink"`
 		} `json:"list"`
 	}
-	
+
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("解析下载链接响应失败: %w, body=%s", err, string(body))
 	}
@@ -112,7 +112,7 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 	if result.ErrorCode != 0 {
 		return "", fmt.Errorf("获取下载链接失败 error_code=%d, error_msg=%s", result.ErrorCode, result.ErrorMsg)
 	}
-	
+
 	if result.Errno != 0 {
 		return "", fmt.Errorf("获取下载链接失败 errno=%d", result.Errno)
 	}
@@ -130,8 +130,12 @@ func (c *Client) DownloadFile(dlink string) (io.ReadCloser, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	req.Header.Set("User-Agent", "pan.baidu.com")
 
+	// 设置必要的请求头
+	req.Header.Set("User-Agent", "pan.baidu.com")
+	req.Header.Set("Referer", "https://pan.baidu.com")
+
+	fmt.Printf("[BaiduAPI] 开始下载文件: %s\n", dlink)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("下载文件请求失败: %w", err)
@@ -139,9 +143,12 @@ func (c *Client) DownloadFile(dlink string) (io.ReadCloser, int64, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return nil, 0, fmt.Errorf("下载文件失败 status=%d", resp.StatusCode)
+		// 读取错误响应体
+		body, _ := io.ReadAll(resp.Body)
+		return nil, 0, fmt.Errorf("下载文件失败 status=%d, body=%s", resp.StatusCode, string(body))
 	}
 
+	fmt.Printf("[BaiduAPI] 下载响应成功，Content-Length=%d\n", resp.ContentLength)
 	return resp.Body, resp.ContentLength, nil
 }
 
