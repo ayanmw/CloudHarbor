@@ -97,6 +97,14 @@
         return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
     }
 
+    function formatSpeed(bytesPerSecond) {
+        if (bytesPerSecond === 0) return '0 B/s';
+        const k = 1024;
+        const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+        const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
+        return Math.round(bytesPerSecond / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    }
+
     function formatTime(str) {
         if (!str) return '—';
         const d = new Date(str);
@@ -165,7 +173,7 @@
   <div class="task-name">${getStatusBadge(t.status)} ${t.path || t.server_filename}</div>
   ${t.status === 'downloading' ? `
   <div class="progress-bar"><div class="progress-fill" style="width:${progress.toFixed(1)}%"></div></div>
-  <div style="font-size:13px;color:#666;margin-top:5px;">${progressText} (${progress.toFixed(1)}%)</div>
+  <div style="font-size:13px;color:#666;margin-top:5px;">${progressText} (${progress.toFixed(1)}%)${t.speed ? ` @ ${formatSpeed(t.speed)}` : ''}</div>
   ` : ''}
   <div class="task-info">
     <div class="task-info-item"><strong>文件大小:</strong> ${formatBytes(t.size)}</div>
