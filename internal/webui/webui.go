@@ -11,6 +11,9 @@ import (
 	"web_browser_baidu_onekey_upload/internal/downloader"
 )
 
+//go:embed index.html
+var indexPage []byte
+
 //go:embed index_ws.html
 var indexWS []byte
 
@@ -29,6 +32,12 @@ func NewServer(dl *downloader.Downloader) *Server {
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
 	}
+}
+
+// HandlePage 返回主页面
+func (s *Server) HandlePage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexPage)
 }
 
 // HandlePageWS 返回 WebSocket 版本页面

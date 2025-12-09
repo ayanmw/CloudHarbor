@@ -43,9 +43,9 @@ func main() {
 	ui = webui.NewServer(dl)
 
 	// HTTP 路由
-	http.HandleFunc("/", ui.HandlePageWS)
-	http.HandleFunc("/poll", ui.HandlePagePoll)
+	http.HandleFunc("/", ui.HandlePage)
 	http.HandleFunc("/ws", ui.HandleWS)
+	http.HandleFunc("/poll", ui.HandlePagePoll)
 	http.HandleFunc("/api/health", handleHealth)
 	http.HandleFunc("/api/status", handleStatus)
 	http.HandleFunc("/api/scan", handleScan)
