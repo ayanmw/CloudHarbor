@@ -107,28 +107,117 @@ go build -o get_token main.go
 2. 登录百度账号并授权
 3. 工具会自动获取并显示 Access Token 和 Refresh Token
 
-### 运行方式
-```bash
-# 构建主程序
-go build -o baidu-downloader main.go
+### Docker 部署
 
-# 运行
-./baidu-downloader
+#### 使用 Docker 命令直接运行
+```bash
+# 构建镜像
+docker build -t baidu-nas-downloader .
+
+# 运行容器
+docker run -d \
+  --name baidu-nas-downloader \
+  -p 8080:8080 \
+  -e BAIDU_ACCESS_TOKEN=your_access_token \
+  -e BAIDU_APP_KEY=your_app_key \
+  -e BAIDU_SECRET_KEY=your_secret_key \
+  -v $(pwd)/downloads:/下载 \
+  -v $(pwd)/queue:/NAS_Download_Queue \
+  baidu-nas-downloader
 ```
 
-### Docker 部署
-```dockerfile
-# Dockerfile 示例
-FROM golang:alpine AS builder
-WORKDIR /app
-COPY . .
-RUN go build -o baidu-downloader .
+#### 使用 Docker Compose（推荐）
+项目提供了 `docker-compose.yml` 文件，可以更方便地部署：
 
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
-WORKDIR /root/
-COPY --from=builder /app/baidu-downloader .
-CMD ["./baidu-downloader"]
+```bash
+# 设置环境变量
+export BAIDU_ACCESS_TOKEN=your_access_token
+export BAIDU_APP_KEY=your_app_key
+export BAIDU_SECRET_KEY=your_secret_key
+
+# 启动服务
+docker-compose up -d
+```
+
+### Kubernetes 部署
+
+#### 创建 Deployment 和 Service
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: baidu-nas-downloader
+  labels:
+    app: baidu-nas-downloader
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: baidu-nas-downloader
+  template:
+    metadata:
+      labels:
+        app: baidu-nas-downloader
+    spec:
+      containers:
+      - name: baidu-nas-downloader
+        image: your-registry/baidu-nas-downloader:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: BAIDU_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: baidu-secrets
+              key: access-token
+        - name: BAIDU_APP_KEY
+          valueFrom:
+            secretKeyRef:
+              name: baidu-secrets
+              key: app-key
+        - name: BAIDU_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: baidu-secrets
+              key: secret-key
+        volumeMounts:
+        - name: downloads-volume
+          mountPath: /下载
+        - name: queue-volume
+          mountPath: /NAS_Download_Queue
+      volumes:
+      - name: downloads-volume
+        persistentVolumeClaim:
+          claimName: downloads-pvc
+      - name: queue-volume
+        persistentVolumeClaim:
+          claimName: queue-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: baidu-nas-downloader
+spec:
+  selector:
+    app: baidu-nas-downloader
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+  type: LoadBalancer
+```
+
+#### 创建 Secrets
+```bash
+kubectl create secret generic baidu-secrets \
+  --from-literal=access-token=your_access_token \
+  --from-literal=app-key=your_app_key \
+  --from-literal=secret-key=your_secret_key
+```
+
+#### 应用配置
+```bash
+kubectl apply -f deployment.yaml
 ```
 
 ## 使用流程
@@ -153,6 +242,8 @@ CMD ["./baidu-downloader"]
 ├── .env.example           # 环境变量示例
 ├── go.mod/go.sum          # Go 模块依赖
 ├── main.go               # 主程序入口
+├── Dockerfile            # Docker 镜像构建文件
+├── docker-compose.yml    # Docker Compose 配置文件
 └── tampermonkey_baidupan_nas_queue.user.js  # 油猴脚本
 ```
 
