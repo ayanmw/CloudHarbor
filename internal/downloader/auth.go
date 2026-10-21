@@ -37,6 +37,9 @@ func (d *Downloader) sourceOperationClient(ctx context.Context, info baiduapi.Fi
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if d.queue.blockedIntakes[info.Path] {
+		return nil, ErrIntakeUnconfirmed
+	}
 	if !d.authenticationReadyLocked() || (d.authManaged && d.queue.eligible[info.FsID] != info) {
 		return nil, ErrAuthenticationWaiting
 	}

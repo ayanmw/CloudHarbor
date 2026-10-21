@@ -48,28 +48,33 @@ const (
 )
 
 type Downloader struct {
-	ctx          context.Context
-	cancel       context.CancelFunc
-	queue        *scheduler
-	cfg          *config.Config
-	client       *baiduapi.Client
-	clientMutex  sync.RWMutex
-	authManaged  bool
-	authReady    bool
-	authExpiry   time.Time
-	authEpoch    uint64
-	onRejected   func(string)
-	tasks        map[int64]*Task
-	taskMutex    sync.RWMutex
-	scanMutex    sync.Mutex
-	inFlight     map[int64]bool
-	modeMutex    sync.RWMutex
-	downloadMode DownloadMode
+	ctx           context.Context
+	cancel        context.CancelFunc
+	queue         *scheduler
+	cfg           *config.Config
+	client        *baiduapi.Client
+	clientMutex   sync.RWMutex
+	authManaged   bool
+	authReady     bool
+	authExpiry    time.Time
+	authEpoch     uint64
+	onRejected    func(string)
+	tasks         map[int64]*Task
+	taskMutex     sync.RWMutex
+	scanMutex     sync.Mutex
+	cloudMutex    sync.RWMutex
+	intakeMutex   sync.RWMutex
+	intakeBoot    string
+	intakeJournal intakeJournal
+	intakes       map[string]intakeRecord
+	inFlight      map[int64]bool
+	modeMutex     sync.RWMutex
+	downloadMode  DownloadMode
 }
 
 func NewDownloader(cfg *config.Config, client *baiduapi.Client) *Downloader {
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &Downloader{cfg: cfg, client: client, tasks: make(map[int64]*Task), inFlight: make(map[int64]bool), ctx: ctx, cancel: cancel}
+	d := &Downloader{cfg: cfg, client: client, tasks: make(map[int64]*Task), inFlight: make(map[int64]bool), ctx: ctx, cancel: cancel, intakes: make(map[string]intakeRecord)}
 	d.queue = newScheduler(d)
 	return d
 }
@@ -119,6 +124,8 @@ func (d *Downloader) ScanAndDownload() error {
 		return nil
 	}
 	defer d.scanMutex.Unlock()
+	d.cloudMutex.RLock()
+	defer d.cloudMutex.RUnlock()
 	if err := d.ctx.Err(); err != nil {
 		return err
 	}
@@ -284,6 +291,8 @@ func (d *Downloader) downloadLocalFile(ctx context.Context, info baiduapi.FileIn
 }
 
 func (d *Downloader) postprocess(ctx context.Context, info baiduapi.FileInfo, mode DownloadMode) error {
+	d.cloudMutex.RLock()
+	defer d.cloudMutex.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -316,7 +325,7 @@ func (d *Downloader) GetTasks() []*Task {
 		job := d.queue.jobs[copy.FileInfo.FsID]
 		if copy.Root && job != nil && !d.queue.stopping && d.queue.err == nil && d.ctx.Err() == nil {
 			copy.CanCancel = job.Status == "pending" || job.Status == "downloading" || job.Status == "retry_wait" || job.Status == "auth_wait"
-			copy.CanRetry = (job.Status == "failed" || job.Status == "cancelled") && d.queue.active[job.Info.FsID] == nil && d.queue.eligible[job.Info.FsID] == job.Info && d.AuthenticationReady()
+			copy.CanRetry = !d.queue.blockedIntakes[job.Info.Path] && (job.Status == "failed" || job.Status == "cancelled") && d.queue.active[job.Info.FsID] == nil && d.queue.eligible[job.Info.FsID] == job.Info && d.AuthenticationReady()
 		}
 		result = append(result, &copy)
 	}

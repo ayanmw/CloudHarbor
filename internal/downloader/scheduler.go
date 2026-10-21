@@ -29,24 +29,25 @@ type queueJob struct {
 	Updated     time.Time         `json:"updated"`
 }
 type scheduler struct {
-	mu           sync.Mutex
-	owner        *Downloader
-	store        *taskstore.Store
-	jobs         map[int64]*queueJob
-	eligible     map[int64]baiduapi.FileInfo
-	active       map[int64]context.CancelFunc
-	wake         chan struct{}
-	done         chan struct{}
-	wg           sync.WaitGroup
-	started      bool
-	stopping     bool
-	err          error
-	closeErr     error
-	shutdownOnce sync.Once
+	mu             sync.Mutex
+	owner          *Downloader
+	store          *taskstore.Store
+	jobs           map[int64]*queueJob
+	eligible       map[int64]baiduapi.FileInfo
+	blockedIntakes map[string]bool
+	active         map[int64]context.CancelFunc
+	wake           chan struct{}
+	done           chan struct{}
+	wg             sync.WaitGroup
+	started        bool
+	stopping       bool
+	err            error
+	closeErr       error
+	shutdownOnce   sync.Once
 }
 
 func newScheduler(d *Downloader) *scheduler {
-	return &scheduler{owner: d, jobs: make(map[int64]*queueJob), eligible: make(map[int64]baiduapi.FileInfo), active: make(map[int64]context.CancelFunc), wake: make(chan struct{}, 1), done: make(chan struct{})}
+	return &scheduler{owner: d, jobs: make(map[int64]*queueJob), eligible: make(map[int64]baiduapi.FileInfo), blockedIntakes: make(map[string]bool), active: make(map[int64]context.CancelFunc), wake: make(chan struct{}, 1), done: make(chan struct{})}
 }
 func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, error) {
 	if cfg.MaxParallel < 0 || cfg.MaxParallel > 32 || cfg.MaxRetries < 0 || cfg.MaxRetries > 20 || cfg.RetryBackoffSeconds < 0 {
@@ -70,6 +71,7 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		return nil, err
 	}
 	d.queue.store = store
+	d.intakeJournal = store
 	settings, err := store.LoadSettings()
 	if err != nil {
 		store.Close()
@@ -106,6 +108,11 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		}
 		d.queue.jobs[id] = &job
 		d.queue.reflect(&job)
+	}
+	if err = d.loadIntakes(); err != nil {
+		store.Close()
+		d.cancel()
+		return nil, err
 	}
 	return d, nil
 }
@@ -192,6 +199,9 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 	}
 	eligible := make(map[int64]baiduapi.FileInfo)
 	for _, f := range files {
+		if q.blockedIntakes[f.Path] {
+			continue
+		}
 		if strings.HasSuffix(f.ServerFilename, ".可删除") {
 			continue
 		}
@@ -213,6 +223,10 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 	}
 	q.eligible = eligible
 	for id, job := range q.jobs {
+		// A quarantined target was deliberately excluded above, not missing.
+		if q.blockedIntakes[job.Info.Path] {
+			continue
+		}
 		if job.Status == "auth_wait" && eligible[id] == job.Info && q.active[id] == nil {
 			job.Status = "pending"
 			job.Error = ""
@@ -260,7 +274,7 @@ func (q *scheduler) claim() (*queueJob, context.Context) {
 	}
 	var chosen *queueJob
 	for _, job := range q.jobs {
-		if (job.Status != "pending" && job.Status != "retry_wait") || q.active[job.Info.FsID] != nil || q.eligible[job.Info.FsID] != job.Info || time.Now().Before(job.NextAttempt) {
+		if q.blockedIntakes[job.Info.Path] || (job.Status != "pending" && job.Status != "retry_wait") || q.active[job.Info.FsID] != nil || q.eligible[job.Info.FsID] != job.Info || time.Now().Before(job.NextAttempt) {
 			continue
 		}
 		if chosen == nil || job.Created.Before(chosen.Created) || (job.Created.Equal(chosen.Created) && job.Info.FsID < chosen.Info.FsID) {
@@ -392,7 +406,7 @@ func (d *Downloader) Retry(id int64) error {
 	if job == nil {
 		return ErrTaskNotFound
 	}
-	if q.stopping || q.err != nil || !d.AuthenticationReady() || q.active[id] != nil || (job.Status != "failed" && job.Status != "cancelled") || q.eligible[id] != job.Info {
+	if q.stopping || q.err != nil || q.blockedIntakes[job.Info.Path] || !d.AuthenticationReady() || q.active[id] != nil || (job.Status != "failed" && job.Status != "cancelled") || q.eligible[id] != job.Info {
 		return ErrTaskConflict
 	}
 	job.Status = "pending"
