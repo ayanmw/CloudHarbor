@@ -47,6 +47,6 @@ Files: internal/downloader/downloader.go、transfer.go、downloader_test.go。
 Files: cmd/get_token/main.go；scripts/package.ps1；docs/ai/progress.md；发布包使用说明。
 
 - [x] 修复已确认 vet 错误；添加版本显示与本地打包脚本。
-- [ ] go test ./...、go vet ./...、git diff --check、Windows/Linux 交叉构建。
-- [ ] 审查差异，验证包内二进制和哈希；写明真实网盘/NAS 未验收。
-- [ ] 本地提交并保留不可变版本包；继续下一阶段，不把首版当作整个目标完成。
+- [x] go test ./...、go vet ./...、git diff --check、Windows/Linux 交叉构建。
+- [x] 审查差异，验证包内二进制和哈希；写明真实网盘/NAS 未验收。
+- [x] 本地提交并保留不可变版本包；继续下一阶段，不把首版当作整个目标完成。
