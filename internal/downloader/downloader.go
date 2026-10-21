@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,9 @@ type Task struct {
 	NextAttempt      time.Time
 	Root             bool
 	DownloadMode     DownloadMode
+	TaskID           string
+	CanCancel        bool
+	CanRetry         bool
 }
 
 // keep retains the cloud item and marks its name; delete removes it only after
@@ -300,11 +304,20 @@ func (d *Downloader) postprocess(ctx context.Context, info baiduapi.FileInfo, mo
 
 // Copy under the lock so serialization never reads live download progress.
 func (d *Downloader) GetTasks() []*Task {
+	d.queue.mu.Lock()
+	defer d.queue.mu.Unlock()
 	d.taskMutex.RLock()
 	defer d.taskMutex.RUnlock()
 	result := make([]*Task, 0, len(d.tasks))
 	for _, task := range d.tasks {
 		copy := *task
+		// Action IDs remain exact in browsers, including values above 2^53.
+		copy.TaskID = strconv.FormatInt(copy.FileInfo.FsID, 10)
+		job := d.queue.jobs[copy.FileInfo.FsID]
+		if copy.Root && job != nil && !d.queue.stopping && d.queue.err == nil && d.ctx.Err() == nil {
+			copy.CanCancel = job.Status == "pending" || job.Status == "downloading" || job.Status == "retry_wait" || job.Status == "auth_wait"
+			copy.CanRetry = (job.Status == "failed" || job.Status == "cancelled") && d.queue.active[job.Info.FsID] == nil && d.queue.eligible[job.Info.FsID] == job.Info && d.AuthenticationReady()
+		}
 		result = append(result, &copy)
 	}
 	return result

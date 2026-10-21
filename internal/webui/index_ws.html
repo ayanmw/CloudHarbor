@@ -19,6 +19,8 @@
         <p style="color:#666;margin-top:10px;">实时监控下载队列状态</p>
         <div class="ws-status" id="ws-status">WebSocket 状态：<span>连接中...</span></div>
         <div class="link-poll">如果 WebSocket 不可用，可尝试 <a href="/poll" target="_blank">兼容模式（轮询版）</a></div>
+        <button type="button" id="scan-button" onclick="triggerScan()">立即扫描网盘队列</button>
+        <p id="task-feedback" class="task-feedback" role="status" aria-live="polite"></p>
         <div class="settings">
             <strong>下载后处理策略：</strong>
             <label><input type="radio" name="mode" value="keep" checked> 保留网盘文件并标记为 .可删除</label>
@@ -53,11 +55,13 @@
     let currentMode = 'keep';
     // 添加全局变量存储排序方式，默认为文件名排序
     let currentSort = 'name';
+    let latestTasks = {tasks:[]};
     
     // 添加改变排序方式的函数
     function changeSort() {
         const select = document.getElementById('sort-select');
         currentSort = select.value;
+        renderTasks(latestTasks);
     }
 
     // 检查 Token 状态
@@ -80,6 +84,7 @@
     }
 
     function renderTasks(data) {
+        latestTasks = data;
         const tasks = data.tasks || [];
         
         // 对任务进行排序
@@ -112,6 +117,7 @@
     ${t.local_path ? `<div class="task-info-item" style="grid-column:1/-1;"><strong>本地路径:</strong> ${escapeHTML(t.local_path)}</div>` : ''}
   </div>
   ${t.error ? `<div class="error-msg">❌ ${escapeHTML(t.error)}</div>` : ''}
+  ${taskControls(t)}
 </div>`;
         }).join('');
     }
@@ -165,6 +171,10 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        bindTaskControls(async () => {
+            const response = await fetch('/api/status');
+            if (response.ok) renderTasks(await response.json());
+        });
         connectWS();
         document.querySelectorAll('input[name="mode"]').forEach(r => {
             r.addEventListener('change', () => {

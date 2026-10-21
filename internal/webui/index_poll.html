@@ -34,6 +34,8 @@
             </select>
         </div>
         <p style="font-size:13px;color:#666;">主站点（WebSocket 实时版）：<a href="/" target="_blank">/</a></p>
+        <button type="button" id="scan-button" onclick="triggerScan()">立即扫描网盘队列</button>
+        <p id="task-feedback" class="task-feedback" role="status" aria-live="polite"></p>
     </div>
     <div class="tasks-container">
         <div id="tasks-list" class="empty">正在加载...</div>
@@ -48,6 +50,7 @@
     function changeSort() {
         const select = document.getElementById('sort-select');
         currentSort = select.value;
+        fetchStatus();
     }
     
     // 检查 Token 状态
@@ -72,6 +75,7 @@
     async function fetchStatus() {
         try {
             const res = await fetch('/api/status');
+            if (!res.ok) throw new Error('获取任务状态失败');
             const data = await res.json();
             const tasks = data.tasks || [];
             
@@ -89,6 +93,7 @@
     ${t.speed && t.status === 'downloading' ? `<div>速度：${formatSpeed(t.speed)}</div>` : ''}
     ${t.local_path?`<div>本地：${escapeHTML(t.local_path)}</div>`:''}
     ${t.error?`<div style="color:#f5576c;">错误：${escapeHTML(t.error)}</div>`:''}
+    ${taskControls(t)}
   </div>
 </div>`).join('');
         } catch (e) {
@@ -98,6 +103,7 @@
     
     // 页面加载时检查 Token 状态
     checkTokenStatus();
+    bindTaskControls(fetchStatus);
     fetchStatus();
     setInterval(fetchStatus, 2000);
     setInterval(checkTokenStatus, 5000);

@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/gorilla/websocket"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,12 +18,22 @@ import (
 	"web_browser_baidu_onekey_upload/internal/downloader"
 	"web_browser_baidu_onekey_upload/internal/management"
 	"web_browser_baidu_onekey_upload/internal/oauth"
+	"web_browser_baidu_onekey_upload/internal/taskstore"
 	"web_browser_baidu_onekey_upload/internal/webui"
 )
 
 func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	var err error
 	cfg = &config.Config{LocalDownDir: t.TempDir(), QueueDir: "/preview", ScanInterval: 30, MaxParallel: 1}
+	store, err := taskstore.Open(filepath.Join(cfg.LocalDownDir, ".nas-downloader", "queue"), "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Save(3400000000000000123, []byte(`{"version":1,"file":{"fs_id":3400000000000000123,"path":"/preview/a.txt","server_filename":"a.txt","size":3},"mode":"keep","status":"cancelled"}`)); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	store.Close()
 	dl, err = downloader.OpenDownloader(cfg, baiduapi.NewClient("", ""))
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +75,34 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	if response.StatusCode != 200 || !strings.Contains(string(body), `"status":"waiting_authorization"`) || !strings.Contains(string(body), `"ready":false`) {
 		t.Fatalf("health invented account readiness: %s", body)
 	}
+	req, _ = http.NewRequest("GET", srv.URL+"/api/status", nil)
+	req.SetBasicAuth("admin", "private-administrator-password")
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(response.Body)
+	response.Body.Close()
+	var status struct {
+		Tasks []struct {
+			ID        string `json:"task_id"`
+			CanRetry  bool   `json:"can_retry"`
+			CanCancel bool   `json:"can_cancel"`
+		}
+	}
+	if json.Unmarshal(body, &status) != nil || len(status.Tasks) != 1 || status.Tasks[0].ID != "3400000000000000123" || status.Tasks[0].CanRetry || status.Tasks[0].CanCancel {
+		t.Fatalf("incorrect action DTO: %s", body)
+	}
+	req, _ = http.NewRequest("POST", srv.URL+"/api/tasks/3400000000000000123/retry", nil)
+	req.SetBasicAuth("admin", "private-administrator-password")
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 409 {
+		t.Fatalf("large task ID did not identify existing ineligible task: %d", response.StatusCode)
+	}
 	req, _ = http.NewRequest("POST", srv.URL+"/api/scan", nil)
 	req.SetBasicAuth("admin", "private-administrator-password")
 	req.Header.Set("Origin", "https://evil.example")
@@ -84,6 +124,9 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	conn.Close()
 	if err != nil || !strings.Contains(string(body), `"type":"status"`) {
 		t.Fatalf("missing WebSocket status: %v %s", err, body)
+	}
+	if !strings.Contains(string(body), `"task_id":"3400000000000000123"`) {
+		t.Fatal("WebSocket lost exact task ID")
 	}
 	headers.Set("Origin", "http://evil.example")
 	conn, response, err = websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", headers)

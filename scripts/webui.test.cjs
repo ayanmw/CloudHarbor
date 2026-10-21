@@ -8,7 +8,7 @@ const root = path.join(__dirname, '..', 'internal', 'webui');
 function page(name, tasks = []) {
     const nodes = new Map();
     const get = id => {
-        if (!nodes.has(id)) nodes.set(id, {style:{}, textContent:'', innerHTML:'', querySelector:()=>get(id+' span')});
+        if (!nodes.has(id)) nodes.set(id, {style:{}, textContent:'', innerHTML:'', addEventListener:(event,fn)=>listeners.set(id+':'+event,fn),querySelector:()=>get(id+' span')});
         return nodes.get(id);
     };
     const listeners = new Map();
@@ -55,4 +55,36 @@ test('OAuth page only accepts HTTPS Baidu authorization links',()=>{
         assert.equal(vm.runInContext('safeBaiduURL(inputURL)',p.context),'');
     }
     assert.equal(vm.runInContext("safeBaiduURL('https://openapi.baidu.com/device')",p.context),'https://openapi.baidu.com/device');
+});
+
+test('root task actions use exact string IDs and server capabilities',async()=>{
+    const p=page('index_ws.html');
+    p.context.task={task_id:'3400000000000000123',fs_id:3400000000000000123,is_root:true,can_retry:true,can_cancel:false,download_mode:'delete',attempts:2,next_attempt:'2026-10-21T10:00:00Z'};
+    const html=vm.runInContext('taskControls(task)',p.context);
+    assert.ok(html.includes('3400000000000000123'));
+    assert.ok(html.includes('data-action="retry"'));
+    assert.ok(!html.includes('data-action="cancel"'));
+    assert.ok(html.includes('删除'));
+    p.context.task.is_root=false;
+    assert.equal(vm.runInContext('taskControls(task)',p.context),'');
+    p.context.task.is_root=true; delete p.context.task.task_id;
+    assert.ok(!vm.runInContext('taskControls(task)',p.context).includes('data-action='), 'numeric fs_id must not become an action URL');
+    const calls=[];
+    p.context.fetch=async(url,options)=>{calls.push([url,options.method]);return {ok:true}};
+    await vm.runInContext("performTaskAction('3400000000000000123','retry',async()=>{})",p.context);
+    assert.deepEqual(calls,[['/api/tasks/3400000000000000123/retry','POST']]);
+});
+
+test('task actions prevent double submission and report stale state',async()=>{
+    const p=page('index_poll.html');
+    let release;
+    p.context.fetch=()=>new Promise(resolve=>{release=resolve});
+    const first=vm.runInContext("performTaskAction('123','cancel',async()=>{})",p.context);
+    let calls=0;
+    const previous=p.context.fetch;
+    p.context.fetch=(...args)=>{calls++;return previous(...args)};
+    await vm.runInContext("performTaskAction('123','cancel',async()=>{})",p.context);
+    assert.equal(calls,0);
+    release({ok:false,status:409});await first;
+    assert.ok(p.get('task-feedback').textContent.includes('状态'));
 });

@@ -166,6 +166,9 @@ func (s *Server) sendStatus(conn *websocket.Conn) error {
 	// 与 /status 类似的结构
 	type TaskStatus struct {
 		FsID           int64  `json:"fs_id"`
+		TaskID         string `json:"task_id"`
+		CanCancel      bool   `json:"can_cancel"`
+		CanRetry       bool   `json:"can_retry"`
 		Path           string `json:"path"`
 		ServerFilename string `json:"server_filename"`
 		Size           int64  `json:"size"`
@@ -185,7 +188,8 @@ func (s *Server) sendStatus(conn *websocket.Conn) error {
 	statuses := make([]TaskStatus, 0, len(tasks))
 	for _, t := range tasks {
 		ts := TaskStatus{
-			FsID:           t.FileInfo.FsID,
+			FsID:   t.FileInfo.FsID,
+			TaskID: t.TaskID, CanCancel: t.CanCancel, CanRetry: t.CanRetry,
 			Path:           t.FileInfo.Path,
 			ServerFilename: t.FileInfo.ServerFilename,
 			Size:           t.FileInfo.Size,

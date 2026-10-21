@@ -392,7 +392,7 @@ func (d *Downloader) Retry(id int64) error {
 	if job == nil {
 		return ErrTaskNotFound
 	}
-	if q.stopping || q.err != nil || q.active[id] != nil || (job.Status != "failed" && job.Status != "cancelled") || q.eligible[id] != job.Info {
+	if q.stopping || q.err != nil || !d.AuthenticationReady() || q.active[id] != nil || (job.Status != "failed" && job.Status != "cancelled") || q.eligible[id] != job.Info {
 		return ErrTaskConflict
 	}
 	job.Status = "pending"

@@ -4,6 +4,16 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## 阶段 D：任务管理源码检查点（未打包）
+
+- 计划：[experience-plan.md](experience-plan.md)。先补已有队列管理，入队/油猴仍待实施；原脚本经核查只是打印 FILEINFO，不能可靠认定选中项，没有移动操作。
+- 两种任务页增加立即扫描和根任务取消/重试、按任务防重复提交、状态冲突反馈、取消未排空时等待可重试；显示根任务固定后处理策略、启动次数和下次重试时间。
+- HTTP/WS 新增精确 task_id 字符串、can_cancel/can_retry。操作入口不从 JS Number 构造 ID，保留旧 fs_id 数字兼容查询；能力根据服务端认证、扫描资格和 active worker 计算，Retry 再次检查认证。
+- 大于 2^53 的任务标识实际 HTTP/WS 往返和精确路径重试命中（409 而非 404）通过；取消未排空/源扫描资格/认证过期能力与前端五项脚本测试通过。
+- Windows UCRT、WSL 全模块 race 和 vet 通过；独立 reviewer 未发现确定 important/critical，git diff --check 通过。GetTasks 的队列/任务/客户端锁顺序已复核。
+- 没有把脚本 VM、模拟接口或源码检查点称为真实浏览器点击验收。当前可供用户独立运行的包仍为 v0.3.0-preview.1，D 新包未交付。
+- 下一步继续服务端入队、管理页预检与提交、油猴的可靠选中项适配和安全衔接，完成后执行新包验证；不把仅有管理按钮作为 D 全阶段完成。
+
 ## v0.3.0-preview.1（阶段 C 已交付本地测试包）
 
 - 源码 revision：`fec54acc83a0015e1ddcba5b398b4543c2b189a6`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.3.0-preview.1.zip`（9,828,655 字节）。
