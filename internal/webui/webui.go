@@ -24,6 +24,9 @@ var indexPoll []byte
 //go:embed index_oauth.html
 var indexOAuth []byte
 
+//go:embed index_intake.html
+var indexIntake []byte
+
 //go:embed res/*
 var resFiles embed.FS
 
@@ -61,6 +64,11 @@ func (s *Server) HandlePagePoll(w http.ResponseWriter, r *http.Request) {
 func (s *Server) HandlePageOAuth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(indexOAuth)
+}
+
+func (s *Server) HandlePageIntake(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexIntake)
 }
 
 // HandleRes 静态资源文件服务

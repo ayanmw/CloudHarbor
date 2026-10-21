@@ -25,6 +25,7 @@ function page(name, tasks = []) {
     vm.runInContext(fs.readFileSync(path.join(root, 'res', 'shared.js'), 'utf8'), context);
     const html = fs.readFileSync(path.join(root, name), 'utf8');
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) vm.runInContext(match[1], context);
+    if(html.includes('/res/intake.js'))vm.runInContext(fs.readFileSync(path.join(root,'res','intake.js'),'utf8'),context);
     return {context,get,listeners,sockets};
 }
 
@@ -87,4 +88,28 @@ test('task actions prevent double submission and report stale state',async()=>{
     assert.equal(calls,0);
     release({ok:false,status:409});await first;
     assert.ok(p.get('task-feedback').textContent.includes('状态'));
+});
+
+test('intake UI renders unknown directories without a manual release action and escapes paths',()=>{
+ const p=page('index_intake.html');
+ p.context.record={id:'a'.repeat(32),state:'finished',queue_dir:'/queue',download_mode:'delete',items:[{source:{path:'<img src=x>',isdir:1},target:'/queue/<svg>',state:'unknown',error:'directory_completion_unconfirmed'}]};
+ const html=vm.runInContext('intakeTable(record)',p.context);
+ assert.ok(html.includes('&lt;img'));
+ assert.ok(!html.includes('<svg>'));
+ assert.ok(html.includes('隔离'));
+ assert.ok(!html.includes('data-release') && !html.includes('人工确认按钮'));
+});
+
+test('intake commit requires fresh explicit confirmation and does not replay after unknown result',async()=>{
+ const p=page('index_intake.html');
+ const calls=[];
+ const record={id:'a'.repeat(32),state:'preview',expires:new Date(Date.now()+60000).toISOString(),items:[]};
+ p.context.proposed=record;vm.runInContext('activePreview=proposed',p.context);
+ p.context.fetch=async(url,options)=>{calls.push([url,options?.method]);return{ok:true,json:async()=>url==='/api/intakes/'+record.id+'/commit'?{...record,state:'finished',items:[{state:'unknown'}]}:{records:[]}}};
+ await vm.runInContext('commitPreview()',p.context);assert.equal(calls.length,0);
+ p.get('intake-confirm-check').checked=true;
+ await vm.runInContext('commitPreview()',p.context);
+ await vm.runInContext('commitPreview()',p.context);
+ assert.equal(calls.filter(call=>call[0].endsWith('/commit')).length,1);
+ assert.ok(p.get('intake-message').textContent.includes('未知'));
 });

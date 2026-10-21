@@ -23,6 +23,7 @@ import (
 	"web_browser_baidu_onekey_upload/internal/config"
 	"web_browser_baidu_onekey_upload/internal/credentials"
 	"web_browser_baidu_onekey_upload/internal/downloader"
+	"web_browser_baidu_onekey_upload/internal/intakeapi"
 	"web_browser_baidu_onekey_upload/internal/management"
 	"web_browser_baidu_onekey_upload/internal/webui"
 )
@@ -153,15 +154,26 @@ func main() {
 
 func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.Server) http.Handler {
 	mux := http.NewServeMux()
+	intakeHTTP := intakeapi.New(dl, func() {
+		select {
+		case scanRequests <- struct{}{}:
+		default:
+		}
+	})
 	mux.HandleFunc("/", ui.HandlePageWS)
 	mux.HandleFunc("/ws", ui.HandleWS)
 	mux.HandleFunc("/poll", ui.HandlePagePoll)
 	mux.HandleFunc("/oauth", ui.HandlePageOAuth)
+	mux.HandleFunc("/intake", ui.HandlePageIntake)
 	mux.HandleFunc("/res/", ui.HandleRes)
 	mux.HandleFunc("/api/health", handleHealth)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/scan", handleScan)
 	mux.HandleFunc("/api/tasks/", handleTaskAction)
+	mux.HandleFunc("/api/cloud", intakeHTTP.HandleCloud)
+	mux.HandleFunc("/api/intakes", intakeHTTP.HandleRecords)
+	mux.HandleFunc("/api/intakes/preview", intakeHTTP.HandlePreview)
+	mux.HandleFunc("/api/intakes/", intakeHTTP.HandleAction)
 	mux.HandleFunc("/api/oauth/device-code", authorizationHTTP.HandleDeviceCode)
 	mux.HandleFunc("/api/oauth/token", authorizationHTTP.HandleToken)
 	mux.HandleFunc("/api/oauth/refresh", authorizationHTTP.HandleRefresh)

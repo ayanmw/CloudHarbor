@@ -54,7 +54,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	gate, _ := management.New("private-administrator-password")
 	srv := httptest.NewServer(applicationHandler(gate, authorization.New(dl.Context(), "", "", auth, nil)))
 	defer srv.Close()
-	for _, path := range []string{"/", "/oauth", "/api/health", "/api/oauth/status", "/api/status", "/res/shared.js", "/ws"} {
+	for _, path := range []string{"/", "/oauth", "/intake", "/api/cloud", "/api/intakes", "/api/health", "/api/oauth/status", "/api/status", "/res/shared.js", "/res/intake.js", "/ws"} {
 		response, err := http.Get(srv.URL + path)
 		if err != nil {
 			t.Fatal(err)
