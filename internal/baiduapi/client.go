@@ -131,11 +131,15 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 			return nil, &APIError{Operation: "list", Status: resp.StatusCode}
 		}
 		var result struct {
-			Errno *int            `json:"errno"`
-			List  json.RawMessage `json:"list"`
+			Errno     *int            `json:"errno"`
+			ErrorCode int             `json:"error_code"`
+			List      json.RawMessage `json:"list"`
 		}
 		if err = json.Unmarshal(body, &result); err != nil {
 			return nil, fmt.Errorf("解析目录响应失败: %w", err)
+		}
+		if result.ErrorCode != 0 {
+			return nil, &APIError{Operation: "list", Status: resp.StatusCode, Code: result.ErrorCode}
 		}
 		if result.Errno == nil {
 			return nil, fmt.Errorf("目录响应缺失 errno")
@@ -360,8 +364,9 @@ func (c *Client) RenameFile(path, newName string) error {
 		return readErr
 	}
 	var result struct {
-		Errno *int `json:"errno"`
-		Info  []struct {
+		Errno     *int `json:"errno"`
+		ErrorCode int  `json:"error_code"`
+		Info      []struct {
 			Errno int `json:"errno"`
 		} `json:"info"`
 	}
@@ -371,6 +376,9 @@ func (c *Client) RenameFile(path, newName string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return &APIError{Operation: "rename", Status: resp.StatusCode}
+	}
+	if result.ErrorCode != 0 {
+		return &APIError{Operation: "rename", Status: resp.StatusCode, Code: result.ErrorCode}
 	}
 	if result.Errno == nil {
 		return fmt.Errorf("重命名响应缺失 errno")
@@ -425,8 +433,9 @@ func (c *Client) DeleteFile(path string) error {
 		return readErr
 	}
 	var result struct {
-		Errno *int `json:"errno"`
-		Info  []struct {
+		Errno     *int `json:"errno"`
+		ErrorCode int  `json:"error_code"`
+		Info      []struct {
 			Errno int `json:"errno"`
 		} `json:"info"`
 	}
@@ -436,6 +445,9 @@ func (c *Client) DeleteFile(path string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return &APIError{Operation: "delete", Status: resp.StatusCode}
+	}
+	if result.ErrorCode != 0 {
+		return &APIError{Operation: "delete", Status: resp.StatusCode, Code: result.ErrorCode}
 	}
 	if result.Errno == nil {
 		return fmt.Errorf("删除响应缺失 errno")

@@ -1,5 +1,6 @@
 // Package taskstore persists one JSON record per root job, with an OS-backed
-// single-writer lock. It never stores tokens or signed download URLs.
+// single-writer lock. Job records contain no tokens; credentials use a separate
+// private sidecar and are never returned by Load.
 package taskstore
 
 import (

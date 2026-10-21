@@ -1,12 +1,45 @@
 package taskstore
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestCredentialsAndAccountBindingAreIndependentFromQueueSettings(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	s, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SaveCredentials([]byte(`{"version":1,"access_token":"private-access"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.BindAccount("3400000000000000123"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	body, err := s.LoadCredentials()
+	if err != nil || string(body) != `{"version":1,"access_token":"private-access"}` {
+		t.Fatalf("credential roundtrip: %q %v", body, err)
+	}
+	os.Remove(filepath.Join(dir, "credentials.json"))
+	if err = s.BindAccount("999"); !errors.Is(err, ErrAccountMismatch) {
+		t.Fatalf("removing credentials bypassed account binding: %v", err)
+	}
+	jobs, err := s.Load()
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("credential became task: %v %v", jobs, err)
+	}
+}
 
 func TestRecordsSurviveReopenAndScopeCannotChange(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "queue")

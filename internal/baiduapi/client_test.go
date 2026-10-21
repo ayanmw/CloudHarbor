@@ -223,6 +223,29 @@ func TestProgressingDownloadCanOutliveIdleLimit(t *testing.T) {
 	}
 }
 
+func TestUserIDPreservesFullIntegerAndRejectsAuthenticationFailure(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	body := `{"errno":0,"uk":3400000000000000123}`
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	c := NewClient("test", "test")
+	id, err := c.UserID()
+	if err != nil || id != "3400000000000000123" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+	body = `{"error_code":111,"error_msg":"token expired"}`
+	_, err = c.UserID()
+	if !IsAuthenticationError(err) {
+		t.Fatalf("authentication failure not classified: %v", err)
+	}
+	body = `{"errno":0,"uk":0}`
+	if _, err = c.UserID(); err == nil {
+		t.Fatal("zero account accepted")
+	}
+}
+
 type brokenMetadataBody struct{}
 
 func (*brokenMetadataBody) Read(p []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
