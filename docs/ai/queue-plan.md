@@ -28,5 +28,5 @@
 ## Task 4：交付
 
 - [x] 更新配置、启动脚本与测试说明。
-- [ ] 全模块 test/vet/race，Windows/Linux 构建，独立 review 与包内冒烟。
-- [ ] 新版本包、哈希、准确验证边界；C/D 阶段仍保留在持续目标中。
+- [x] 全模块 test/vet/race，Windows/Linux 构建，独立 review 与包内冒烟。
+- [x] 新版本包、哈希、准确验证边界；C/D 阶段仍保留在持续目标中。
