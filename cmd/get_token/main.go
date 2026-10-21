@@ -45,7 +45,8 @@ func main() {
 		log.Fatal("请先设置环境变量: BAIDU_APP_KEY 和 BAIDU_SECRET_KEY")
 	}
 
-	fmt.Println("===== 百度网盘 Access Token 获取工具 =====\n")
+	fmt.Println("===== 百度网盘 Access Token 获取工具 =====")
+	fmt.Println()
 
 	// 第一步：获取设备码
 	fmt.Println("[1/3] 正在获取设备授权码...")

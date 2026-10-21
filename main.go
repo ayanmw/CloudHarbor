@@ -2,8 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
@@ -17,10 +21,19 @@ var (
 	cfg          *config.Config
 	dl           *downloader.Downloader
 	ui           *webui.Server
-	lastScanTime time.Time
+	lastScanUnix atomic.Int64
 )
 
+var version = "dev"
+var revision = "unknown"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println("baidu-nas-downloader " + version + " (" + revision + ")")
+		return
+	}
 	log.Println("baidu-nas-downloader service starting...")
 
 	// 加载配置
@@ -57,7 +70,7 @@ func main() {
 	go func() {
 		for {
 			log.Printf("[Worker] 开始扫描队列目录...")
-			lastScanTime = time.Now()
+			lastScanUnix.Store(time.Now().UnixNano())
 			if err := dl.ScanAndDownload(); err != nil {
 				log.Printf("[Worker] 扫描失败: %v", err)
 			}
@@ -66,13 +79,15 @@ func main() {
 		}
 	}()
 
-	log.Printf("HTTP server listening on :%s\n", cfg.ServerPort)
-	if err := http.ListenAndServe(":"+cfg.ServerPort, nil); err != nil {
+	address := net.JoinHostPort(cfg.ServerHost, cfg.ServerPort)
+	log.Printf("HTTP server listening on %s\n", address)
+	if err := http.ListenAndServe(address, nil); err != nil {
 		log.Fatal(err)
 	}
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	lastScanTime := time.Unix(0, lastScanUnix.Load())
 	tasks := dl.GetTasks()
 	downloadingCount := 0
 	doneCount := 0
@@ -90,6 +105,8 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]interface{}{
+		"version":        version,
+		"revision":       revision,
 		"status":         "ok",
 		"last_scan_time": lastScanTime.Format(time.RFC3339),
 		"next_scan_time": lastScanTime.Add(time.Duration(cfg.ScanInterval) * time.Second).Format(time.RFC3339),
@@ -159,7 +176,7 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		log.Printf("[API] 手动触发扫描")
-		lastScanTime = time.Now()
+		lastScanUnix.Store(time.Now().UnixNano())
 		if err := dl.ScanAndDownload(); err != nil {
 			log.Printf("[API] 扫描失败: %v", err)
 		}

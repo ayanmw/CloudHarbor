@@ -1,0 +1,15 @@
+services:
+  downloader-preview:
+    build:
+      context: .
+    ports:
+      - "127.0.0.1:18089:8080"
+    environment:
+      BAIDU_ACCESS_TOKEN: ${BAIDU_ACCESS_TOKEN:?Set BAIDU_ACCESS_TOKEN in .env}
+      QUEUE_DIR: ${QUEUE_DIR:-/NAS_Download_Queue_preview}
+      LOCAL_DOWNLOAD_DIR: /downloads
+      SCAN_INTERVAL: "30"
+      SERVER_HOST: 0.0.0.0
+    volumes:
+      - ./downloads:/downloads
+    restart: unless-stopped
