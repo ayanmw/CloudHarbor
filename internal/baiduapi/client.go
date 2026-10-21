@@ -185,7 +185,7 @@ func (c *Client) DownloadFile(dlink string) (io.ReadCloser, int64, error) {
 
 	req, err := http.NewRequest("GET", dlink, nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, requestError(err)
 	}
 
 	// 设置必要的请求头（根据百度官方文档要求）
@@ -240,7 +240,7 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 
 	req, err := http.NewRequest("GET", dlink, nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, requestError(err)
 	}
 
 	// 设置 Range 头部支持断点续传

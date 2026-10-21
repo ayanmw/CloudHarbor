@@ -4,7 +4,7 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
-## v0.1.0-preview.2（已生成本地独立测试包）
+## v0.1.0-preview.3（最终交付版）
 
 - 工作树：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-codex`；分支 `codex/downloader-reliability`；基线 `331a8b1`。
 - 配置：统一 LOCAL_DOWNLOAD_DIR，保留旧变量兼容。独立监听地址默认回环，容器宿主端口默认回环。
@@ -31,6 +31,8 @@
 - 原项目 main 工作区仍为基线且干净；优化源码位于隔离分支，未合并/推送。
 
 ## 下一版本
+
+交付前 reviewer 补查发现下载链接解析失败仍可回传带 Token 的 URL，已补两种下载入口的 RED/GREEN 测试并修复。preview.1/preview.2 保留内部历史，最终使用 preview.3；其源码 revision 与包验证见 releases 目录对应 validation.md，不复用旧包的哈希。
 
 继续 B：持久化任务与状态迁移、有界 worker、取消/优雅退出、超时与分类重试。随后 C：Token 应用/保存/自动续期、管理认证、健康检查；D：入队与管理体验。源码 README 原有 OAuth/油猴功能表述不能当作已完成证明。
 

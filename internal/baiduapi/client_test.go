@@ -97,6 +97,19 @@ func TestTransportErrorsDoNotExposeAccessToken(t *testing.T) {
 	}
 }
 
+func TestMalformedDownloadLinkDoesNotExposeAccessToken(t *testing.T) {
+	c := NewClient("private-token", "test")
+	for _, download := range []func(string) (io.ReadCloser, int64, error){c.DownloadFile, func(link string) (io.ReadCloser, int64, error) { return c.DownloadFileWithRange(link, 3) }} {
+		body, _, err := download("https://example.test/%zz")
+		if body != nil {
+			body.Close()
+		}
+		if err == nil || strings.Contains(err.Error(), "private-token") {
+			t.Errorf("credential in malformed URL error: %v", err)
+		}
+	}
+}
+
 func TestDownloadRangeContract(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
