@@ -70,6 +70,7 @@ func setup(t *testing.T, content http.HandlerFunc) (*Downloader, *provider) {
 	})
 	t.Cleanup(func() { http.DefaultTransport = original })
 	d := NewDownloader(&config.Config{LocalDownDir: t.TempDir(), QueueDir: "/queue"}, baiduapi.NewClient("test", "test"))
+	t.Cleanup(func() { shutdown(t, d) })
 	return d, p
 }
 func file(id int64, name string, size int64) baiduapi.FileInfo {

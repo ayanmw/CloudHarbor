@@ -1,13 +1,20 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
@@ -22,6 +29,7 @@ var (
 	dl           *downloader.Downloader
 	ui           *webui.Server
 	lastScanUnix atomic.Int64
+	scanRequests = make(chan struct{}, 1)
 )
 
 var version = "dev"
@@ -38,6 +46,9 @@ func main() {
 
 	// 加载配置
 	cfg = config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
 
 	log.Printf("配置加载完成: QueueDir=%s, LocalDownDir=%s, ScanInterval=%ds",
 		cfg.QueueDir, cfg.LocalDownDir, cfg.ScanInterval)
@@ -46,43 +57,91 @@ func main() {
 	client := baiduapi.NewClient(cfg.AccessToken, cfg.BaiduAppKey)
 
 	// 创建下载器
-	dl = downloader.NewDownloader(cfg, client)
+	var err error
+	dl, err = downloader.OpenDownloader(cfg, client)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// 创建 WebUI 服务器
-	ui = webui.NewServer(dl)
+	ui = webui.NewServer(dl).WithContext(ctx)
+	mux := http.NewServeMux()
 
 	// HTTP 路由 - 将 WebSocket 版本设为默认页面
-	http.HandleFunc("/", ui.HandlePageWS)
-	http.HandleFunc("/ws", ui.HandleWS)
-	http.HandleFunc("/poll", ui.HandlePagePoll)
-	http.HandleFunc("/oauth", ui.HandlePageOAuth) // 添加 OAuth 页面路由
-	http.HandleFunc("/res/", ui.HandleRes)        // 使用单一处理器处理所有 /res/ 路径下的资源
-	http.HandleFunc("/api/health", handleHealth)
-	http.HandleFunc("/api/status", handleStatus)
-	http.HandleFunc("/api/scan", handleScan)
+	mux.HandleFunc("/", ui.HandlePageWS)
+	mux.HandleFunc("/ws", ui.HandleWS)
+	mux.HandleFunc("/poll", ui.HandlePagePoll)
+	mux.HandleFunc("/oauth", ui.HandlePageOAuth)
+	mux.HandleFunc("/res/", ui.HandleRes)
+	mux.HandleFunc("/api/health", handleHealth)
+	mux.HandleFunc("/api/status", handleStatus)
+	mux.HandleFunc("/api/scan", handleScan)
+	mux.HandleFunc("/api/tasks/", handleTaskAction)
 
 	// OAuth 相关路由
-	http.HandleFunc("/api/oauth/device-code", handleGetDeviceCode)
-	http.HandleFunc("/api/oauth/token", handleGetToken)
-	http.HandleFunc("/api/oauth/refresh", handleRefreshToken)
+	mux.HandleFunc("/api/oauth/device-code", handleGetDeviceCode)
+	mux.HandleFunc("/api/oauth/token", handleGetToken)
+	mux.HandleFunc("/api/oauth/refresh", handleRefreshToken)
 
 	// 启动后台扫描任务
-	go func() {
-		for {
-			log.Printf("[Worker] 开始扫描队列目录...")
-			lastScanUnix.Store(time.Now().UnixNano())
-			if err := dl.ScanAndDownload(); err != nil {
-				log.Printf("[Worker] 扫描失败: %v", err)
-			}
-			log.Printf("[Worker] 扫描完成，下次扫描时间: %s", time.Now().Add(time.Duration(cfg.ScanInterval)*time.Second).Format(time.RFC3339))
-			time.Sleep(time.Duration(cfg.ScanInterval) * time.Second)
-		}
-	}()
-
 	address := net.JoinHostPort(cfg.ServerHost, cfg.ServerPort)
-	log.Printf("HTTP server listening on %s\n", address)
-	if err := http.ListenAndServe(address, nil); err != nil {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		dl.Shutdown(shutdownCtx)
 		log.Fatal(err)
+	}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	serveErrors := make(chan error, 1)
+	go func() { serveErrors <- server.Serve(listener) }()
+	scanDone := make(chan struct{})
+	go func() { defer close(scanDone); runScanner(ctx) }()
+	log.Printf("HTTP server listening on %s\n", address)
+	select {
+	case <-ctx.Done():
+	case err = <-serveErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("HTTP server stopped: %v", err)
+		}
+		stop()
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err = dl.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Worker shutdown incomplete: %v", err)
+	}
+	if err = server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP shutdown incomplete: %v", err)
+		server.Close()
+	}
+	select {
+	case <-scanDone:
+	case <-shutdownCtx.Done():
+		log.Printf("Scanner shutdown incomplete")
+	}
+	log.Println("Service stopped")
+}
+
+func runScanner(ctx context.Context) {
+	ticker := time.NewTicker(time.Duration(cfg.ScanInterval) * time.Second)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		lastScanUnix.Store(time.Now().UnixNano())
+		if err := dl.ScanAndDownload(); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("[Scanner] 扫描失败: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		case <-scanRequests:
+		}
 	}
 }
 
@@ -92,6 +151,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	downloadingCount := 0
 	doneCount := 0
 	failedCount := 0
+	pendingCount, retryCount, cancelledCount := 0, 0, 0
 
 	for _, t := range tasks {
 		switch t.Status {
@@ -101,10 +161,17 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 			doneCount++
 		case "failed":
 			failedCount++
+		case "pending":
+			pendingCount++
+		case "retry_wait":
+			retryCount++
+		case "cancelled":
+			cancelledCount++
 		}
 	}
 
 	response := map[string]interface{}{
+		"pending": pendingCount, "retry_wait": retryCount, "cancelled": cancelledCount, "max_parallel": cfg.MaxParallel,
 		"version":        version,
 		"revision":       revision,
 		"status":         "ok",
@@ -114,6 +181,10 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"downloading":    downloadingCount,
 		"done":           doneCount,
 		"failed":         failedCount,
+	}
+	if err := dl.QueueError(); err != nil {
+		response["status"] = "degraded"
+		response["queue_error"] = err.Error()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -136,6 +207,10 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		FinishTime     string `json:"finish_time,omitempty"`
 		Progress       int64  `json:"progress"`
 		Speed          int64  `json:"speed,omitempty"` // 添加速度信息
+		Attempts       int    `json:"attempts"`
+		NextAttempt    string `json:"next_attempt,omitempty"`
+		Root           bool   `json:"is_root"`
+		DownloadMode   string `json:"download_mode,omitempty"`
 	}
 
 	statuses := make([]TaskStatus, 0, len(tasks))
@@ -150,10 +225,15 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 			Error:          t.Error,
 			Progress:       t.Progress,
 			Speed:          t.Speed, // 添加速度信息
+			Attempts:       t.Attempts,
+			Root:           t.Root, DownloadMode: string(t.DownloadMode),
 		}
 
 		if !t.StartTime.IsZero() {
 			ts.StartTime = t.StartTime.Format(time.RFC3339)
+		}
+		if !t.NextAttempt.IsZero() {
+			ts.NextAttempt = t.NextAttempt.Format(time.RFC3339)
 		}
 		if !t.FinishTime.IsZero() {
 			ts.FinishTime = t.FinishTime.Format(time.RFC3339)
@@ -174,18 +254,51 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go func() {
-		log.Printf("[API] 手动触发扫描")
-		lastScanUnix.Store(time.Now().UnixNano())
-		if err := dl.ScanAndDownload(); err != nil {
-			log.Printf("[API] 扫描失败: %v", err)
-		}
-	}()
+	select {
+	case scanRequests <- struct{}{}:
+	default:
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "scan triggered",
 	})
+}
+
+func handleTaskAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/tasks/"), "/")
+	if len(parts) != 2 {
+		http.NotFound(w, r)
+		return
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid task id", http.StatusBadRequest)
+		return
+	}
+	switch parts[1] {
+	case "cancel":
+		err = dl.Cancel(id)
+	case "retry":
+		err = dl.Retry(id)
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, downloader.ErrTaskNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"message": "task action accepted"})
 }
 
 // handleGetDeviceCode 获取设备码

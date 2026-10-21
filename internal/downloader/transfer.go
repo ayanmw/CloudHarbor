@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -141,7 +142,10 @@ func hashFile(name string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func (d *Downloader) transfer(info baiduapi.FileInfo, relative, local string) error {
+func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relative, local string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if info.Size < 0 {
 		return fmt.Errorf("negative cloud file size")
 	}
@@ -224,14 +228,14 @@ func (d *Downloader) transfer(info baiduapi.FileInfo, relative, local string) er
 	}
 	d.updateProgress(info.FsID, offset)
 	if offset < info.Size || info.Size == 0 {
-		link, linkErr := d.getClient().GetDownloadLink(info.FsID)
+		link, linkErr := d.getClient().WithContext(ctx).GetDownloadLink(info.FsID)
 		if linkErr != nil {
 			return linkErr
 		}
-		body, length, downloadErr := d.getClient().DownloadFileWithRange(link, offset)
+		body, length, downloadErr := d.getClient().WithContext(ctx).DownloadFileWithRange(link, offset)
 		if errors.Is(downloadErr, baiduapi.ErrRangeIgnored) {
 			offset = 0
-			body, length, downloadErr = d.getClient().DownloadFileWithRange(link, 0)
+			body, length, downloadErr = d.getClient().WithContext(ctx).DownloadFileWithRange(link, 0)
 		}
 		if downloadErr != nil {
 			return downloadErr
@@ -255,6 +259,9 @@ func (d *Downloader) transfer(info baiduapi.FileInfo, relative, local string) er
 		written := offset
 		buf := make([]byte, 128*1024)
 		for {
+			if err = ctx.Err(); err != nil {
+				break
+			}
 			n, readErr := body.Read(buf)
 			if n > 0 {
 				if int64(n) > info.Size-written {
@@ -296,6 +303,9 @@ func (d *Downloader) transfer(info baiduapi.FileInfo, relative, local string) er
 	}
 	digest, err := hashFile(partialName)
 	if err != nil {
+		return err
+	}
+	if err = ctx.Err(); err != nil {
 		return err
 	}
 	expected.SHA256 = digest

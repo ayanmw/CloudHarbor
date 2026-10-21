@@ -1,13 +1,16 @@
 package baiduapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type apiTransport func(*http.Request) (*http.Response, error)
@@ -37,6 +40,48 @@ func TestListDirReadsAllPages(t *testing.T) {
 	files, err := NewClient("test", "test").ListDir("/queue")
 	if err != nil || len(files) != 1001 || calls != 2 {
 		t.Fatalf("files=%d calls=%d err=%v", len(files), calls, err)
+	}
+}
+
+func TestDownloadRequestCanBeCancelled(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(started); <-r.Context().Done() }))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		body, _, err := NewClient("test", "test").WithContext(ctx).DownloadFileWithRange(srv.URL, 0)
+		if body != nil {
+			body.Close()
+		}
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel cause lost: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not unblock HTTP")
+	}
+}
+
+func TestHTTPRetryClassification(t *testing.T) {
+	for _, status := range []int{401, 429, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			original := http.DefaultTransport
+			defer func() { http.DefaultTransport = original }()
+			http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+			})
+			_, err := NewClient("test", "test").ListDir("/queue")
+			if err == nil || IsRetryable(err) != (status != 401) {
+				t.Fatalf("status=%d retry=%v err=%v", status, IsRetryable(err), err)
+			}
+		})
 	}
 }
 
@@ -109,6 +154,79 @@ func TestMalformedDownloadLinkDoesNotExposeAccessToken(t *testing.T) {
 		}
 	}
 }
+
+func TestMetadataFailuresPreserveRetryCause(t *testing.T) {
+	for _, truncated := range []bool{false, true} {
+		t.Run(fmt.Sprint(truncated), func(t *testing.T) {
+			original := http.DefaultTransport
+			defer func() { http.DefaultTransport = original }()
+			http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+				status := 503
+				body := io.ReadCloser(io.NopCloser(strings.NewReader("upstream unavailable")))
+				if truncated {
+					status = 200
+					body = &brokenMetadataBody{}
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: body, Request: r}, nil
+			})
+			c := NewClient("test", "test")
+			_, linkErr := c.GetDownloadLink(1)
+			for _, err := range []error{linkErr, c.RenameFile("/a", "b"), c.DeleteFile("/a")} {
+				if err == nil || !IsRetryable(err) {
+					t.Errorf("retry cause lost: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestIdleDownloadTimesOutAndIsRetryable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "6")
+		io.WriteString(w, "abc")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	body, _, err := NewClient("test", "test").WithIdleTimeout(30*time.Millisecond).DownloadFileWithRange(srv.URL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	_, err = io.ReadAll(body)
+	if err == nil || !IsRetryable(err) {
+		t.Fatalf("idle connection did not return retryable timeout: %v", err)
+	}
+}
+
+func TestProgressingDownloadCanOutliveIdleLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "5")
+		for _, b := range []byte("abcde") {
+			if _, err := w.Write([]byte{b}); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+			time.Sleep(150 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+	started := time.Now()
+	body, _, err := NewClient("test", "test").WithIdleTimeout(500*time.Millisecond).DownloadFileWithRange(srv.URL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	bytes, err := io.ReadAll(body)
+	if err != nil || string(bytes) != "abcde" || time.Since(started) <= 500*time.Millisecond {
+		t.Fatalf("progressing long download failed: %q %v", bytes, err)
+	}
+}
+
+type brokenMetadataBody struct{}
+
+func (*brokenMetadataBody) Read(p []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (*brokenMetadataBody) Close() error               { return nil }
 
 func TestDownloadRangeContract(t *testing.T) {
 	for _, tc := range []struct {

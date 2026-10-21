@@ -1,6 +1,9 @@
 package downloader
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"path/filepath"
@@ -25,6 +28,10 @@ type Task struct {
 	Speed            int64 // bytes/sec
 	ResumeSupported  bool
 	MD5              string // provider metadata only; not assumed to be a plain content MD5
+	Attempts         int
+	NextAttempt      time.Time
+	Root             bool
+	DownloadMode     DownloadMode
 }
 
 // keep retains the cloud item and marks its name; delete removes it only after
@@ -37,6 +44,9 @@ const (
 )
 
 type Downloader struct {
+	ctx          context.Context
+	cancel       context.CancelFunc
+	queue        *scheduler
 	cfg          *config.Config
 	client       *baiduapi.Client
 	clientMutex  sync.RWMutex
@@ -49,7 +59,10 @@ type Downloader struct {
 }
 
 func NewDownloader(cfg *config.Config, client *baiduapi.Client) *Downloader {
-	return &Downloader{cfg: cfg, client: client, tasks: make(map[int64]*Task), inFlight: make(map[int64]bool)}
+	ctx, cancel := context.WithCancel(context.Background())
+	d := &Downloader{cfg: cfg, client: client, tasks: make(map[int64]*Task), inFlight: make(map[int64]bool), ctx: ctx, cancel: cancel}
+	d.queue = newScheduler(d)
+	return d
 }
 func (d *Downloader) UpdateClient(client *baiduapi.Client) {
 	d.clientMutex.Lock()
@@ -65,6 +78,20 @@ func (d *Downloader) SetDownloadMode(mode DownloadMode) {
 	if mode != DownloadModeKeep && mode != DownloadModeDelete {
 		return
 	}
+	q := d.queue
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.stopping || q.err != nil {
+		return
+	}
+	if q.store != nil {
+		body, _ := json.Marshal(map[string]DownloadMode{"download_mode": mode})
+		if err := q.store.SaveSettings(body); err != nil {
+			q.err = fmt.Errorf("设置保存失败: %w", err)
+			d.cancel()
+			return
+		}
+	}
 	d.modeMutex.Lock()
 	defer d.modeMutex.Unlock()
 	d.downloadMode = mode
@@ -79,49 +106,38 @@ func (d *Downloader) GetDownloadMode() DownloadMode {
 }
 
 func (d *Downloader) ScanAndDownload() error {
-	d.scanMutex.Lock()
+	if !d.scanMutex.TryLock() {
+		return nil
+	}
 	defer d.scanMutex.Unlock()
-	files, err := d.getClient().ListDir(d.cfg.QueueDir)
+	if err := d.ctx.Err(); err != nil {
+		return err
+	}
+	files, err := d.getClient().WithContext(d.ctx).ListDir(d.cfg.QueueDir)
 	if err != nil {
 		return fmt.Errorf("列目录失败: %w", err)
 	}
-	for _, f := range files {
-		if strings.HasSuffix(f.ServerFilename, ".可删除") {
-			continue
-		}
-		// Claim before launching: overlapping manual/timer scans must not write the
-		// same temporary file. A failed task remains discoverable on the next scan.
-		d.taskMutex.Lock()
-		previous := d.tasks[f.FsID]
-		if d.inFlight[f.FsID] || (previous != nil && previous.Status == "done" && previous.FileInfo == f) {
-			d.taskMutex.Unlock()
-			continue
-		}
-		d.inFlight[f.FsID] = true
-		d.taskMutex.Unlock()
-		go func(info baiduapi.FileInfo) {
-			defer func() { d.taskMutex.Lock(); delete(d.inFlight, info.FsID); d.taskMutex.Unlock() }()
-			if info.IsDir == 1 {
-				d.downloadFolder(info)
-			} else {
-				d.downloadFile(info)
-			}
-		}(f)
-	}
-	return nil
+	return d.queue.reconcile(files)
 }
 
 func (d *Downloader) beginTask(info baiduapi.FileInfo, local string) {
 	d.taskMutex.Lock()
 	defer d.taskMutex.Unlock()
-	d.tasks[info.FsID] = &Task{FileInfo: info, LocalPath: local, Status: "downloading", StartTime: time.Now(), LastProgressTime: time.Now(), ResumeSupported: true, MD5: info.MD5}
+	task := &Task{FileInfo: info, LocalPath: local, Status: "downloading", StartTime: time.Now(), LastProgressTime: time.Now(), ResumeSupported: true, MD5: info.MD5}
+	if old := d.tasks[info.FsID]; old != nil {
+		task.Attempts = old.Attempts
+		task.NextAttempt = old.NextAttempt
+		task.Root = old.Root
+		task.DownloadMode = old.DownloadMode
+	}
+	d.tasks[info.FsID] = task
 }
 func (d *Downloader) updateTaskStatus(id int64, status, message string) {
 	d.taskMutex.Lock()
 	defer d.taskMutex.Unlock()
 	if task := d.tasks[id]; task != nil {
 		task.Status = status
-		task.Error = message
+		task.Error = errorSummary(message)
 		if status == "done" || status == "failed" {
 			task.FinishTime = time.Now()
 			task.Speed = 0
@@ -149,36 +165,43 @@ func (d *Downloader) finish(id int64, err error) {
 }
 
 func (d *Downloader) downloadFile(info baiduapi.FileInfo) {
-	if !validName(info.ServerFilename) {
-		d.beginTask(info, "")
-		d.finish(info.FsID, fmt.Errorf("invalid cloud filename %q", info.ServerFilename))
-		return
-	}
-	mode := d.GetDownloadMode()
-	err := d.downloadLocalFile(info, info.ServerFilename)
-	if err == nil {
-		err = d.postprocess(info, mode)
-	}
-	d.finish(info.FsID, err)
+	d.finish(info.FsID, d.runRoot(d.ctx, info, d.GetDownloadMode()))
 }
 
 func (d *Downloader) downloadFolder(info baiduapi.FileInfo) {
+	d.finish(info.FsID, d.runRoot(d.ctx, info, d.GetDownloadMode()))
+}
+
+func (d *Downloader) runRoot(ctx context.Context, info baiduapi.FileInfo, mode DownloadMode) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !validName(info.ServerFilename) {
 		d.beginTask(info, "")
-		d.finish(info.FsID, fmt.Errorf("invalid cloud filename %q", info.ServerFilename))
-		return
+		return fmt.Errorf("invalid cloud filename %q", info.ServerFilename)
 	}
-	mode := d.GetDownloadMode()
-	err := d.downloadLocalFolder(info, info.ServerFilename)
+	if info.Path != path.Join(d.cfg.QueueDir, info.ServerFilename) {
+		d.beginTask(info, "")
+		return fmt.Errorf("cloud root path does not match queue: %s", info.Path)
+	}
+	var err error
+	if info.IsDir == 1 {
+		err = d.downloadLocalFolder(ctx, info, info.ServerFilename)
+	} else {
+		err = d.downloadLocalFile(ctx, info, info.ServerFilename)
+	}
 	// Children are never renamed individually: keeping their cloud paths stable
 	// allows an incomplete folder to be retried without losing failed descendants.
 	if err == nil {
-		err = d.postprocess(info, mode)
+		err = d.postprocess(ctx, info, mode)
 	}
-	d.finish(info.FsID, err)
+	return err
 }
 
-func (d *Downloader) downloadLocalFolder(info baiduapi.FileInfo, relative string) error {
+func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.FileInfo, relative string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	local, err := d.localPath(relative)
 	d.beginTask(info, local)
 	if err == nil {
@@ -188,34 +211,40 @@ func (d *Downloader) downloadLocalFolder(info baiduapi.FileInfo, relative string
 		d.finish(info.FsID, err)
 		return err
 	}
-	children, err := d.getClient().ListDir(info.Path)
+	children, err := d.getClient().WithContext(ctx).ListDir(info.Path)
 	if err != nil {
 		d.finish(info.FsID, err)
 		return err
 	}
-	var failures []string
+	var failures []error
 	for _, child := range children {
+		if err := ctx.Err(); err != nil {
+			d.finish(info.FsID, err)
+			return err
+		}
 		// Old markers do not prove that this NAS still has the child.
 		if strings.HasSuffix(child.ServerFilename, ".可删除") {
-			failures = append(failures, child.Path+": 发现旧版标记，无法验证本地文件；请移出队列目录或恢复原名后重试")
+			failures = append(failures, fmt.Errorf("%s: 发现旧版标记，无法验证本地文件；请移出队列目录或恢复原名后重试", child.Path))
 			continue
 		}
 		if !validName(child.ServerFilename) {
 			err = fmt.Errorf("invalid cloud filename %q", child.ServerFilename)
+		} else if child.Path != path.Join(info.Path, child.ServerFilename) {
+			err = fmt.Errorf("cloud child path does not match directory: %s", child.Path)
 		} else {
 			childRelative := filepath.Join(relative, child.ServerFilename)
 			if child.IsDir == 1 {
-				err = d.downloadLocalFolder(child, childRelative)
+				err = d.downloadLocalFolder(ctx, child, childRelative)
 			} else {
-				err = d.downloadLocalFile(child, childRelative)
+				err = d.downloadLocalFile(ctx, child, childRelative)
 			}
 		}
 		if err != nil {
-			failures = append(failures, child.Path+": "+err.Error())
+			failures = append(failures, fmt.Errorf("%s: %w", child.Path, err))
 		}
 	}
 	if len(failures) > 0 {
-		err = fmt.Errorf("目录有 %d 个失败项目: %s", len(failures), strings.Join(failures, "; "))
+		err = fmt.Errorf("目录有 %d 个失败项目: %w", len(failures), errors.Join(failures...))
 	} else {
 		err = nil
 	}
@@ -223,22 +252,25 @@ func (d *Downloader) downloadLocalFolder(info baiduapi.FileInfo, relative string
 	return err
 }
 
-func (d *Downloader) downloadLocalFile(info baiduapi.FileInfo, relative string) error {
+func (d *Downloader) downloadLocalFile(ctx context.Context, info baiduapi.FileInfo, relative string) error {
 	local, err := d.localPath(relative)
 	d.beginTask(info, local)
 	if err == nil {
-		err = d.transfer(info, relative, local)
+		err = d.transfer(ctx, info, relative, local)
 	}
 	d.finish(info.FsID, err)
 	return err
 }
 
-func (d *Downloader) postprocess(info baiduapi.FileInfo, mode DownloadMode) error {
+func (d *Downloader) postprocess(ctx context.Context, info baiduapi.FileInfo, mode DownloadMode) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var err error
 	if mode == DownloadModeDelete {
-		err = d.getClient().DeleteFile(info.Path)
+		err = d.getClient().WithContext(ctx).DeleteFile(info.Path)
 	} else {
-		err = d.getClient().RenameFile(info.Path, path.Base(info.Path)+".可删除")
+		err = d.getClient().WithContext(ctx).RenameFile(info.Path, path.Base(info.Path)+".可删除")
 	}
 	if err != nil {
 		return fmt.Errorf("本地已完成，网盘后处理待重试: %w", err)

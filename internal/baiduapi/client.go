@@ -1,13 +1,16 @@
 package baiduapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // ErrRangeIgnored means the server returned a full body for a resume request.
@@ -28,6 +31,51 @@ func requestError(err error) error {
 type Client struct {
 	AccessToken string
 	AppKey      string
+	ctx         context.Context
+	idleTimeout time.Duration
+}
+
+// Copies keep each worker's cancellation scope independent from token updates.
+func (c *Client) WithContext(ctx context.Context) *Client { copy := *c; copy.ctx = ctx; return &copy }
+func (c *Client) context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+var metadataHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+func (c *Client) get(address string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(c.context(), http.MethodGet, address, nil)
+	if err != nil {
+		return nil, err
+	}
+	return metadataHTTPClient.Do(req)
+}
+
+type APIError struct {
+	Operation string
+	Status    int
+	Code      int
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s failed: HTTP=%d code=%d", e.Operation, e.Status, e.Code)
+}
+func IsRetryable(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var api *APIError
+	if errors.As(err, &api) {
+		return api.Status == 429 || api.Status >= 500
+	}
+	var network net.Error
+	return errors.As(err, &network)
 }
 
 // FileInfo 文件信息
@@ -70,7 +118,7 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 		params.Set("desc", "0")
 		params.Set("start", fmt.Sprint(start))
 		params.Set("limit", fmt.Sprint(limit))
-		resp, err := http.Get("https://pan.baidu.com/rest/2.0/xpan/file?" + params.Encode())
+		resp, err := c.get("https://pan.baidu.com/rest/2.0/xpan/file?" + params.Encode())
 		if err != nil {
 			return nil, fmt.Errorf("列目录请求失败: %w", requestError(err))
 		}
@@ -80,7 +128,7 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 			return nil, readErr
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("列目录 HTTP %d", resp.StatusCode)
+			return nil, &APIError{Operation: "list", Status: resp.StatusCode}
 		}
 		var result struct {
 			Errno *int            `json:"errno"`
@@ -89,8 +137,11 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 		if err = json.Unmarshal(body, &result); err != nil {
 			return nil, fmt.Errorf("解析目录响应失败: %w", err)
 		}
-		if result.Errno == nil || *result.Errno != 0 {
-			return nil, fmt.Errorf("目录响应失败 errno=%v", result.Errno)
+		if result.Errno == nil {
+			return nil, fmt.Errorf("目录响应缺失 errno")
+		}
+		if *result.Errno != 0 {
+			return nil, &APIError{Operation: "list", Status: resp.StatusCode, Code: *result.Errno}
 		}
 		if len(result.List) == 0 || result.List[0] != '[' {
 			return nil, fmt.Errorf("目录响应缺失文件列表")
@@ -125,13 +176,19 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 
 	fullURL := apiURL + "?" + params.Encode()
 	fmt.Printf("[BaiduAPI] 获取下载链接请求(multimedia): fsid=%d\n", fsid)
-	resp, err := http.Get(fullURL)
+	resp, err := c.get(fullURL)
 	if err != nil {
 		return "", fmt.Errorf("获取下载链接请求失败: %w", requestError(err))
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", &APIError{Operation: "filemetas", Status: resp.StatusCode}
+	}
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if readErr != nil {
+		return "", readErr
+	}
 	// Temporary download URLs must not be written into logs.
 
 	var result struct {
@@ -144,20 +201,20 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("解析下载链接响应失败: %w, body=%s", err, string(body))
+		return "", fmt.Errorf("解析下载链接响应失败: %w", err)
 	}
 
 	// 检查错误
 	if result.ErrorCode != 0 {
-		return "", fmt.Errorf("获取下载链接失败 error_code=%d, error_msg=%s", result.ErrorCode, result.ErrorMsg)
+		return "", &APIError{Operation: "filemetas", Status: resp.StatusCode, Code: result.ErrorCode}
 	}
 
 	if result.Errno != 0 {
-		return "", fmt.Errorf("获取下载链接失败 errno=%d", result.Errno)
+		return "", &APIError{Operation: "filemetas", Status: resp.StatusCode, Code: result.Errno}
 	}
 
 	if len(result.List) == 0 || result.List[0].Dlink == "" {
-		return "", fmt.Errorf("下载链接为空, body=%s", string(body))
+		return "", fmt.Errorf("下载链接为空")
 	}
 
 	return result.List[0].Dlink, nil
@@ -165,48 +222,7 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 
 // DownloadFile 下载文件内容
 func (c *Client) DownloadFile(dlink string) (io.ReadCloser, int64, error) {
-	// 在 dlink 中添加 access_token 参数
-	if !strings.Contains(dlink, "access_token=") {
-		separator := "&"
-		if !strings.Contains(dlink, "?") {
-			separator = "?"
-		}
-		dlink = dlink + separator + "access_token=" + c.AccessToken
-	}
-
-	// 创建支持跳转的客户端
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// 允许跳转，但保持必要的头部
-			req.Header.Set("User-Agent", "pan.baidu.com")
-			return nil
-		},
-	}
-
-	req, err := http.NewRequest("GET", dlink, nil)
-	if err != nil {
-		return nil, 0, requestError(err)
-	}
-
-	// 设置必要的请求头（根据百度官方文档要求）
-	req.Header.Set("User-Agent", "pan.baidu.com")
-	req.Header.Set("Host", "d.pcs.baidu.com")
-
-	fmt.Printf("[BaiduAPI] 开始下载文件（已添加 access_token）\n")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, 0, fmt.Errorf("下载文件请求失败: %w", requestError(err))
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		// 读取错误响应体
-		body, _ := io.ReadAll(resp.Body)
-		return nil, 0, fmt.Errorf("下载文件失败 status=%d, body=%s", resp.StatusCode, string(body))
-	}
-
-	fmt.Printf("[BaiduAPI] 下载响应成功，Content-Length=%d\n", resp.ContentLength)
-	return resp.Body, resp.ContentLength, nil
+	return c.DownloadFileWithRange(dlink, 0)
 }
 
 // DownloadFileWithRange 支持断点续传的下载文件内容
@@ -214,6 +230,19 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 	if startOffset < 0 {
 		return nil, 0, fmt.Errorf("invalid negative offset")
 	}
+	ctx, cancel := context.WithCancelCause(c.context())
+	timeout := c.idleTimeout
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	timer := time.AfterFunc(timeout, func() { cancel(errDownloadIdleTimeout) })
+	accepted := false
+	defer func() {
+		if !accepted {
+			timer.Stop()
+			cancel(nil)
+		}
+	}()
 	// 在 dlink 中添加 access_token 参数
 	if !strings.Contains(dlink, "access_token=") {
 		separator := "&"
@@ -238,7 +267,7 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 		},
 	}
 
-	req, err := http.NewRequest("GET", dlink, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", dlink, nil)
 	if err != nil {
 		return nil, 0, requestError(err)
 	}
@@ -255,8 +284,13 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 	fmt.Printf("[BaiduAPI] 开始下载文件（支持断点续传，偏移量: %d）\n", startOffset)
 	resp, err := client.Do(req)
 	if err != nil {
+		if context.Cause(ctx) == errDownloadIdleTimeout {
+			return nil, 0, errDownloadIdleTimeout
+		}
 		return nil, 0, fmt.Errorf("下载文件请求失败: %w", requestError(err))
 	}
+	resp.Body = &idleBody{ReadCloser: resp.Body, ctx: ctx, cancel: cancel, timer: timer, timeout: timeout}
+	accepted = true
 
 	// 检查响应状态码
 	if startOffset > 0 && resp.StatusCode == http.StatusOK {
@@ -266,7 +300,8 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		return nil, 0, fmt.Errorf("下载文件失败 status=%d, body=%s", resp.StatusCode, string(body))
+		_ = body
+		return nil, 0, &APIError{Operation: "download", Status: resp.StatusCode}
 	}
 	// 接受 206 前验证完整后缀，不能仅根据状态码追加，否则会损坏本地文件。
 	if resp.StatusCode == http.StatusPartialContent {
@@ -306,19 +341,24 @@ func (c *Client) RenameFile(path, newName string) error {
 	data.Set("async", "0")
 	data.Set("filelist", string(opListJSON))
 
-	req, err := http.NewRequest("POST", apiURL+"?"+params.Encode(), strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(c.context(), "POST", apiURL+"?"+params.Encode(), strings.NewReader(data.Encode()))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := metadataHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("重命名请求失败: %w", requestError(err))
 	}
 	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return &APIError{Operation: "rename", Status: resp.StatusCode}
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if readErr != nil {
+		return readErr
+	}
 	var result struct {
 		Errno *int `json:"errno"`
 		Info  []struct {
@@ -326,15 +366,21 @@ func (c *Client) RenameFile(path, newName string) error {
 		} `json:"info"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("解析重命名响应失败: %w, body=%s", err, string(body))
+		return fmt.Errorf("解析重命名响应失败: %w", err)
 	}
 
-	if resp.StatusCode != http.StatusOK || result.Errno == nil || *result.Errno != 0 {
-		return fmt.Errorf("重命名请求失败 HTTP=%d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return &APIError{Operation: "rename", Status: resp.StatusCode}
+	}
+	if result.Errno == nil {
+		return fmt.Errorf("重命名响应缺失 errno")
+	}
+	if *result.Errno != 0 {
+		return &APIError{Operation: "rename", Status: resp.StatusCode, Code: *result.Errno}
 	}
 	for _, item := range result.Info {
 		if item.Errno != 0 {
-			return fmt.Errorf("重命名项目失败 errno=%d", item.Errno)
+			return &APIError{Operation: "rename", Status: resp.StatusCode, Code: item.Errno}
 		}
 	}
 
@@ -360,19 +406,24 @@ func (c *Client) DeleteFile(path string) error {
 	data.Set("async", "0")
 	data.Set("filelist", string(opListJSON))
 
-	req, err := http.NewRequest("POST", apiURL+"?"+params.Encode(), strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(c.context(), "POST", apiURL+"?"+params.Encode(), strings.NewReader(data.Encode()))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := metadataHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("删除请求失败: %w", requestError(err))
 	}
 	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return &APIError{Operation: "delete", Status: resp.StatusCode}
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if readErr != nil {
+		return readErr
+	}
 	var result struct {
 		Errno *int `json:"errno"`
 		Info  []struct {
@@ -380,15 +431,21 @@ func (c *Client) DeleteFile(path string) error {
 		} `json:"info"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("解析删除响应失败: %w, body=%s", err, string(body))
+		return fmt.Errorf("解析删除响应失败: %w", err)
 	}
 
-	if resp.StatusCode != http.StatusOK || result.Errno == nil || *result.Errno != 0 {
-		return fmt.Errorf("删除请求失败 HTTP=%d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return &APIError{Operation: "delete", Status: resp.StatusCode}
+	}
+	if result.Errno == nil {
+		return fmt.Errorf("删除响应缺失 errno")
+	}
+	if *result.Errno != 0 {
+		return &APIError{Operation: "delete", Status: resp.StatusCode, Code: *result.Errno}
 	}
 	for _, item := range result.Info {
 		if item.Errno != 0 {
-			return fmt.Errorf("删除项目失败 errno=%d", item.Errno)
+			return &APIError{Operation: "delete", Status: resp.StatusCode, Code: item.Errno}
 		}
 	}
 

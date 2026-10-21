@@ -32,7 +32,9 @@ function getStatusBadge(status) {
         'pending': '等待中',
         'downloading': '下载中',
         'done': '已完成',
-        'failed': '失败'
+        'failed': '失败',
+        'retry_wait': '等待重试',
+        'cancelled': '已取消'
     };
     return `<span class="status-badge ${status}">${statusMap[status] || status}</span>`;
 }

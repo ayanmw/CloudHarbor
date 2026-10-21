@@ -9,6 +9,9 @@ services:
       QUEUE_DIR: ${QUEUE_DIR:-/NAS_Download_Queue_preview}
       LOCAL_DOWNLOAD_DIR: /downloads
       SCAN_INTERVAL: "30"
+      MAX_PARALLEL: ${MAX_PARALLEL:-2}
+      MAX_RETRIES: ${MAX_RETRIES:-3}
+      RETRY_BACKOFF_SECONDS: ${RETRY_BACKOFF_SECONDS:-5}
       SERVER_HOST: 0.0.0.0
     volumes:
       - ./downloads:/downloads

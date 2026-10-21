@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"embed"
 	"log"
 	"net/http"
@@ -26,18 +27,22 @@ var indexOAuth []byte
 var resFiles embed.FS
 
 type Server struct {
+	ctx      context.Context
 	dl       *downloader.Downloader
 	upgrader websocket.Upgrader
 }
 
 func NewServer(dl *downloader.Downloader) *Server {
 	return &Server{
-		dl: dl,
+		ctx: context.Background(),
+		dl:  dl,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
 	}
 }
+
+func (s *Server) WithContext(ctx context.Context) *Server { s.ctx = ctx; return s }
 
 // HandlePageWS 返回 WebSocket 版本页面（默认页面）
 func (s *Server) HandlePageWS(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +146,8 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
+		case <-s.ctx.Done():
+			return
 		case <-done:
 			return
 		case <-ticker.C:
@@ -168,6 +175,10 @@ func (s *Server) sendStatus(conn *websocket.Conn) error {
 		FinishTime     string `json:"finish_time,omitempty"`
 		Progress       int64  `json:"progress"`
 		Speed          int64  `json:"speed,omitempty"` // 添加速度信息
+		Attempts       int    `json:"attempts"`
+		NextAttempt    string `json:"next_attempt,omitempty"`
+		Root           bool   `json:"is_root"`
+		DownloadMode   string `json:"download_mode,omitempty"`
 	}
 
 	statuses := make([]TaskStatus, 0, len(tasks))
@@ -182,10 +193,15 @@ func (s *Server) sendStatus(conn *websocket.Conn) error {
 			Error:          t.Error,
 			Progress:       t.Progress,
 			Speed:          t.Speed, // 添加速度信息
+			Attempts:       t.Attempts,
+			Root:           t.Root, DownloadMode: string(t.DownloadMode),
 		}
 
 		if !t.StartTime.IsZero() {
 			ts.StartTime = t.StartTime.Format(time.RFC3339)
+		}
+		if !t.NextAttempt.IsZero() {
+			ts.NextAttempt = t.NextAttempt.Format(time.RFC3339)
 		}
 		if !t.FinishTime.IsZero() {
 			ts.FinishTime = t.FinishTime.Format(time.RFC3339)
