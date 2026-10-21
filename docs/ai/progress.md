@@ -4,7 +4,12 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
-## 阶段 D：管理页入队与任务操作（准备 v0.4.0-preview.1）
+## v0.4.0-preview.1（管理页入队与任务操作已交付本地测试包）
+
+- 源码 revision：`a232efd4b84e0d16fb6c30e58a59d19d0e15bb86`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.4.0-preview.1.zip`，9,976,240 字节。
+- ZIP SHA256：`a0b5027ef2bafc7d1d953a9abda61f01b9739a265b85450dbce8cd016248a3ee`。三平台构建、解压 10 项哈希及 ARM64 架构检查通过。
+- Windows 与 WSL Linux AMD64 均从 verification 副本运行包内启动脚本；无百度凭证且 HTTPS 指向拒绝连接代理。新入口匿名 401、认证后页面/脚本/记录/健康 200、未授权 cloud 409；Windows 另核对预检 409、跨站 403、release 404。
+- Windows Ctrl+C 后 Service stopped（外层 PTY exit 1）；Linux 核对 /proc/exe 后 SIGTERM、Service stopped、exit 0。全部验证服务已关闭。完整证据在发布目录的 v0.4.0-preview.1-validation.md。
 
 ### 服务端入队与管理页已实现
 
@@ -24,7 +29,7 @@
 - HTTP/WS 新增精确 task_id 字符串、can_cancel/can_retry。操作入口不从 JS Number 构造 ID，保留旧 fs_id 数字兼容查询；能力根据服务端认证、扫描资格和 active worker 计算，Retry 再次检查认证。
 - 大于 2^53 的任务标识实际 HTTP/WS 往返和精确路径重试命中（409 而非 404）通过；取消未排空/源扫描资格/认证过期能力与前端五项脚本测试通过。
 - Windows UCRT、WSL 全模块 race 和 vet 通过；独立 reviewer 未发现确定 important/critical，git diff --check 通过。GetTasks 的队列/任务/客户端锁顺序已复核。
-- 当前准备新的独立包 v0.4.0-preview.1，旧版 v0.3.0-preview.1 保持不变；源码提交后构建并验证包内程序。
+- 独立包 v0.4.0-preview.1 已构建并验证，旧版 v0.3.0-preview.1 保持不变。
 - 下一步继续油猴的可靠选中项适配和安全衔接，异步状态契约需独立证据；不把本次管理页交付作为 D 全阶段完成。
 
 ## v0.3.0-preview.1（阶段 C 已交付本地测试包）
