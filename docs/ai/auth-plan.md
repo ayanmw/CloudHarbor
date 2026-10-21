@@ -25,4 +25,4 @@
 ## Task 4：验证与交付
 
 - [x] 定向/全量 test、vet、Windows/WSL race、独立 review；最后新增主程序授权应用与 pending 测试也完成两平台 race 复核。
-- [ ] 更新启动/容器配置、测试说明，独立版本与哈希及实机边界。
+- [x] 更新启动/容器配置、测试说明；v0.3.0-preview.1 三平台包与哈希、Windows/Linux 包内 HTTP/WS/退出验证完成；真实百度、真实浏览器/NAS/Docker/ARM64 边界见包内 TESTING.md 与同级 validation.md。
