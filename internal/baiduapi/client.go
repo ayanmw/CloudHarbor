@@ -14,6 +14,16 @@ import (
 // The caller must restart from zero instead of appending that body.
 var ErrRangeIgnored = errors.New("server ignored Range; restart required")
 
+// net/http wraps failures in url.Error, whose Error string includes credentials
+// in the request URL. Preserve the cause without putting that URL in task/logs.
+func requestError(err error) error {
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) {
+		return fmt.Errorf("%s: %w", requestErr.Op, requestErr.Err)
+	}
+	return err
+}
+
 // Client 百度网盘 API 客户端
 type Client struct {
 	AccessToken string
@@ -62,7 +72,7 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 		params.Set("limit", fmt.Sprint(limit))
 		resp, err := http.Get("https://pan.baidu.com/rest/2.0/xpan/file?" + params.Encode())
 		if err != nil {
-			return nil, fmt.Errorf("列目录请求失败: %w", err)
+			return nil, fmt.Errorf("列目录请求失败: %w", requestError(err))
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 16*1024*1024))
 		resp.Body.Close()
@@ -117,7 +127,7 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 	fmt.Printf("[BaiduAPI] 获取下载链接请求(multimedia): fsid=%d\n", fsid)
 	resp, err := http.Get(fullURL)
 	if err != nil {
-		return "", fmt.Errorf("获取下载链接请求失败: %w", err)
+		return "", fmt.Errorf("获取下载链接请求失败: %w", requestError(err))
 	}
 	defer resp.Body.Close()
 
@@ -185,7 +195,7 @@ func (c *Client) DownloadFile(dlink string) (io.ReadCloser, int64, error) {
 	fmt.Printf("[BaiduAPI] 开始下载文件（已添加 access_token）\n")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("下载文件请求失败: %w", err)
+		return nil, 0, fmt.Errorf("下载文件请求失败: %w", requestError(err))
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -245,7 +255,7 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 	fmt.Printf("[BaiduAPI] 开始下载文件（支持断点续传，偏移量: %d）\n", startOffset)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("下载文件请求失败: %w", err)
+		return nil, 0, fmt.Errorf("下载文件请求失败: %w", requestError(err))
 	}
 
 	// 检查响应状态码
@@ -304,7 +314,7 @@ func (c *Client) RenameFile(path, newName string) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("重命名请求失败: %w", err)
+		return fmt.Errorf("重命名请求失败: %w", requestError(err))
 	}
 	defer resp.Body.Close()
 
@@ -358,7 +368,7 @@ func (c *Client) DeleteFile(path string) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("删除请求失败: %w", err)
+		return fmt.Errorf("删除请求失败: %w", requestError(err))
 	}
 	defer resp.Body.Close()
 

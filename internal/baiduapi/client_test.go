@@ -2,6 +2,7 @@ package baiduapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -82,6 +83,17 @@ func TestFileVersionUsesOfficialServerMtime(t *testing.T) {
 	}
 	if f.Mtime != 987 {
 		t.Fatalf("server_mtime lost: %+v", f)
+	}
+}
+
+func TestTransportErrorsDoNotExposeAccessToken(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) { return nil, fmt.Errorf("network unavailable") })
+	c := NewClient("private-token", "test")
+	_, err := c.ListDir("/queue")
+	if err == nil || strings.Contains(err.Error(), "private-token") {
+		t.Fatalf("credential in transport error: %v", err)
 	}
 }
 
