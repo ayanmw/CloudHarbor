@@ -11,29 +11,39 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"web_browser_baidu_onekey_upload/internal/authorization"
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/config"
+	"web_browser_baidu_onekey_upload/internal/credentials"
 	"web_browser_baidu_onekey_upload/internal/downloader"
-	"web_browser_baidu_onekey_upload/internal/oauth"
+	"web_browser_baidu_onekey_upload/internal/management"
 	"web_browser_baidu_onekey_upload/internal/webui"
 )
 
 var (
-	cfg          *config.Config
-	dl           *downloader.Downloader
-	ui           *webui.Server
-	lastScanUnix atomic.Int64
-	scanRequests = make(chan struct{}, 1)
+	cfg            *config.Config
+	dl             *downloader.Downloader
+	ui             *webui.Server
+	lastScanUnix   atomic.Int64
+	auth           *credentials.Manager
+	lastScanResult atomic.Pointer[scanResult]
+	scanRequests   = make(chan struct{}, 1)
 )
 
 var version = "dev"
 var revision = "unknown"
+
+type scanResult struct {
+	Success time.Time
+	Error   string
+}
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -64,26 +74,41 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	dl.SetAuthentication(client, false, time.Time{})
+	auth, err = credentials.Open(dl, credentials.Options{AppKey: cfg.BaiduAppKey, SecretKey: cfg.BaiduSecretKey, AccessToken: cfg.AccessToken, RefreshToken: cfg.RefreshToken}, nil, func(update credentials.Update) {
+		dl.SetAuthentication(baiduapi.NewClient(update.AccessToken, cfg.BaiduAppKey), update.Ready, update.ExpiresAt)
+		if update.Ready {
+			select {
+			case scanRequests <- struct{}{}:
+			default:
+			}
+		}
+	})
+	if err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		dl.Shutdown(shutdownCtx)
+		cancel()
+		log.Fatal(err)
+	}
+	dl.SetAuthenticationFailureHandler(auth.NotifyRejected)
+	adminKey, err := dl.AdministratorKey(cfg.AdminPassword)
+	if err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		dl.Shutdown(shutdownCtx)
+		cancel()
+		log.Fatal(err)
+	}
+	gate, err := management.New(adminKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if cfg.AdminPassword == "" {
+		log.Printf("Administrator username: admin; password stored in %s", filepath.Join(cfg.LocalDownDir, ".nas-downloader", "queue", "admin-key.json"))
+	}
+	authorizationHTTP := authorization.New(dl.Context(), cfg.BaiduAppKey, cfg.BaiduSecretKey, auth, nil)
 
 	// 创建 WebUI 服务器
-	ui = webui.NewServer(dl).WithContext(ctx)
-	mux := http.NewServeMux()
-
-	// HTTP 路由 - 将 WebSocket 版本设为默认页面
-	mux.HandleFunc("/", ui.HandlePageWS)
-	mux.HandleFunc("/ws", ui.HandleWS)
-	mux.HandleFunc("/poll", ui.HandlePagePoll)
-	mux.HandleFunc("/oauth", ui.HandlePageOAuth)
-	mux.HandleFunc("/res/", ui.HandleRes)
-	mux.HandleFunc("/api/health", handleHealth)
-	mux.HandleFunc("/api/status", handleStatus)
-	mux.HandleFunc("/api/scan", handleScan)
-	mux.HandleFunc("/api/tasks/", handleTaskAction)
-
-	// OAuth 相关路由
-	mux.HandleFunc("/api/oauth/device-code", handleGetDeviceCode)
-	mux.HandleFunc("/api/oauth/token", handleGetToken)
-	mux.HandleFunc("/api/oauth/refresh", handleRefreshToken)
+	ui = webui.NewServer(dl).WithContext(dl.Context())
 
 	// 启动后台扫描任务
 	address := net.JoinHostPort(cfg.ServerHost, cfg.ServerPort)
@@ -94,11 +119,12 @@ func main() {
 		dl.Shutdown(shutdownCtx)
 		log.Fatal(err)
 	}
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Handler: applicationHandler(gate, authorizationHTTP), BaseContext: func(net.Listener) context.Context { return dl.Context() }, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- server.Serve(listener) }()
 	scanDone := make(chan struct{})
-	go func() { defer close(scanDone); runScanner(ctx) }()
+	dl.StartBackground(auth.Run)
+	dl.StartBackground(func(scanCtx context.Context) { defer close(scanDone); runScanner(scanCtx) })
 	log.Printf("HTTP server listening on %s\n", address)
 	select {
 	case <-ctx.Done():
@@ -125,6 +151,24 @@ func main() {
 	log.Println("Service stopped")
 }
 
+func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.Server) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", ui.HandlePageWS)
+	mux.HandleFunc("/ws", ui.HandleWS)
+	mux.HandleFunc("/poll", ui.HandlePagePoll)
+	mux.HandleFunc("/oauth", ui.HandlePageOAuth)
+	mux.HandleFunc("/res/", ui.HandleRes)
+	mux.HandleFunc("/api/health", handleHealth)
+	mux.HandleFunc("/api/status", handleStatus)
+	mux.HandleFunc("/api/scan", handleScan)
+	mux.HandleFunc("/api/tasks/", handleTaskAction)
+	mux.HandleFunc("/api/oauth/device-code", authorizationHTTP.HandleDeviceCode)
+	mux.HandleFunc("/api/oauth/token", authorizationHTTP.HandleToken)
+	mux.HandleFunc("/api/oauth/refresh", authorizationHTTP.HandleRefresh)
+	mux.HandleFunc("/api/oauth/status", authorizationHTTP.HandleStatus)
+	return gate.Wrap(mux)
+}
+
 func runScanner(ctx context.Context) {
 	ticker := time.NewTicker(time.Duration(cfg.ScanInterval) * time.Second)
 	defer ticker.Stop()
@@ -132,9 +176,24 @@ func runScanner(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		lastScanUnix.Store(time.Now().UnixNano())
-		if err := dl.ScanAndDownload(); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("[Scanner] 扫描失败: %v", err)
+		if dl.AuthenticationReady() {
+			lastScanUnix.Store(time.Now().UnixNano())
+			result := &scanResult{}
+			if prior := lastScanResult.Load(); prior != nil {
+				result.Success = prior.Success
+			}
+			if err := dl.ScanAndDownload(); err != nil {
+				result.Error = "scan_failed"
+				if errors.Is(err, downloader.ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(err) {
+					result.Error = "authentication_wait"
+				}
+				if !errors.Is(err, context.Canceled) {
+					log.Printf("[Scanner] 扫描失败: %v", err)
+				}
+			} else {
+				result.Success = time.Now()
+			}
+			lastScanResult.Store(result)
 		}
 		select {
 		case <-ctx.Done():
@@ -151,7 +210,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	downloadingCount := 0
 	doneCount := 0
 	failedCount := 0
-	pendingCount, retryCount, cancelledCount := 0, 0, 0
+	pendingCount, retryCount, cancelledCount, authWaitCount := 0, 0, 0, 0
 
 	for _, t := range tasks {
 		switch t.Status {
@@ -167,10 +226,13 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 			retryCount++
 		case "cancelled":
 			cancelledCount++
+		case "auth_wait":
+			authWaitCount++
 		}
 	}
 
 	response := map[string]interface{}{
+		"authentication": auth.Status(), "auth_wait": authWaitCount,
 		"pending": pendingCount, "retry_wait": retryCount, "cancelled": cancelledCount, "max_parallel": cfg.MaxParallel,
 		"version":        version,
 		"revision":       revision,
@@ -181,6 +243,24 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"downloading":    downloadingCount,
 		"done":           doneCount,
 		"failed":         failedCount,
+	}
+	if lastScanUnix.Load() == 0 {
+		response["last_scan_time"] = ""
+		response["next_scan_time"] = ""
+	}
+	if result := lastScanResult.Load(); result != nil {
+		if !result.Success.IsZero() {
+			response["last_successful_scan"] = result.Success.Format(time.RFC3339)
+		}
+		if result.Error != "" {
+			response["status"] = "degraded"
+			response["scan_error"] = result.Error
+		}
+	} else {
+		response["status"] = "starting"
+	}
+	if !auth.Status().Ready {
+		response["status"] = "waiting_authorization"
 	}
 	if err := dl.QueueError(); err != nil {
 		response["status"] = "degraded"
@@ -299,89 +379,4 @@ func handleTaskAction(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"message": "task action accepted"})
-}
-
-// handleGetDeviceCode 获取设备码
-func handleGetDeviceCode(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if cfg.BaiduAppKey == "" {
-		http.Error(w, "BAIDU_APP_KEY 未配置", http.StatusBadRequest)
-		return
-	}
-
-	deviceResp, err := oauth.GetDeviceCode(cfg.BaiduAppKey)
-	if err != nil {
-		http.Error(w, "获取设备码失败: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(deviceResp)
-}
-
-// handleGetToken 轮询获取 Token
-func handleGetToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if cfg.BaiduAppKey == "" || cfg.BaiduSecretKey == "" {
-		http.Error(w, "BAIDU_APP_KEY 或 BAIDU_SECRET_KEY 未配置", http.StatusBadRequest)
-		return
-	}
-
-	// 解析请求参数
-	var req struct {
-		DeviceCode string `json:"device_code"`
-		Interval   int    `json:"interval"`
-		ExpiresIn  int    `json:"expires_in"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "解析请求参数失败: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	tokenResp, err := oauth.PollForToken(cfg.BaiduAppKey, cfg.BaiduSecretKey, req.DeviceCode, req.Interval, req.ExpiresIn)
-	if err != nil {
-		http.Error(w, "获取 Token 失败: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tokenResp)
-}
-
-// handleRefreshToken 刷新 Token
-func handleRefreshToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if cfg.BaiduAppKey == "" || cfg.BaiduSecretKey == "" || cfg.RefreshToken == "" {
-		http.Error(w, "缺少必要的配置参数", http.StatusBadRequest)
-		return
-	}
-
-	tokenResp, err := oauth.RefreshToken(cfg.BaiduAppKey, cfg.BaiduSecretKey, cfg.RefreshToken)
-	if err != nil {
-		http.Error(w, "刷新 Token 失败: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// 更新配置中的 Token
-	cfg.AccessToken = tokenResp.AccessToken
-	cfg.RefreshToken = tokenResp.RefreshToken
-
-	// 更新百度网盘客户端
-	dl.UpdateClient(baiduapi.NewClient(cfg.AccessToken, cfg.BaiduAppKey))
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tokenResp)
 }

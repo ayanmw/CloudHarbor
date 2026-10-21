@@ -228,14 +228,18 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	}
 	d.updateProgress(info.FsID, offset)
 	if offset < info.Size || info.Size == 0 {
-		link, linkErr := d.getClient().WithContext(ctx).GetDownloadLink(info.FsID)
+		client, _, authErr := d.authorizedClient(ctx)
+		if authErr != nil {
+			return authErr
+		}
+		link, linkErr := client.GetDownloadLink(info.FsID)
 		if linkErr != nil {
 			return linkErr
 		}
-		body, length, downloadErr := d.getClient().WithContext(ctx).DownloadFileWithRange(link, offset)
+		body, length, downloadErr := client.DownloadFileWithRange(link, offset)
 		if errors.Is(downloadErr, baiduapi.ErrRangeIgnored) {
 			offset = 0
-			body, length, downloadErr = d.getClient().WithContext(ctx).DownloadFileWithRange(link, 0)
+			body, length, downloadErr = client.DownloadFileWithRange(link, 0)
 		}
 		if downloadErr != nil {
 			return downloadErr

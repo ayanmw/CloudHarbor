@@ -5,7 +5,11 @@ services:
     ports:
       - "127.0.0.1:18089:8080"
     environment:
-      BAIDU_ACCESS_TOKEN: ${BAIDU_ACCESS_TOKEN:?Set BAIDU_ACCESS_TOKEN in .env}
+      BAIDU_ACCESS_TOKEN: ${BAIDU_ACCESS_TOKEN:-}
+      BAIDU_REFRESH_TOKEN: ${BAIDU_REFRESH_TOKEN:-}
+      BAIDU_APP_KEY: ${BAIDU_APP_KEY:-}
+      BAIDU_SECRET_KEY: ${BAIDU_SECRET_KEY:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       QUEUE_DIR: ${QUEUE_DIR:-/NAS_Download_Queue_preview}
       LOCAL_DOWNLOAD_DIR: /downloads
       SCAN_INTERVAL: "30"

@@ -2,7 +2,6 @@ package baiduapi
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,8 +10,29 @@ import (
 )
 
 func IsAuthenticationError(err error) bool {
-	var api *APIError
-	return errors.As(err, &api) && (api.Status == http.StatusUnauthorized || api.Code == 110 || api.Code == 111)
+	_, ok := AuthenticationFingerprint(err)
+	return ok
+}
+
+// Walk joined errors too: a folder's first child failure may be unrelated.
+func AuthenticationFingerprint(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	if api, ok := err.(*APIError); ok && (api.Status == http.StatusUnauthorized || api.Code == 110 || api.Code == 111) {
+		return api.tokenFingerprint, true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			if fp, found := AuthenticationFingerprint(child); found {
+				return fp, true
+			}
+		}
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return AuthenticationFingerprint(wrapped.Unwrap())
+	}
+	return "", false
 }
 
 // The repository SDK declares uinfo.uk as an account identifier. Parse it as
@@ -25,7 +45,7 @@ func (c *Client) UserID() (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", &APIError{Operation: "uinfo", Status: resp.StatusCode}
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "uinfo", Status: resp.StatusCode}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024+1))
 	if err != nil {
@@ -43,13 +63,13 @@ func (c *Client) UserID() (string, error) {
 		return "", fmt.Errorf("invalid uinfo response")
 	}
 	if result.ErrorCode != 0 {
-		return "", &APIError{Operation: "uinfo", Status: resp.StatusCode, Code: result.ErrorCode}
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "uinfo", Status: resp.StatusCode, Code: result.ErrorCode}
 	}
 	if result.Errno == nil {
 		return "", fmt.Errorf("uinfo response missing errno")
 	}
 	if *result.Errno != 0 {
-		return "", &APIError{Operation: "uinfo", Status: resp.StatusCode, Code: *result.Errno}
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "uinfo", Status: resp.StatusCode, Code: *result.Errno}
 	}
 	id, err := result.UK.Int64()
 	if err != nil || id <= 0 {

@@ -1,5 +1,9 @@
 param(
     [string]$AccessToken = $env:BAIDU_ACCESS_TOKEN,
+    [string]$RefreshToken = $env:BAIDU_REFRESH_TOKEN,
+    [string]$AppKey = $env:BAIDU_APP_KEY,
+    [string]$SecretKey = $env:BAIDU_SECRET_KEY,
+    [string]$AdminPassword = $env:ADMIN_PASSWORD,
     [string]$QueueDir = '/NAS_Download_Queue_preview',
     [string]$DownloadDir = (Join-Path $PSScriptRoot 'downloads'),
     [int]$Port = 18089,
@@ -8,8 +12,11 @@ param(
     [int]$RetryBackoffSeconds = 5
 )
 $ErrorActionPreference = 'Stop'
-if ([string]::IsNullOrWhiteSpace($AccessToken)) { throw 'Set BAIDU_ACCESS_TOKEN or pass -AccessToken before starting.' }
 $env:BAIDU_ACCESS_TOKEN = $AccessToken
+$env:BAIDU_REFRESH_TOKEN = $RefreshToken
+$env:BAIDU_APP_KEY = $AppKey
+$env:BAIDU_SECRET_KEY = $SecretKey
+$env:ADMIN_PASSWORD = $AdminPassword
 $env:QUEUE_DIR = $QueueDir
 $env:LOCAL_DOWNLOAD_DIR = [IO.Path]::GetFullPath($DownloadDir)
 $env:SCAN_INTERVAL = '30'

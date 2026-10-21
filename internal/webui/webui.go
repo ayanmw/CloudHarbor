@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"web_browser_baidu_onekey_upload/internal/downloader"
+	"web_browser_baidu_onekey_upload/internal/management"
 )
 
 //go:embed index_ws.html
@@ -37,7 +38,7 @@ func NewServer(dl *downloader.Downloader) *Server {
 		ctx: context.Background(),
 		dl:  dl,
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin: management.CheckOrigin,
 		},
 	}
 }

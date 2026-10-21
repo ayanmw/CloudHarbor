@@ -1,7 +1,6 @@
 #!/bin/sh
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-: "${BAIDU_ACCESS_TOKEN:?Set BAIDU_ACCESS_TOKEN before starting}"
 case "$(uname -m)" in
   x86_64) arch=amd64 ;;
   aarch64|arm64) arch=arm64 ;;

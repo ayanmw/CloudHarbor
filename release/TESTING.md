@@ -1,6 +1,6 @@
 # 下载可靠性独立测试版（版本见 BUILD-INFO.txt）
 
-用途：验证下载正确性、持久化后台队列和有界调度；整轮无人值守优化仍在推进。无需 Go 开发环境，无需百度原版客户端。解压后保留 bin/、启动脚本与文档的相对目录。
+用途：验证下载正确性、持久化后台队列、百度授权保存/续期及管理认证；整轮无人值守优化仍在推进。无需 Go 开发环境，无需百度原版客户端。解压后保留 bin/、启动脚本与文档的相对目录。
 
 ## 测试前准备
 
@@ -19,13 +19,35 @@ $env:BAIDU_ACCESS_TOKEN = '你的 Access Token'
 .\Start.ps1
 ```
 
-默认下载到当前版本目录的 downloads，访问 http://127.0.0.1:18089 。自定义目录：
+默认下载到当前版本目录的 downloads，访问 http://127.0.0.1:18089 。浏览器登录用户名为 `admin`。未设置 ADMIN_PASSWORD 时，密码由程序随机生成，读取：
+
+```powershell
+(Get-Content .\downloads\.nas-downloader\queue\admin-key.json -Raw | ConvertFrom-Json).key
+```
+
+也可以在启动前设置至少 16 字节的 `$env:ADMIN_PASSWORD`。不要发送这个密码或 admin-key.json。自定义目录：
 
 ```powershell
 .\Start.ps1 -DownloadDir 'D:\NAS-preview-downloads' -Port 18090
 ```
 
-Ctrl+C 停止；再次执行同一命令恢复。不要把 Token 写到提交文件或发送到反馈中。也可以直接运行 bin/windows-amd64/baidu-downloader.exe，程序只读取环境变量，不自动加载 .env。
+Ctrl+C 停止；再次执行同一命令恢复。不要把 Token 写到提交文件或发送到反馈中。也可以直接运行 bin/windows-amd64/baidu-downloader.exe，程序只读取环境变量，不自动加载 .env。启动不强制要求 Token；未授权时可以进入管理页面，但扫描和下载暂停。
+
+## 网页授权与自动续期
+
+已有有效 Access Token 时可以继续按上面方式启动。若要使用网页授权及后台自动续期，启动前同时配置自己的百度应用：
+
+```powershell
+$env:BAIDU_APP_KEY = '你的应用 App Key'
+$env:BAIDU_SECRET_KEY = '你的应用 Secret Key'
+.\Start.ps1
+```
+
+管理员登录后打开 `/oauth`，获取授权码，用百度账号完成授权，再点击“已完成百度授权，开始验证”。成功后凭证会保存并应用，后台重新扫描。页面不显示完整 Token。还可同时提供 BAIDU_REFRESH_TOKEN 作为首次启动凭证。
+
+凭证记录位于 `downloads/.nas-downloader/queue/credentials.json`，账号绑定位于 account.json。保存的凭证优先于环境中的旧 Token；App Secret 不写入凭证文件，重启后仍需通过环境提供。不要共享凭证文件或含它们的备份。POSIX 文件以 0600 创建，Windows 沿用下载目录 ACL，当前不额外加密凭证。
+
+同一下载目录固定绑定一个百度账号，更换账号请使用新目录。首次从旧版本迁移时只能绑定当前验证到的账号，请核对账号。临时刷新失败退避重试；旧凭证过期或被拒绝时暂停新任务，显示 auth_wait，恢复后必须重新扫描确认。仅有 Access Token 且不知到期时间时，如实显示到期未知；没有刷新能力时需要重新授权。
 
 可通过 `-MaxParallel 1 -MaxRetries 3 -RetryBackoffSeconds 5` 调整调度。并发上限 1..32；MAX_RETRIES 为首次失败之后的自动重试次数（0..20），指数退避上限 5 分钟。重启中断不消耗失败重试预算。元数据请求总超时 30 秒，下载空闲 90 秒无数据才超时，正常持续传输没有短总时限。
 
@@ -40,14 +62,14 @@ sh ./start.sh
 
 ## Docker Compose / NAS
 
-复制 preview.env.example 为 .env，填写 Token。运行：
+复制 preview.env.example 为 .env，填写 Token 或应用配置，以及可选管理员密码。运行：
 
 ```sh
 docker compose -f compose.yml up -d --build
 docker compose -f compose.yml logs -f
 ```
 
-只需要构建小型运行镜像，包内已有两种 Linux 架构的二进制。默认仅向 NAS 本机发布 18089 端口，可通过上述 SSH 转发访问。当前管理界面尚无登录认证，不建议将端口直接暴露公网。Docker 构建需要联网拉取 Alpine 和证书包。
+只需要构建小型运行镜像，包内已有两种 Linux 架构的二进制。默认仅向 NAS 本机发布 18089 端口，可通过上述 SSH 转发访问。管理员随机密码同样位于宿主 downloads 下的 admin-key.json。Docker 构建需要联网拉取 Alpine 和证书包。当前优先测试回环或 SSH 转发；TLS 终止反代尚未验收，Origin 的 scheme/Host 必须与后端请求一致。
 
 ## 建议测试顺序
 
@@ -66,18 +88,26 @@ docker compose -f compose.yml logs -f
 | 网络断流/HTTP 429、5xx | retry_wait 展示下次时间，预算用尽后 failed；普通扫描不会重置失败预算 |
 | 运行中取消任务 | 停止后续处理、保留临时数据；已发出的云端操作不能撤回 |
 | 用相同下载目录启动第二实例 | 明确报目录正在使用，不能同时写入；进程崩溃后 OS 自动释放锁 |
+| 不提供百度凭证启动 | 管理页面可登录，健康状态为 waiting_authorization；不发起扫描/下载 |
+| 未登录请求页面、API 或 WebSocket | 返回 401；管理认证和百度授权相互独立 |
+| 网页授权成功后重启 | 同账号凭证保留并重新验证；不必再次复制 Token |
+| 凭证失效或续期暂时失败 | auth_wait / 续期退避；恢复后扫描确认，不消耗下载失败预算 |
 
 ## 取消和手动重试
 
 此版提供 API，界面按钮会在后续体验版本完善。先请求 `/api/status`，选 `is_root: true` 的根任务，使用其 fs_id：
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:18089/api/status
-Invoke-RestMethod http://127.0.0.1:18089/api/tasks/123/cancel -Method Post
-Invoke-RestMethod http://127.0.0.1:18089/api/tasks/123/retry -Method Post
+$adminKey = (Get-Content .\downloads\.nas-downloader\queue\admin-key.json -Raw | ConvertFrom-Json).key
+$headers = @{ Authorization = "Bearer $adminKey" }
+Invoke-RestMethod http://127.0.0.1:18089/api/status -Headers $headers
+Invoke-RestMethod http://127.0.0.1:18089/api/tasks/123/cancel -Method Post -Headers $headers
+Invoke-RestMethod http://127.0.0.1:18089/api/tasks/123/retry -Method Post -Headers $headers
 ```
 
 把 123 换成实际 fs_id。retry 仅接受当前扫描确认存在的 failed/cancelled 根任务，重置失败预算；进行中的任务返回 409，不存在的根任务返回 404。新增 `attempts`、`next_attempt`、`download_mode` 字段分别展示启动次数、下次重试时间和该任务固定的后处理策略。
+
+若通过 ADMIN_PASSWORD 指定密码，请用该密码构造 Bearer 头，不读取随机密码文件。Linux 可使用 `curl -u admin http://127.0.0.1:18089/api/health`，交互输入管理员密码。
 
 全局模式会持久化，只影响以后新登记的任务；已排队的根任务不会因切换全局模式而改变策略。源项目离开队列或被标记时，未完成任务显示需人工核对，不会直接使用旧路径操作网盘。已完成历史仅表示曾经完成，不能代替对后来人工修改/删除本地文件的检查。
 
@@ -89,8 +119,8 @@ Invoke-RestMethod http://127.0.0.1:18089/api/tasks/123/retry -Method Post
 - SHA256 凭据用于检测本地文件变更和确认本次下载的本地身份；不能证明云端提供的内容本身正确。未假定云端 MD5 是普通文件 MD5。
 - 当前保证的是代码中的完成判定与进程中断恢复；未验证 NAS 突然断电后的文件系统持久性。
 - 根任务、默认后处理模式、失败次数、重试时间已持久化；目录子任务和实时速度在重启后重新展开，不作为独立队列记录。记录损坏、版本不支持、切换同一存储绑定的 QUEUE_DIR 时启动失败，不静默清空数据。请备份整个 .nas-downloader 后再处理损坏记录。
-- OAuth 自动续期、管理登录认证、界面任务按钮和入队脚本仍待后续版本。只在回环地址或可信测试环境使用。
-- 网页 OAuth 获取 Token 后自动应用的旧问题尚未纳入此版；请通过环境变量提供有效 Access Token。
+- OAuth 核心、网页应用、管理认证已实现并有模拟接口和真实本地 HTTP 验证；真实百度设备授权、自动续期和多日运行仍需实测。浏览器原生 Basic 登录与 WebSocket 配合仍需目标浏览器验收；命令行 Bearer/Basic 已验证。
+- 界面任务按钮和入队脚本仍待后续体验版本。
 - 顶层 `.可删除` 项按原有约定跳过；要重新测试请在网盘恢复原名，并使用新的本地测试目录。
 - 只处理静止的队列副本，暂不支持多个实例写同一下载目录。
 

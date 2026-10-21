@@ -1,6 +1,6 @@
 # 百度网盘 NAS 一键下载系统
 
-> 持续优化分支已提供可靠性预览版的构建与测试说明：[独立版本测试](release/TESTING.md)、[设计](docs/ai/reliability-design.md)、[进度](docs/ai/progress.md)。下方原有功能介绍中，油猴入队、网页授权自动应用和自动续期尚未完整实现，以进度文档与当前代码为准。独立运行默认仅监听 `127.0.0.1`；可用 `SERVER_HOST` 配置地址。
+> 持续优化分支已提供可靠性预览版的构建与测试说明：[独立版本测试](release/TESTING.md)、[设计](docs/ai/reliability-design.md)、[进度](docs/ai/progress.md)。持久化队列、网页授权应用/保存/续期和管理认证已实现并通过本地模拟测试，真实百度/NAS 验收仍待进行；油猴入队尚未完整实现。以进度文档与当前代码为准。默认仅监听 `127.0.0.1`；管理员用户名为 `admin`，密码来自 `ADMIN_PASSWORD` 或下载目录 `.nas-downloader/queue/admin-key.json`。可不带 Token 启动，再按测试说明配置应用并网页授权。
 
 ## 项目简介
 

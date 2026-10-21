@@ -2,6 +2,8 @@ package baiduapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,9 +57,19 @@ func (c *Client) get(address string) (*http.Response, error) {
 }
 
 type APIError struct {
-	Operation string
-	Status    int
-	Code      int
+	Operation        string
+	Status           int
+	Code             int
+	tokenFingerprint string
+}
+
+// Fingerprint identifies the credential used by a request without exposing it.
+func (c *Client) Fingerprint() string {
+	if c.AccessToken == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(c.AccessToken))
+	return hex.EncodeToString(sum[:])
 }
 
 func (e *APIError) Error() string {
@@ -128,7 +140,7 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 			return nil, readErr
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, &APIError{Operation: "list", Status: resp.StatusCode}
+			return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode}
 		}
 		var result struct {
 			Errno     *int            `json:"errno"`
@@ -139,13 +151,13 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 			return nil, fmt.Errorf("解析目录响应失败: %w", err)
 		}
 		if result.ErrorCode != 0 {
-			return nil, &APIError{Operation: "list", Status: resp.StatusCode, Code: result.ErrorCode}
+			return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: result.ErrorCode}
 		}
 		if result.Errno == nil {
 			return nil, fmt.Errorf("目录响应缺失 errno")
 		}
 		if *result.Errno != 0 {
-			return nil, &APIError{Operation: "list", Status: resp.StatusCode, Code: *result.Errno}
+			return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: *result.Errno}
 		}
 		if len(result.List) == 0 || result.List[0] != '[' {
 			return nil, fmt.Errorf("目录响应缺失文件列表")
@@ -186,7 +198,7 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", &APIError{Operation: "filemetas", Status: resp.StatusCode}
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode}
 	}
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
@@ -210,11 +222,11 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 
 	// 检查错误
 	if result.ErrorCode != 0 {
-		return "", &APIError{Operation: "filemetas", Status: resp.StatusCode, Code: result.ErrorCode}
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.ErrorCode}
 	}
 
 	if result.Errno != 0 {
-		return "", &APIError{Operation: "filemetas", Status: resp.StatusCode, Code: result.Errno}
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.Errno}
 	}
 
 	if len(result.List) == 0 || result.List[0].Dlink == "" {
@@ -305,7 +317,7 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
 		_ = body
-		return nil, 0, &APIError{Operation: "download", Status: resp.StatusCode}
+		return nil, 0, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "download", Status: resp.StatusCode}
 	}
 	// 接受 206 前验证完整后缀，不能仅根据状态码追加，否则会损坏本地文件。
 	if resp.StatusCode == http.StatusPartialContent {
@@ -357,7 +369,7 @@ func (c *Client) RenameFile(path, newName string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return &APIError{Operation: "rename", Status: resp.StatusCode}
+		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "rename", Status: resp.StatusCode}
 	}
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	if readErr != nil {
@@ -375,20 +387,20 @@ func (c *Client) RenameFile(path, newName string) error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return &APIError{Operation: "rename", Status: resp.StatusCode}
+		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "rename", Status: resp.StatusCode}
 	}
 	if result.ErrorCode != 0 {
-		return &APIError{Operation: "rename", Status: resp.StatusCode, Code: result.ErrorCode}
+		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "rename", Status: resp.StatusCode, Code: result.ErrorCode}
 	}
 	if result.Errno == nil {
 		return fmt.Errorf("重命名响应缺失 errno")
 	}
 	if *result.Errno != 0 {
-		return &APIError{Operation: "rename", Status: resp.StatusCode, Code: *result.Errno}
+		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "rename", Status: resp.StatusCode, Code: *result.Errno}
 	}
 	for _, item := range result.Info {
 		if item.Errno != 0 {
-			return &APIError{Operation: "rename", Status: resp.StatusCode, Code: item.Errno}
+			return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "rename", Status: resp.StatusCode, Code: item.Errno}
 		}
 	}
 
@@ -426,7 +438,7 @@ func (c *Client) DeleteFile(path string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return &APIError{Operation: "delete", Status: resp.StatusCode}
+		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "delete", Status: resp.StatusCode}
 	}
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	if readErr != nil {
@@ -444,20 +456,20 @@ func (c *Client) DeleteFile(path string) error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return &APIError{Operation: "delete", Status: resp.StatusCode}
+		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "delete", Status: resp.StatusCode}
 	}
 	if result.ErrorCode != 0 {
-		return &APIError{Operation: "delete", Status: resp.StatusCode, Code: result.ErrorCode}
+		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "delete", Status: resp.StatusCode, Code: result.ErrorCode}
 	}
 	if result.Errno == nil {
 		return fmt.Errorf("删除响应缺失 errno")
 	}
 	if *result.Errno != 0 {
-		return &APIError{Operation: "delete", Status: resp.StatusCode, Code: *result.Errno}
+		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "delete", Status: resp.StatusCode, Code: *result.Errno}
 	}
 	for _, item := range result.Info {
 		if item.Errno != 0 {
-			return &APIError{Operation: "delete", Status: resp.StatusCode, Code: item.Errno}
+			return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "delete", Status: resp.StatusCode, Code: item.Errno}
 		}
 	}
 

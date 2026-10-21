@@ -20,7 +20,7 @@
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
             <h1>百度网盘 NAS 下载监控（轮询兼容版）</h1>
             <div style="font-size: 14px;">
-                <span id="token-status">Token状态: <span id="token-status-text">检查中...</span></span>
+                <span id="token-status">账号状态: <span id="token-status-text">检查中...</span></span>
                 <a href="/oauth" target="_blank" style="margin-left: 10px; color: #667eea; text-decoration: none;">🔑 OAuth管理</a>
             </div>
         </div>
@@ -56,9 +56,9 @@
             const response = await fetch('/api/health');
             if (response.ok) {
                 const data = await response.json();
-                // 如果 health 接口能正常返回，说明服务正常运行
-                document.getElementById('token-status-text').textContent = '已连接';
-                document.getElementById('token-status-text').style.color = '#0f5132';
+                // HTTP connectivity and Baidu account readiness are distinct.
+                document.getElementById('token-status-text').textContent = credentialStatusText(data.authentication);
+                document.getElementById('token-status-text').style.color = data.authentication?.ready ? '#0f5132' : '#842029';
             } else {
                 document.getElementById('token-status-text').textContent = '连接异常';
                 document.getElementById('token-status-text').style.color = '#842029';
@@ -81,14 +81,14 @@
             const list = document.getElementById('tasks-list');
             if (sortedTasks.length===0){ list.innerHTML='<div class="empty">暂无任务</div>'; return; }
             list.innerHTML = sortedTasks.map(t=>`
-<div class="task-item ${t.status}">
-  <div class="task-name">${getStatusBadge(t.status)} ${t.path || t.server_filename}</div>
+<div class="task-item ${escapeHTML(t.status)}">
+  <div class="task-name">${getStatusBadge(t.status)} ${escapeHTML(t.path || t.server_filename)}</div>
   <div class="task-info">
     <div>大小：${formatBytes(t.size)}</div>
     <div>开始：${formatTime(t.start_time)}${t.finish_time?`， 完成：${formatTime(t.finish_time)}`:''}</div>
     ${t.speed && t.status === 'downloading' ? `<div>速度：${formatSpeed(t.speed)}</div>` : ''}
-    ${t.local_path?`<div>本地：${t.local_path}</div>`:''}
-    ${t.error?`<div style="color:#f5576c;">错误：${t.error}</div>`:''}
+    ${t.local_path?`<div>本地：${escapeHTML(t.local_path)}</div>`:''}
+    ${t.error?`<div style="color:#f5576c;">错误：${escapeHTML(t.error)}</div>`:''}
   </div>
 </div>`).join('');
         } catch (e) {
@@ -100,6 +100,7 @@
     checkTokenStatus();
     fetchStatus();
     setInterval(fetchStatus, 2000);
+    setInterval(checkTokenStatus, 5000);
 </script>
 </body>
 </html>

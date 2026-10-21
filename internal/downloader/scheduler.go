@@ -111,7 +111,7 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 }
 func validJobStatus(status string) bool {
 	switch status {
-	case "pending", "downloading", "retry_wait", "failed", "done", "cancelled":
+	case "pending", "downloading", "retry_wait", "auth_wait", "failed", "done", "cancelled":
 		return true
 	}
 	return false
@@ -175,7 +175,7 @@ func (q *scheduler) signal() {
 	default:
 	}
 }
-func (q *scheduler) reconcile(files []baiduapi.FileInfo) error {
+func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.stopping || q.owner.ctx.Err() != nil {
@@ -183,6 +183,12 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo) error {
 	}
 	if q.err != nil {
 		return q.err
+	}
+	q.owner.clientMutex.RLock()
+	validScan := q.owner.authenticationReadyLocked() && q.owner.authEpoch == epoch
+	q.owner.clientMutex.RUnlock()
+	if !validScan {
+		return ErrAuthenticationWaiting
 	}
 	eligible := make(map[int64]baiduapi.FileInfo)
 	for _, f := range files {
@@ -207,10 +213,18 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo) error {
 	}
 	q.eligible = eligible
 	for id, job := range q.jobs {
+		if job.Status == "auth_wait" && eligible[id] == job.Info && q.active[id] == nil {
+			job.Status = "pending"
+			job.Error = ""
+			if err := q.persist(job); err != nil {
+				return err
+			}
+			q.reflect(job)
+		}
 		if _, present := eligible[id]; present || q.active[id] != nil {
 			continue
 		}
-		if job.Status == "pending" || job.Status == "retry_wait" {
+		if job.Status == "pending" || job.Status == "retry_wait" || job.Status == "auth_wait" {
 			job.Status = "failed"
 			job.Error = "源项目已离开队列或已被标记；请核对网盘与本地结果，恢复源位置后手动重试"
 			job.NextAttempt = time.Time{}
@@ -238,6 +252,10 @@ func (q *scheduler) claim() (*queueJob, context.Context) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.stopping || q.err != nil || q.owner.ctx.Err() != nil {
+		return nil, nil
+	}
+	if !q.owner.AuthenticationReady() {
+		q.parkAuthenticationWaiting()
 		return nil, nil
 	}
 	var chosen *queueJob
@@ -286,6 +304,7 @@ func (q *scheduler) worker() {
 	}
 }
 func (q *scheduler) complete(executed *queueJob, err error) {
+	q.owner.reportAuthenticationFailure(err)
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	id := executed.Info.FsID
@@ -304,7 +323,9 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 		if err != nil {
 			job.Error = err.Error()
 			job.Status = "failed"
-			if q.stopping || errors.Is(err, context.Canceled) {
+			if errors.Is(err, ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(err) {
+				job.Status = "auth_wait"
+			} else if q.stopping || errors.Is(err, context.Canceled) {
 				job.Status = "pending"
 			} else if baiduapi.IsRetryable(err) {
 				job.Failures++

@@ -1,3 +1,13 @@
+// Cloud names and task errors are untrusted text, including inside templates.
+function escapeHTML(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+function credentialStatusText(auth) {
+    if (!auth) return '状态未知';
+    if (auth.ready) return auth.state === 'expiry_unknown' ? '可用（到期时间未知）' : (auth.next_attempt ? '可用，续期等待重试' : '账号可用');
+    const labels = {unconfigured:'尚未授权', verification_required:'等待账号验证', account_mismatch:'账号不匹配', reauthorization_required:'需要重新授权', token_rejected:'凭证失效，等待续期', storage_error:'凭证保存失败', closed:'服务已停止'};
+    return labels[auth.state] || '账号暂不可用';
+}
 // 共享的工具函数
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
@@ -34,9 +44,10 @@ function getStatusBadge(status) {
         'done': '已完成',
         'failed': '失败',
         'retry_wait': '等待重试',
+        'auth_wait': '等待账号授权',
         'cancelled': '已取消'
     };
-    return `<span class="status-badge ${status}">${statusMap[status] || status}</span>`;
+    return `<span class="status-badge ${escapeHTML(status)}">${escapeHTML(statusMap[status] || status)}</span>`;
 }
 
 // 排序函数

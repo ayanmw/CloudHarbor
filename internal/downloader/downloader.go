@@ -50,6 +50,11 @@ type Downloader struct {
 	cfg          *config.Config
 	client       *baiduapi.Client
 	clientMutex  sync.RWMutex
+	authManaged  bool
+	authReady    bool
+	authExpiry   time.Time
+	authEpoch    uint64
+	onRejected   func(string)
 	tasks        map[int64]*Task
 	taskMutex    sync.RWMutex
 	scanMutex    sync.Mutex
@@ -113,11 +118,16 @@ func (d *Downloader) ScanAndDownload() error {
 	if err := d.ctx.Err(); err != nil {
 		return err
 	}
-	files, err := d.getClient().WithContext(d.ctx).ListDir(d.cfg.QueueDir)
+	client, epoch, err := d.authorizedClient(d.ctx)
 	if err != nil {
+		return err
+	}
+	files, err := client.ListDir(d.cfg.QueueDir)
+	if err != nil {
+		d.reportAuthenticationFailure(err)
 		return fmt.Errorf("列目录失败: %w", err)
 	}
-	return d.queue.reconcile(files)
+	return d.queue.reconcile(files, epoch)
 }
 
 func (d *Downloader) beginTask(info baiduapi.FileInfo, local string) {
@@ -211,7 +221,11 @@ func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.File
 		d.finish(info.FsID, err)
 		return err
 	}
-	children, err := d.getClient().WithContext(ctx).ListDir(info.Path)
+	client, _, err := d.authorizedClient(ctx)
+	if err != nil {
+		return err
+	}
+	children, err := client.ListDir(info.Path)
 	if err != nil {
 		d.finish(info.FsID, err)
 		return err
@@ -240,6 +254,9 @@ func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.File
 			}
 		}
 		if err != nil {
+			if errors.Is(err, ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(err) {
+				return err
+			}
 			failures = append(failures, fmt.Errorf("%s: %w", child.Path, err))
 		}
 	}
@@ -266,11 +283,14 @@ func (d *Downloader) postprocess(ctx context.Context, info baiduapi.FileInfo, mo
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	var err error
+	client, err := d.sourceOperationClient(ctx, info)
+	if err != nil {
+		return err
+	}
 	if mode == DownloadModeDelete {
-		err = d.getClient().WithContext(ctx).DeleteFile(info.Path)
+		err = client.DeleteFile(info.Path)
 	} else {
-		err = d.getClient().WithContext(ctx).RenameFile(info.Path, path.Base(info.Path)+".可删除")
+		err = client.RenameFile(info.Path, path.Base(info.Path)+".可删除")
 	}
 	if err != nil {
 		return fmt.Errorf("本地已完成，网盘后处理待重试: %w", err)

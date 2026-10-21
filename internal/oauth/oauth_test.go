@@ -83,3 +83,25 @@ func TestInvalidSuccessCannotBecomeCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestPendingAuthorizationWaitsThenAcceptsToken(t *testing.T) {
+	var calls int
+	var first time.Time
+	replaceTransport(t, func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			first = time.Now()
+			return response(`{"error":"authorization_pending"}`, 400), nil
+		}
+		if time.Since(first) < 900*time.Millisecond {
+			t.Error("authorization_pending bypassed polling interval")
+		}
+		return response(`{"access_token":"private-access","refresh_token":"private-refresh","expires_in":3600}`, 200), nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	token, err := PollForTokenContext(ctx, "app", "secret", "code", 1, 60)
+	if err != nil || token == nil || token.AccessToken != "private-access" || calls != 2 {
+		t.Fatalf("pending authorization failed: err=%v calls=%d", err, calls)
+	}
+}

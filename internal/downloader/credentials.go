@@ -20,3 +20,10 @@ func (d *Downloader) BindAccount(id string) error {
 	}
 	return d.queue.store.BindAccount(id)
 }
+
+func (d *Downloader) AdministratorKey(configured string) (string, error) {
+	if d.queue.store == nil {
+		return "", fmt.Errorf("persistent administrator store unavailable")
+	}
+	return d.queue.store.AdministratorKey(configured)
+}

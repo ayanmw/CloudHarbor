@@ -47,8 +47,9 @@ type Config struct {
 	RetryBackoffSeconds int
 
 	// HTTP 服务
-	ServerPort string
-	ServerHost string
+	ServerPort    string
+	ServerHost    string
+	AdminPassword string
 }
 
 // Load 从环境变量加载配置
@@ -70,8 +71,9 @@ func Load() *Config {
 		MaxRetries:          getEnvInt("MAX_RETRIES", 3),
 		RetryBackoffSeconds: getEnvInt("RETRY_BACKOFF_SECONDS", 5),
 
-		ServerPort: getEnv("SERVER_PORT", "8080"),
-		ServerHost: getEnv("SERVER_HOST", "127.0.0.1"),
+		ServerPort:    getEnv("SERVER_PORT", "8080"),
+		ServerHost:    getEnv("SERVER_HOST", "127.0.0.1"),
+		AdminPassword: getEnv("ADMIN_PASSWORD", ""),
 	}
 	return cfg
 }
