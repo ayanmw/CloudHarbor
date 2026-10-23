@@ -11,6 +11,18 @@
 - Node WebUI/userscript 14 项、Go 全模块 test/vet、Windows AMD64/Linux AMD64/ARM64 构建通过；发布包 11 个文件哈希匹配，ARM64 ELF 为 AArch64。验收记录：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.4-preview.1-validation.md`。
 - 无真实百度凭证或云端操作。厂商 NAS、真实百度、ARM64 实机、多日和断电仍未验收；未知结果继续隔离，无人工放行。未 push/deploy，主工作区干净。
 
+## 数值环境变量格式错误检查（源码检查点，待后续测试包）
+
+- `SCAN_INTERVAL`、`MAX_PARALLEL`、`MAX_RETRIES`、`RETRY_BACKOFF_SECONDS` 显式设为非数字时，原先静默采用默认值，导致启动范围校验无法发现配置错误。现在仅在变量未设置/为空时采用默认值；显式无效值会进入校验失败路径并阻止服务启动。
+- 新增配置测试，覆盖四个变量的无效格式与未设置默认值；先确认新用例在旧行为下失败，再修改解析逻辑。`go test ./internal/config`、`go test ./...`、`go vet ./...` 通过。
+- 这是源码检查点，尚未打包；未连接百度账号或执行云端操作。
+
+## 百度 API 响应大小上限校验（源码检查点，待后续测试包）
+
+- 目录列表（16 MiB）与下载链接（1 MiB）原先只读取上限内字节，却未识别响应实际超限；若有效 JSON 后跟随足够多的空白，截断内容仍可解析并被当作完整成功结果。现最多读取上限加 1 字节，超过即失败，避免把超限响应当作完整列表/链接。
+- 两项本机 HTTP 回归先在旧行为下失败，修复后通过；另验证超限 503 仍保留可重试分类。`go test ./...`、`go vet ./...`、`git diff --check` 通过。超限目录结果失败时，不会被当作空/完整目录交给后续处理。
+- 这是源码检查点，尚未打包；未连接百度账号或执行云端操作。
+
 ## v0.7.3-preview.1（Linux 目录项持久性测试包已交付）
 
 - 源码 revision：`3426b016baf5acf4bc89a2d27713b87707984a6a`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.3-preview.1.zip`；SHA256：`378105077648a0be42c5523ec9290305fb7d79596d55dcca2461390649bc9a04`。

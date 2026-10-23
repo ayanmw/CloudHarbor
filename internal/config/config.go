@@ -92,6 +92,8 @@ func getEnvInt(key string, defaultVal int) int {
 		if i, err := strconv.Atoi(v); err == nil {
 			return i
 		}
+		// Keep invalid explicit values visible to Validate instead of silently defaulting.
+		return -1
 	}
 	return defaultVal
 }

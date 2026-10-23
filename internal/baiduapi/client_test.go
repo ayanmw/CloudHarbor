@@ -121,6 +121,43 @@ func TestListDirRejectsInvalidSuccessResponses(t *testing.T) {
 	}
 }
 
+func TestListDirRejectsOversizedResponse(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	body := `{"errno":0,"list":[]}` + strings.Repeat(" ", 16*1024*1024)
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	if _, err := NewClient("test", "test").ListDir("/queue"); err == nil {
+		t.Fatal("oversized directory response treated as complete")
+	}
+}
+
+func TestGetDownloadLinkRejectsOversizedResponse(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	body := `{"errno":0,"list":[{"dlink":"https://download.example/file"}]}` + strings.Repeat(" ", 1024*1024)
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	if _, err := NewClient("test", "test").GetDownloadLink(1); err == nil {
+		t.Fatal("oversized download-link response treated as complete")
+	}
+}
+
+func TestListDirOversizedHTTPFailureRemainsRetryable(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	body := strings.Repeat(" ", 16*1024*1024+1)
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	_, err := NewClient("test", "test").ListDir("/queue")
+	if err == nil || !IsRetryable(err) {
+		t.Fatalf("oversized HTTP failure lost retry classification: %v", err)
+	}
+}
+
 func TestFileVersionUsesOfficialServerMtime(t *testing.T) {
 	var f FileInfo
 	if err := json.Unmarshal([]byte(`{"fs_id":1,"server_mtime":987,"size":6}`), &f); err != nil {

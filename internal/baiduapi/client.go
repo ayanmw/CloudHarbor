@@ -121,6 +121,7 @@ func NewClient(accessToken, appKey string) *Client {
 // dir: 网盘路径，如 /NAS_Download_Queue
 func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 	const limit = 1000
+	const responseLimit = 16 * 1024 * 1024
 	files := make([]FileInfo, 0)
 	seen := make(map[int64]bool)
 	for start := 0; ; start += limit {
@@ -136,13 +137,16 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("列目录请求失败: %w", requestError(err))
 		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 16*1024*1024))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
 		resp.Body.Close()
 		if readErr != nil {
 			return nil, readErr
 		}
 		if resp.StatusCode != http.StatusOK {
 			return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode}
+		}
+		if len(body) > responseLimit {
+			return nil, fmt.Errorf("目录响应超过大小限制")
 		}
 		var result struct {
 			Errno     *int            `json:"errno"`
@@ -203,9 +207,13 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode}
 	}
 
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	const responseLimit = 1024 * 1024
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
 	if readErr != nil {
 		return "", readErr
+	}
+	if len(body) > responseLimit {
+		return "", fmt.Errorf("下载链接响应超过大小限制")
 	}
 	// Temporary download URLs must not be written into logs.
 
