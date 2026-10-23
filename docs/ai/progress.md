@@ -4,6 +4,13 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## 下载链接查询参数修复（源码检查点，待后续包）
+
+- 本机真实 HTTP 回归先 RED 复现：裸拼接 Token 遇到查询分隔符/片段会改变或丢失凭据；strings.Contains 把相似参数/路径误判为已有 Token，编码参数名则被重复追加。不能据此声称当前百度链接实际使用了这些形式。
+- 改为解析 URL 的真实 access_token 键，仅编码新追加值；保留链接中已有 Token（含显式空值）与已有 RawQuery 原文，不重新编码签名参数。解析错误沿用脱敏与 timer/context 清理；Range、认证拒绝与重试预算不变。
+- 七项实际 HTTP 用例 GREEN：特殊字符、fragment、相似参数、路径同名文本、已有 Token、编码参数名、显式空值，同时检查既有 %2f/%20 签名原文保留。Windows UCRT、WSL Go1.22.2 全模块非缓存 race/vet 均通过，diff 检查通过。
+- 独立只读审查无确定 important/critical，复跑新用例及既有 URL 脱敏、取消、Range 和 idle timeout 通过。本轮未访问真实账号，尚未验证百度服务端签名验签；后续独立包纳入。当前 v0.7.1-preview.1 不含此修复，旧包不改动，未知目录仍隔离，无人工放行入口。
+
 ## 源操作请求中进程强制终止验证（测试检查点）
 
 - 新增 crash_source_test.go，补足此前正常 Shutdown/合成记录重开之外的真实 Process.Kill 窗口。keep/delete 分别启动子进程，真实本机 HTTP 服务收到 rename/delete 请求后保持响应未完成；父进程核对 sending/source_unknown 已落盘且最终文件内容完整，再强制结束子进程，不执行优雅退出。

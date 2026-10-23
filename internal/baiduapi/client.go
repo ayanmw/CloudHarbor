@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -262,14 +261,22 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 			cancel(nil)
 		}
 	}()
-	// 在 dlink 中添加 access_token 参数
-	if !strings.Contains(dlink, "access_token=") {
-		separator := "&"
-		if !strings.Contains(dlink, "?") {
-			separator = "?"
-		}
-		dlink = dlink + separator + "access_token=" + c.AccessToken
+	// The local HTTP regression found that substring checks confuse paths and
+	// similarly named parameters with the credential; raw concatenation also
+	// puts it after fragments and changes tokens containing query delimiters.
+	link, err := url.Parse(dlink)
+	if err != nil {
+		return nil, 0, requestError(err)
 	}
+	if _, present := link.Query()["access_token"]; !present {
+		if link.RawQuery != "" {
+			link.RawQuery += "&"
+		}
+		// Append only the new parameter: re-encoding the existing query can
+		// change provider signatures or its spelling of percent escapes.
+		link.RawQuery += url.Values{"access_token": {c.AccessToken}}.Encode()
+	}
+	dlink = link.String()
 
 	// 创建支持跳转的客户端
 	client := &http.Client{
