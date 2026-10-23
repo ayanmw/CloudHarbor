@@ -85,6 +85,7 @@
 - [x] Windows `LoadEach` 使用最多 4 个固定 reader 并行读小记录，再按文件名顺序调用 visitor；每 worker 重用缓冲区，最多 4 条记录在途，不按队列长度创建 goroutine。10,000 条 taskstore 原始读取单样本约 2.61 s（1 worker）→ 1.32 s（4 workers）；同批 Windows `OpenDownloader` 样本约 1.41/1.64 s，提升小于原始读取且受 I/O 波动影响。WSL ext4 的 10,000 条原始读取约 32–35 ms（串行）与 39–41 ms（4 workers），故 Linux/其他平台默认串行，避免本地盘回退。WSL 串行 100,000 条 `OpenDownloader` 3 次为 610/617/634 ms；不代表 NAS/SMB，Linux NAS 并行收益仍须目标存储实测。
 - [x] 实验过按目录项数量预分配恢复期 `jobs` map；Windows 10k 对照未证明稳定提速，WSL 样本与 Windows I/O 测试有重叠，无法作有效跨平台 A/B。该原型已撤回，不为轻微临时分配差异增加存储接口；保留记录供后续 D6 基准设计参考。
 - [x] 按文件名排序改用 Go 1.22 `slices.SortFunc`，保持 `LoadEach` 文件名顺序契约。ext4 合成 100k DirEntry 的 sort-only 中位数约 18.3 ms 降至 13.0 ms，3 次分配降至 0；100k 原始记录串行读取基准中位数约 323.5 ms 降至 302.7 ms（约 6.4%，样本有明显波动）。Windows 文件打开成本占主导，单次 10k 四 reader 约 0.87 s，不能据此宣称 Windows 端到端收益。Linux 默认仍为单 reader。
+- [x] 恢复记录全部处于非活动态，且启动时派生任务表为空；不再为每条历史记录调用 `reflect` 加锁删除空表项，列表/分页/统计继续从 job 映射构建。Windows 10,000 条 `OpenDownloader` 仅 3 次方向性样本约 1.11 s → 0.90 s，文件缓存和样本量不足以作为稳定提速结论；惰性任务视图回归及全模块测试通过。
 - [ ] 重启仍要打开并解码每条 JSON 记录，恢复后仍将全部根任务保存在 scheduler job 映射中；逐文件 I/O 是实测主要成本，后续是否改为分段/数据库存储需单独权衡兼容迁移和断电语义。
 - [ ] 目标 NAS 文件系统的大队列重启时间、峰值内存和存储行为待用户环境验证；合成包内启动不能替代真实存储设备。
 

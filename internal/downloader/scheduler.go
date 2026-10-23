@@ -143,7 +143,8 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 			job.Error = "服务重启，等待扫描确认后恢复"
 		}
 		d.queue.jobs[id] = &job
-		d.queue.reflect(&job)
+		// Restored records are all inactive, and the derived task map starts empty.
+		// Keep it lazy instead of locking it once per persisted record.
 		return nil
 	})
 	if err != nil {
