@@ -4,7 +4,11 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
-## 分块短流恢复（准备 v0.6.2-preview.1）
+## v0.6.2-preview.1（分块短流恢复测试包已交付）
+
+- 源码 revision：`88807c8302134223195b9918e29dfa7f22f5b92f`；ZIP：发布根目录 v0.6.2-preview.1.zip，9,992,101 字节；SHA256 `323bbdb948d800fdbd98bf7c0c89205a5ab07af871a5f06913072c5dab9b1ddb`。
+- 干净提交打包 Node/Go/vet 门禁、三平台构建、11 项解压哈希和 ARM64 ELF machine=183 检查通过。Windows/Linux AMD64 包内脚本实际启动，健康版本/revision/等待授权正确，认证主页、入队页、状态 API 200，匿名 401。
+- 运行仅在 verification 副本，无百度凭证，HTTPS 指向拒绝连接代理。Windows Ctrl+C 后 Service stopped（外层 PTY exit 1）；Linux 精确核对进程后 SIGTERM、Service stopped、exit 0。验证服务已停止，正式包无运行数据；详情见发布目录 v0.6.2-preview.1-validation.md。
 
 - 实际 HTTP 分块响应没有 Content-Length，正常 EOF 但不足网盘元数据大小时，旧实现只报普通长度错误，持久化队列直接 failed，不进入后台重试。已先 RED 复现。
 - 现该短流错误保留 io.ErrUnexpectedEOF 错误链，复用既有有界退避和预算；不生成完成凭据、不发布、不执行云端后处理。超长响应、错误范围、声明长度不匹配的拒绝逻辑不变。
