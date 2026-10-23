@@ -97,7 +97,7 @@ func (d *Downloader) refreshIntakeBlocks() {
 		// durable intake moves into or out of quarantine.
 		q.clearCandidates()
 		for id, info := range q.eligible {
-			if job := q.jobs[id]; job != nil && job.Info == info {
+			if job := q.jobs[id]; job != nil && info != nil && job.Info == *info {
 				q.enqueueCandidate(job)
 			}
 		}

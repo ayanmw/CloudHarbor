@@ -124,7 +124,7 @@ func TestChangedSourceIdentityWaitsForFreshListingBeforeRetry(t *testing.T) {
 	job := &queueJob{Version: 1, Info: original, Mode: DownloadModeDelete, Status: "downloading", Created: time.Now()}
 	d.queue.mu.Lock()
 	d.queue.jobs[original.FsID] = job
-	d.queue.eligible[original.FsID] = original
+	d.queue.eligible[original.FsID] = &original
 	if err = d.queue.persist(job); err != nil {
 		d.queue.mu.Unlock()
 		t.Fatal(err)

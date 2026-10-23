@@ -40,7 +40,8 @@ func (d *Downloader) sourceOperationClient(ctx context.Context, info baiduapi.Fi
 	if d.queue.blockedIntakes[info.Path] {
 		return nil, ErrIntakeUnconfirmed
 	}
-	if !d.authenticationReadyLocked() || (d.authManaged && d.queue.eligible[info.FsID] != info) {
+	eligibleInfo := d.queue.eligible[info.FsID]
+	if !d.authenticationReadyLocked() || (d.authManaged && (eligibleInfo == nil || *eligibleInfo != info)) {
 		return nil, ErrAuthenticationWaiting
 	}
 	return d.client.WithContext(ctx), nil
@@ -63,7 +64,7 @@ func (d *Downloader) SetAuthentication(client *baiduapi.Client, ready bool, expi
 	d.client = client
 	if changed {
 		d.authEpoch++
-		q.eligible = make(map[int64]baiduapi.FileInfo)
+		q.eligible = make(map[int64]*baiduapi.FileInfo)
 		q.clearCandidates()
 	}
 	usable := d.authenticationReadyLocked()
@@ -108,7 +109,7 @@ func (d *Downloader) reportAuthenticationFailure(err error) {
 	d.authReady = false
 	d.authEpoch++
 	handler := d.onRejected
-	q.eligible = make(map[int64]baiduapi.FileInfo)
+	q.eligible = make(map[int64]*baiduapi.FileInfo)
 	d.clientMutex.Unlock()
 	q.parkAuthenticationWaiting()
 	q.mu.Unlock()

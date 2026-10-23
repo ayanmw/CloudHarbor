@@ -43,13 +43,36 @@ func TestReconcileSharesIdenticalPersistedFileInfoStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	eligible := d.queue.eligible[info.FsID]
-	if eligible != job.Info {
-		t.Fatalf("eligible identity changed: got %+v want %+v", eligible, job.Info)
+	if eligible == nil || eligible != &job.Info {
+		t.Fatalf("eligible metadata pointer was not reused: got %p want %p", eligible, &job.Info)
 	}
 	if unsafe.StringData(eligible.Path) != unsafe.StringData(job.Info.Path) ||
 		unsafe.StringData(eligible.ServerFilename) != unsafe.StringData(job.Info.ServerFilename) ||
 		unsafe.StringData(eligible.MD5) != unsafe.StringData(job.Info.MD5) {
 		t.Fatal("identical persisted metadata retained duplicate string storage")
+	}
+}
+
+func TestReconcileRetainsChangedScanIdentityBesideUnknownJournal(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	oldInfo := baiduapi.FileInfo{FsID: 72, Path: "/queue/original.bin", ServerFilename: "original.bin", Size: 1024, Mtime: 123}
+	job := &queueJob{Version: 1, Info: oldInfo, Mode: DownloadModeKeep, Status: "source_unknown", SourceState: "unknown"}
+	d.queue.jobs[oldInfo.FsID] = job
+	d.queue.started = true // Keep this reconciliation fixture from launching workers.
+
+	scanned := oldInfo
+	scanned.Path = "/queue/replaced.bin"
+	scanned.ServerFilename = "replaced.bin"
+	scanned.Mtime++
+	if err := d.queue.reconcile([]baiduapi.FileInfo{scanned}, 0); err != nil {
+		t.Fatal(err)
+	}
+	eligible := d.queue.eligible[oldInfo.FsID]
+	if eligible == nil || *eligible != scanned {
+		t.Fatalf("scan snapshot was not retained: got %+v want %+v", eligible, scanned)
+	}
+	if eligible == &job.Info || job.Info != oldInfo {
+		t.Fatal("changed scan identity replaced or aliased the unknown journal")
 	}
 }
 
@@ -189,9 +212,9 @@ func TestClaimWaitsUntilEarliestRetryDeadline(t *testing.T) {
 	laterJob := &queueJob{Version: 1, Info: laterInfo, Mode: DownloadModeKeep, Status: "retry_wait", NextAttempt: time.Now().Add(100 * time.Millisecond)}
 	earlierJob := &queueJob{Version: 1, Info: earlierInfo, Mode: DownloadModeKeep, Status: "retry_wait", NextAttempt: time.Now().Add(40 * time.Millisecond)}
 	d.queue.jobs[laterInfo.FsID] = laterJob
-	d.queue.eligible[laterInfo.FsID] = laterInfo
+	d.queue.eligible[laterInfo.FsID] = &laterInfo
 	d.queue.jobs[earlierInfo.FsID] = earlierJob
-	d.queue.eligible[earlierInfo.FsID] = earlierInfo
+	d.queue.eligible[earlierInfo.FsID] = &earlierInfo
 	d.queue.rebuildCandidates()
 
 	claimed, ctx, wait := d.queue.claim()
@@ -215,11 +238,11 @@ func TestClaimUsesEligibleReadyQueueAndKeepsFutureRetriesDelayed(t *testing.T) {
 	readyTie := file(10, "ready-tie.bin", 3)
 	delayed := file(1, "delayed.bin", 3)
 	d.queue.jobs[readyFirst.FsID] = &queueJob{Version: 1, Info: readyFirst, Mode: DownloadModeKeep, Status: "pending", Created: created}
-	d.queue.eligible[readyFirst.FsID] = readyFirst
+	d.queue.eligible[readyFirst.FsID] = &readyFirst
 	d.queue.jobs[readyTie.FsID] = &queueJob{Version: 1, Info: readyTie, Mode: DownloadModeKeep, Status: "pending", Created: created}
-	d.queue.eligible[readyTie.FsID] = readyTie
+	d.queue.eligible[readyTie.FsID] = &readyTie
 	d.queue.jobs[delayed.FsID] = &queueJob{Version: 1, Info: delayed, Mode: DownloadModeKeep, Status: "retry_wait", Created: created.Add(-time.Hour), NextAttempt: time.Now().Add(time.Hour)}
-	d.queue.eligible[delayed.FsID] = delayed
+	d.queue.eligible[delayed.FsID] = &delayed
 	for id := int64(100); id < 100100; id++ {
 		d.queue.jobs[id] = &queueJob{Info: baiduapi.FileInfo{FsID: id}, Status: "done"}
 	}
@@ -237,7 +260,7 @@ func TestAuthenticationChangeClearsReadyCandidatesUntilFreshScan(t *testing.T) {
 	info := file(92, "auth-gated.bin", 3)
 	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeKeep, Status: "pending", Created: time.Now()}
 	d.queue.jobs[info.FsID] = job
-	d.queue.eligible[info.FsID] = info
+	d.queue.eligible[info.FsID] = &info
 	d.queue.rebuildCandidates()
 	if job.candidate == nil {
 		t.Fatal("fixture did not create a runnable candidate")

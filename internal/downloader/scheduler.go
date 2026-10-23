@@ -37,7 +37,9 @@ type scheduler struct {
 	jobs           map[int64]*queueJob
 	ready          candidateHeap
 	delayed        candidateHeap
-	eligible       map[int64]baiduapi.FileInfo
+	// eligible points into jobs when scan metadata matches, and owns a separate
+	// snapshot only while a changed identity conflicts with an active/unknown job.
+	eligible       map[int64]*baiduapi.FileInfo
 	blockedIntakes map[string]bool
 	blockedSources map[string]bool
 	active         map[int64]context.CancelFunc
@@ -68,7 +70,7 @@ type taskOrderIndex struct {
 }
 
 func newScheduler(d *Downloader) *scheduler {
-	return &scheduler{owner: d, jobs: make(map[int64]*queueJob), eligible: make(map[int64]baiduapi.FileInfo), blockedIntakes: make(map[string]bool), active: make(map[int64]context.CancelFunc), wake: make(chan struct{}, 32), done: make(chan struct{})}
+	return &scheduler{owner: d, jobs: make(map[int64]*queueJob), eligible: make(map[int64]*baiduapi.FileInfo), blockedIntakes: make(map[string]bool), active: make(map[int64]context.CancelFunc), wake: make(chan struct{}, 32), done: make(chan struct{})}
 }
 func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, error) {
 	if cfg.MaxParallel < 0 || cfg.MaxParallel > 32 || cfg.MaxRetries < 0 || cfg.MaxRetries > 20 || cfg.RetryBackoffSeconds < 0 {
@@ -149,6 +151,10 @@ func shareFileInfoStrings(info baiduapi.FileInfo) baiduapi.FileInfo {
 		info.ServerFilename = info.Path[len(info.Path)-len(info.ServerFilename):]
 	}
 	return info
+}
+
+func retainFileInfo(info baiduapi.FileInfo) *baiduapi.FileInfo {
+	return &info
 }
 
 func validJobStatus(status string) bool {
@@ -253,7 +259,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 	if !validScan {
 		return ErrAuthenticationWaiting
 	}
-	eligible := make(map[int64]baiduapi.FileInfo)
+	eligible := make(map[int64]*baiduapi.FileInfo)
 	for _, f := range files {
 		f = shareFileInfoStrings(f)
 		if q.blockedIntakes[f.Path] || q.blockedSources[f.Path] {
@@ -265,18 +271,19 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 		if f.FsID <= 0 {
 			return fmt.Errorf("invalid root fs_id")
 		}
-		eligible[f.FsID] = f
 		old := q.jobs[f.FsID]
 		if old != nil && old.Info == f {
-			eligible[f.FsID] = old.Info
+			eligible[f.FsID] = &old.Info
 			continue
 		}
 		// A provider may show the same ID under another name while its old
 		// mutation is unresolved. Preserve the journal and its original paths.
 		if old != nil && (old.SourceState == "sending" || old.SourceState == "unknown") {
+			eligible[f.FsID] = retainFileInfo(f)
 			continue
 		}
 		if old != nil && q.active[f.FsID] != nil {
+			eligible[f.FsID] = retainFileInfo(f)
 			continue
 		}
 		job := &queueJob{Version: 1, Info: f, Mode: q.owner.GetDownloadMode(), Status: "pending", Created: time.Now()}
@@ -285,6 +292,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 			return err
 		}
 		q.jobs[f.FsID] = job
+		eligible[f.FsID] = &job.Info
 		q.owner.taskCatalogGeneration.Add(1)
 		q.reflect(job)
 	}
@@ -295,7 +303,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 		if q.blockedIntakes[job.Info.Path] || q.blockedSources[job.Info.Path] {
 			continue
 		}
-		if job.Status == "auth_wait" && eligible[id] == job.Info && q.active[id] == nil {
+		if job.Status == "auth_wait" && eligible[id] != nil && *eligible[id] == job.Info && q.active[id] == nil {
 			job.Status = "pending"
 			job.Error = ""
 			if err := q.persist(job); err != nil {
@@ -436,8 +444,9 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 				// another full scan interval for an already verified new credential.
 				fingerprint, rejected := baiduapi.AuthenticationFingerprint(err)
 				q.owner.clientMutex.RLock()
+				eligibleInfo := q.eligible[id]
 				if rejected && fingerprint != "" && q.owner.authManaged && q.owner.authenticationReadyLocked() &&
-					fingerprint != q.owner.client.Fingerprint() && q.eligible[id] == job.Info {
+					fingerprint != q.owner.client.Fingerprint() && eligibleInfo != nil && *eligibleInfo == job.Info {
 					job.Status = "pending"
 					job.Error = ""
 				}
@@ -515,7 +524,8 @@ func (d *Downloader) Retry(id int64) error {
 	if job == nil {
 		return ErrTaskNotFound
 	}
-	if q.stopping || q.err != nil || job.SourceState != "" || q.blockedSources[job.Info.Path] || q.blockedIntakes[job.Info.Path] || !d.AuthenticationReady() || q.active[id] != nil || (job.Status != "failed" && job.Status != "cancelled") || q.eligible[id] != job.Info {
+	eligibleInfo := q.eligible[id]
+	if q.stopping || q.err != nil || job.SourceState != "" || q.blockedSources[job.Info.Path] || q.blockedIntakes[job.Info.Path] || !d.AuthenticationReady() || q.active[id] != nil || (job.Status != "failed" && job.Status != "cancelled") || eligibleInfo == nil || *eligibleInfo != job.Info {
 		return ErrTaskConflict
 	}
 	job.Status = "pending"

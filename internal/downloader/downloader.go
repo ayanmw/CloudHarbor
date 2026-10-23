@@ -659,7 +659,8 @@ func (d *Downloader) taskWithActionsLocked(id int64, task *Task) *Task {
 	job := d.queue.jobs[id]
 	if task.Root && job != nil && !d.queue.stopping && d.queue.err == nil && d.ctx.Err() == nil {
 		task.CanCancel = job.Status == "pending" || job.Status == "downloading" || job.Status == "retry_wait" || job.Status == "auth_wait"
-		task.CanRetry = job.SourceState == "" && !d.queue.blockedSources[job.Info.Path] && !d.queue.blockedIntakes[job.Info.Path] && (job.Status == "failed" || job.Status == "cancelled") && d.queue.active[id] == nil && d.queue.eligible[id] == job.Info && d.AuthenticationReady()
+		eligibleInfo := d.queue.eligible[id]
+		task.CanRetry = job.SourceState == "" && !d.queue.blockedSources[job.Info.Path] && !d.queue.blockedIntakes[job.Info.Path] && (job.Status == "failed" || job.Status == "cancelled") && d.queue.active[id] == nil && eligibleInfo != nil && *eligibleInfo == job.Info && d.AuthenticationReady()
 	}
 	return task
 }

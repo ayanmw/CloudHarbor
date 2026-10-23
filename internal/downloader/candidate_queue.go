@@ -71,9 +71,10 @@ func (q *scheduler) removeCandidate(job *queueJob) {
 
 func (q *scheduler) candidateEligible(job *queueJob) bool {
 	id := job.Info.FsID
+	eligibleInfo := q.eligible[id]
 	return !q.blockedIntakes[job.Info.Path] && !q.blockedSources[job.Info.Path] &&
 		(job.Status == "pending" || job.Status == "retry_wait") && q.active[id] == nil &&
-		q.eligible[id] == job.Info
+		eligibleInfo != nil && *eligibleInfo == job.Info
 }
 
 func (q *scheduler) enqueueCandidate(job *queueJob) {

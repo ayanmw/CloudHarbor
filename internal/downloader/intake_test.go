@@ -74,7 +74,7 @@ func TestIntakeBlockChangesRefreshEligibleSchedulerCandidates(t *testing.T) {
 	info := baiduapi.FileInfo{FsID: 902, Path: "/queue/moved.bin", ServerFilename: "moved.bin", Size: 3}
 	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeKeep, Status: "pending", Created: time.Now()}
 	d.queue.jobs[info.FsID] = job
-	d.queue.eligible[info.FsID] = info
+	d.queue.eligible[info.FsID] = &info
 	d.queue.rebuildCandidates()
 
 	intakeID := "0123456789abcdef0123456789abcdef"

@@ -14,7 +14,7 @@ func TestTaskActionSnapshotTracksEligibilityAndActiveCancellation(t *testing.T) 
 	q.mu.Lock()
 	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeDelete, Status: "cancelled"}
 	q.jobs[info.FsID] = job
-	q.eligible[info.FsID] = info
+	q.eligible[info.FsID] = &info
 	q.reflect(job)
 	_, cancel := context.WithCancel(d.ctx)
 	q.active[info.FsID] = cancel
@@ -34,7 +34,7 @@ func TestTaskActionSnapshotTracksEligibilityAndActiveCancellation(t *testing.T) 
 	d.SetAuthentication(d.getClient(), true, time.Now().Add(-time.Second))
 	// Keep otherwise valid scan eligibility to isolate the expiry condition.
 	q.mu.Lock()
-	q.eligible[info.FsID] = info
+	q.eligible[info.FsID] = &info
 	q.mu.Unlock()
 	if d.GetTasks()[0].CanRetry {
 		t.Fatal("expired authorization offers retry")

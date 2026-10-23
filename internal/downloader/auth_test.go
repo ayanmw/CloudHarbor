@@ -115,7 +115,7 @@ func TestLateRejectionOnlyResumesWithFreshMatchingNewCredential(t *testing.T) {
 				if scenario == "changed_version" {
 					scanned.Mtime++
 				}
-				d.queue.eligible[1] = scanned
+				d.queue.eligible[1] = &scanned
 			}
 			if scenario == "missing_fingerprint" {
 				rejection = &baiduapi.APIError{Operation: "download", Status: http.StatusUnauthorized}
