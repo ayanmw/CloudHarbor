@@ -33,6 +33,8 @@
 
 依据：仓库内旧 SDK `doc/baidu-go-sdk/openxpanapi/api_filemanager.go`；本轮另核对[百度官方 Go SDK 文件管理模型](https://github.com/baidu-netdisk/baidu-drive-sdk-go/blob/main/baidudriver/api/file_manager.go)，其声明 copy/move 项 path/dest/newname、ondup 策略和单项结果；没有把 SDK 声明等同于真实账号执行成功。百度文档页本轮无法直接读取，实施时以可读取的官方代码及本地契约测试为依据，真实调用独立验收。
 
+异步查询复核：本轮读取的[百度官方网盘 MCP 文档](https://github.com/baidu-netdisk/mcp)列出 copy/delete/move/rename 在 `async=2` 时返回 `taskid`，但其公开工具目录与说明未描述任务状态查询工具或可据以完成源操作的状态语义。这不能证明底层 API 一定不存在查询接口；现有证据仍不足以凭 taskid 或路径可见性解除 unknown 隔离。
+
 ## D3：油猴与管理页衔接（已实现，真实页面适配待验收）
 
 - [x] 独立选中项适配层，不将整页 FILEINFO 当选中项；旧 context 与已知 Vue selectedList，空选/无路径/来源不一致失败。尚未验证所有 SPA hash/query 模式。
