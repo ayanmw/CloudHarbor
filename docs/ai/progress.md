@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.11-preview.1（复用队列历史读取缓冲区）
+
+- `LoadEach` / `LoadEachRaw` 在一个回调扫描周期内复用单个 `bytes.Buffer`，按最多 1 MiB + 1 字节读取以保持记录尺寸上限；RAW 回调的字节切片生命周期明确为仅本次回调。队列 JSON、校验责任和错误传播不变。
+- WSL 合成基准与 v0.8.10 对照：10,000 条 `LoadEachRaw` 临时分配约从 8.02 MB 降至 2.90 MB；100,000 条 `OpenDownloader` 约从 144.93 MB 降至 93.72 MB。启动时间样本接近，不据此宣称稳定提速；该优化降低临时分配，不改变恢复后常驻任务映射。
+- 源码 revision `19b16974991bed8e456f485d5cb34a2eb595c0d6`。独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.11-preview.1.zip`，9,850,274 字节，SHA256 `F02E5C095746E9056495324B6426F01D8A48ACAC3B1E625A539694219906918F`；11 个 payload 全部匹配。
+- Node 17 项、Windows 全模块 Go 测试/vet、WSL 全模块 race/vet 与三平台构建通过。增加回调后缓冲区复用、恰好 1 MiB 接受及超过上限拒绝测试。Linux AMD64 包恢复 10,000 条合成完成任务；认证分页、匿名 401、SIGINT 停止通过。
+- 验证明细：[v0.8.11-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.11-preview.1-validation.md)。无真实百度凭证或云端操作；NAS/SMB 及长时间运行尚未验证。
+
 ## v0.8.10-preview.1（Linux 队列恢复使用目录相对打开）
 
 - Linux taskstore 恢复时打开 jobs 目录一次，以目录文件描述符读取排序后的条目，并用 `openat` + `O_NOFOLLOW` 打开每个已校验文件名；jobs 目录本身也使用 `O_NOFOLLOW|O_DIRECTORY`。非 Linux 延续既有符号链接检查和路径打开。
