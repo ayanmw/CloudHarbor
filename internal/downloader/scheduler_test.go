@@ -2,6 +2,9 @@ package downloader
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +15,7 @@ import (
 	"testing"
 	"time"
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
 func waitForStatus(t *testing.T, d *Downloader, id int64, status string) {
@@ -161,6 +165,72 @@ func TestPersistentRecoveryRequiresSuccessfulScan(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if requests.Load() != before {
 		t.Fatal("completed history was redownloaded")
+	}
+}
+
+func TestRestartReusesPublishedFileBeforeSourcePostprocess(t *testing.T) {
+	var downloadRequests atomic.Int32
+	original, p := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		downloadRequests.Add(1)
+		io.WriteString(w, "abc")
+	})
+	info := file(1, "a.txt", 3)
+	p.lists["/queue"] = []baiduapi.FileInfo{info}
+	mode := DownloadModeDelete
+	job := queueJob{Version: 1, Info: info, Mode: mode, Status: "downloading", Attempts: 1, Created: time.Now()}
+	body, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := taskstore.Open(filepath.Join(original.cfg.LocalDownDir, stateDirectory, "queue"), original.cfg.QueueDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Save(info.FsID, body); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(original.cfg.LocalDownDir, info.ServerFilename)
+	if err = os.WriteFile(local, []byte("abc"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	key := sha256.Sum256([]byte(info.ServerFilename))
+	state := filepath.Join(original.cfg.LocalDownDir, stateDirectory, hex.EncodeToString(key[:]))
+	if err = os.MkdirAll(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	receipt := recordFor(info, info.ServerFilename)
+	digest := sha256.Sum256([]byte("abc"))
+	receipt.SHA256 = hex.EncodeToString(digest[:])
+	if err = writeRecord(filepath.Join(state, "complete.json"), receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	// The durable downloading job plus verified published file represents a
+	// crash after publication but before source postprocessing began.
+	d, err := OpenDownloader(original.cfg, original.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = d.ScanAndDownload(); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, d, info.FsID, "done")
+	shutdown(t, d)
+	if got := downloadRequests.Load(); got != 0 {
+		t.Fatalf("recovery fetched file content again: requests=%d", got)
+	}
+	p.mu.Lock()
+	actions := append([]string(nil), p.actions...)
+	p.mu.Unlock()
+	if len(actions) != 1 || !strings.HasPrefix(actions[0], "delete:") {
+		t.Fatalf("source postprocess did not resume exactly once: %v", actions)
+	}
+	content, err := os.ReadFile(local)
+	if err != nil || string(content) != "abc" {
+		t.Fatalf("published file changed during recovery: %q %v", content, err)
 	}
 }
 

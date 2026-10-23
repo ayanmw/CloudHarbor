@@ -276,6 +276,22 @@ func TestIdleDownloadTimesOutAndIsRetryable(t *testing.T) {
 	}
 }
 
+func TestIdleDownloadTimeoutIncludesResponseHeaders(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _, err := NewClient("test", "test").WithContext(ctx).WithIdleTimeout(30*time.Millisecond).DownloadFileWithRange(srv.URL, 0)
+	<-started
+	if !errors.Is(err, errDownloadIdleTimeout) || !IsRetryable(err) {
+		t.Fatalf("stalled response headers did not return a retryable idle timeout: %v", err)
+	}
+}
+
 func TestProgressingDownloadCanOutliveIdleLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "5")

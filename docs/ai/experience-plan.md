@@ -35,6 +35,8 @@
 
 异步查询复核：本轮读取的[百度官方网盘 MCP 文档](https://github.com/baidu-netdisk/mcp)列出 copy/delete/move/rename 在 `async=2` 时返回 `taskid`，但其公开工具目录与说明未描述任务状态查询工具或可据以完成源操作的状态语义。这不能证明底层 API 一定不存在查询接口；现有证据仍不足以凭 taskid 或路径可见性解除 unknown 隔离。
 
+2026-10-23 追加核查：百度官方 [Go SDK API 文档](https://pkg.go.dev/github.com/baidu-netdisk/baidu-drive-sdk-go/baidudriver/api)仍将 `taskid` 定义为异步文件管理响应字段，但公开的 `FileManagerService` 方法清单没有任务查询方法；其链接的官方 Move 文档本轮无法读取。搜索到的 `/api/taskquery` 用例来自网盘网页脚本，使用的是浏览器页面环境，未证明它属于 OAuth 开放平台契约，也未给出可由应用凭据调用的授权、状态终态或结果一致性保证。因此本工具继续将异步 Move 结果视为 unknown；不调用网页登录 Cookie 接口、不按目标路径出现推断完成，也不提供人工解除隔离。只有取得适用于当前 OAuth 应用的官方契约并能对终态和单项结果做验证后，才继续设计查询接线。
+
 ## D3：油猴与管理页衔接（已实现，真实页面适配待验收）
 
 - [x] 独立选中项适配层，不将整页 FILEINFO 当选中项；旧 context 与已知 Vue selectedList，空选/无路径/来源不一致失败。尚未验证所有 SPA hash/query 模式。
