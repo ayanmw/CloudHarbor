@@ -1,10 +1,11 @@
 # 持续优化进度
 
-## v0.8.6-preview.1 候选：恢复队列去掉重复 JSON 语法扫描（待打包）
+## v0.8.6-preview.1（恢复队列避免重复 JSON 语法扫描）
 
 - `OpenDownloader` 恢复时改用有界原始记录读取，再由原有 `json.Unmarshal` 完成语法和结构校验；`LoadEach` 与 `Store.Load` 的既有校验行为不变。新增损坏 JSON 的恢复拒绝/锁释放回归测试。
-- 10,000 条合成记录对照中 raw 与 validated 样本有明显重叠，读取时间受缓存顺序和文件系统影响，不能据此声称总启动耗时稳定下降。明确减少的是每条恢复记录上重复的一次 `json.Valid` 全文扫描。
-- Windows 全模块测试/vet、WSL race/vet、Node 17 项已通过；本候选的打包门禁与包内启动冒烟待完成。无真实百度凭证或云端写操作。
+- 10,000 条合成记录对照中 raw 与 validated 样本时间有明显重叠，受缓存顺序和文件系统影响；只确认每条恢复记录少一次 `json.Valid` 全文扫描，不宣称端到端启动耗时稳定下降。
+- 源码 revision：`e4ef546fdd26eb9d14b62168ecff8d9a07f654e3`。独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.6-preview.1.zip`，9,839,549 字节，SHA256 `9433D08218FD66755A20BCFDE5384015BCA5EE5F96E3323721EA57433C7E655D`。
+- Node 17 项、Windows Go 全模块 test/vet 与三平台构建通过；WSL race 全模块与 vet 通过。Linux AMD64 包副本恢复 10,000 条合成记录，认证分页 10 条、匿名 401、SIGINT 停止和端口释放通过。验证明细：[v0.8.6-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.6-preview.1-validation.md)。无真实百度凭证或云端读写。
 
 ## v0.8.5-preview.1（Linux 逐任务读取少一次路径系统调用）
 
