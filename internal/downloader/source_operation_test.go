@@ -134,6 +134,9 @@ func TestChangedSourceIdentityWaitsForFreshListingBeforeRetry(t *testing.T) {
 	if !errors.Is(err, ErrSourceIdentityChanged) {
 		t.Fatalf("postprocess error=%v", err)
 	}
+	if err.Error() != ErrSourceIdentityChanged.Error() {
+		t.Fatalf("identity conflict was described as retryable: %v", err)
+	}
 	d.queue.complete(job, err)
 	if err = d.Retry(original.FsID); !errors.Is(err, ErrTaskConflict) {
 		t.Fatalf("retry after identity mismatch = %v, want conflict until a fresh listing updates the identity", err)
