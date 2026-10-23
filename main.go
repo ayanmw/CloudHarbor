@@ -46,6 +46,46 @@ type scanResult struct {
 	Error   string
 }
 
+type taskStatusDTO struct {
+	FsID           int64  `json:"fs_id"`
+	TaskID         string `json:"task_id"`
+	CanCancel      bool   `json:"can_cancel"`
+	CanRetry       bool   `json:"can_retry"`
+	Path           string `json:"path"`
+	ServerFilename string `json:"server_filename"`
+	Size           int64  `json:"size"`
+	Status         string `json:"status"`
+	LocalPath      string `json:"local_path,omitempty"`
+	Error          string `json:"error,omitempty"`
+	StartTime      string `json:"start_time,omitempty"`
+	FinishTime     string `json:"finish_time,omitempty"`
+	Progress       int64  `json:"progress"`
+	Speed          int64  `json:"speed,omitempty"`
+	Attempts       int    `json:"attempts"`
+	NextAttempt    string `json:"next_attempt,omitempty"`
+	Root           bool   `json:"is_root"`
+	DownloadMode   string `json:"download_mode,omitempty"`
+}
+
+func toTaskStatus(t *downloader.Task) taskStatusDTO {
+	status := taskStatusDTO{
+		FsID: t.FileInfo.FsID, TaskID: t.TaskID, CanCancel: t.CanCancel, CanRetry: t.CanRetry,
+		Path: t.FileInfo.Path, ServerFilename: t.FileInfo.ServerFilename, Size: t.FileInfo.Size,
+		Status: t.Status, LocalPath: t.LocalPath, Error: t.Error, Progress: t.Progress,
+		Speed: t.Speed, Attempts: t.Attempts, Root: t.Root, DownloadMode: string(t.DownloadMode),
+	}
+	if !t.StartTime.IsZero() {
+		status.StartTime = t.StartTime.Format(time.RFC3339)
+	}
+	if !t.NextAttempt.IsZero() {
+		status.NextAttempt = t.NextAttempt.Format(time.RFC3339)
+	}
+	if !t.FinishTime.IsZero() {
+		status.FinishTime = t.FinishTime.Format(time.RFC3339)
+	}
+	return status
+}
+
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -220,32 +260,15 @@ func runScanner(ctx context.Context) {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	lastScanTime := time.Unix(0, lastScanUnix.Load())
-	tasks := dl.GetTasks()
-	downloadingCount := 0
-	doneCount := 0
-	failedCount := 0
-	pendingCount, retryCount, cancelledCount, authWaitCount, sourceUnknownCount := 0, 0, 0, 0, 0
-
-	for _, t := range tasks {
-		switch t.Status {
-		case "downloading":
-			downloadingCount++
-		case "done":
-			doneCount++
-		case "failed":
-			failedCount++
-		case "pending":
-			pendingCount++
-		case "retry_wait":
-			retryCount++
-		case "cancelled":
-			cancelledCount++
-		case "auth_wait":
-			authWaitCount++
-		case "source_unknown":
-			sourceUnknownCount++
-		}
-	}
+	totalTasks, taskCounts := dl.GetTaskStats()
+	downloadingCount := taskCounts["downloading"]
+	doneCount := taskCounts["done"]
+	failedCount := taskCounts["failed"]
+	pendingCount := taskCounts["pending"]
+	retryCount := taskCounts["retry_wait"]
+	cancelledCount := taskCounts["cancelled"]
+	authWaitCount := taskCounts["auth_wait"]
+	sourceUnknownCount := taskCounts["source_unknown"]
 
 	response := map[string]interface{}{
 		"authentication": auth.Status(), "auth_wait": authWaitCount, "source_unknown": sourceUnknownCount,
@@ -255,7 +278,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":         "ok",
 		"last_scan_time": lastScanTime.Format(time.RFC3339),
 		"next_scan_time": lastScanTime.Add(time.Duration(cfg.ScanInterval) * time.Second).Format(time.RFC3339),
-		"total_tasks":    len(tasks),
+		"total_tasks":    totalTasks,
 		"downloading":    downloadingCount,
 		"done":           doneCount,
 		"failed":         failedCount,
@@ -288,58 +311,54 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
-	tasks := dl.GetTasks()
-
-	// 转换为适合输出的格式
-	type TaskStatus struct {
-		FsID           int64  `json:"fs_id"`
-		TaskID         string `json:"task_id"`
-		CanCancel      bool   `json:"can_cancel"`
-		CanRetry       bool   `json:"can_retry"`
-		Path           string `json:"path"`
-		ServerFilename string `json:"server_filename"`
-		Size           int64  `json:"size"`
-		Status         string `json:"status"`
-		LocalPath      string `json:"local_path,omitempty"`
-		Error          string `json:"error,omitempty"`
-		StartTime      string `json:"start_time,omitempty"`
-		FinishTime     string `json:"finish_time,omitempty"`
-		Progress       int64  `json:"progress"`
-		Speed          int64  `json:"speed,omitempty"` // 添加速度信息
-		Attempts       int    `json:"attempts"`
-		NextAttempt    string `json:"next_attempt,omitempty"`
-		Root           bool   `json:"is_root"`
-		DownloadMode   string `json:"download_mode,omitempty"`
+	query := r.URL.Query()
+	if query.Has("offset") || query.Has("limit") || query.Has("sort_by") {
+		offset := 0
+		if raw := query.Get("offset"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				http.Error(w, "invalid offset", http.StatusBadRequest)
+				return
+			}
+			offset = parsed
+		}
+		limit := 100
+		if raw := query.Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > 200 {
+				http.Error(w, "invalid limit", http.StatusBadRequest)
+				return
+			}
+			limit = parsed
+		}
+		sortBy := query.Get("sort_by")
+		if sortBy != "" && sortBy != "name" && sortBy != "progress" && sortBy != "size" {
+			http.Error(w, "invalid sort_by", http.StatusBadRequest)
+			return
+		}
+		page := dl.GetTaskPage(offset, limit, sortBy)
+		statuses := make([]taskStatusDTO, 0, len(page.Tasks))
+		for _, task := range page.Tasks {
+			statuses = append(statuses, toTaskStatus(task))
+		}
+		var nextOffset *int
+		if page.HasMore {
+			next := page.Offset + page.Limit
+			nextOffset = &next
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"tasks": statuses, "total_tasks": page.Total, "status_counts": page.Counts,
+			"offset": page.Offset, "limit": page.Limit, "has_more": page.HasMore, "next_offset": nextOffset,
+		})
+		return
 	}
 
-	statuses := make([]TaskStatus, 0, len(tasks))
+	tasks := dl.GetTasks()
+
+	statuses := make([]taskStatusDTO, 0, len(tasks))
 	for _, t := range tasks {
-		ts := TaskStatus{
-			FsID:   t.FileInfo.FsID,
-			TaskID: t.TaskID, CanCancel: t.CanCancel, CanRetry: t.CanRetry,
-			Path:           t.FileInfo.Path,
-			ServerFilename: t.FileInfo.ServerFilename,
-			Size:           t.FileInfo.Size,
-			Status:         t.Status,
-			LocalPath:      t.LocalPath,
-			Error:          t.Error,
-			Progress:       t.Progress,
-			Speed:          t.Speed, // 添加速度信息
-			Attempts:       t.Attempts,
-			Root:           t.Root, DownloadMode: string(t.DownloadMode),
-		}
-
-		if !t.StartTime.IsZero() {
-			ts.StartTime = t.StartTime.Format(time.RFC3339)
-		}
-		if !t.NextAttempt.IsZero() {
-			ts.NextAttempt = t.NextAttempt.Format(time.RFC3339)
-		}
-		if !t.FinishTime.IsZero() {
-			ts.FinishTime = t.FinishTime.Format(time.RFC3339)
-		}
-
-		statuses = append(statuses, ts)
+		statuses = append(statuses, toTaskStatus(t))
 	}
 
 	w.Header().Set("Content-Type", "application/json")

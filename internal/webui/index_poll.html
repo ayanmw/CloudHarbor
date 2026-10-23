@@ -39,6 +39,11 @@
         <p id="task-feedback" class="task-feedback" role="status" aria-live="polite"></p>
     </div>
     <div class="tasks-container">
+        <div class="task-pagination" style="display:flex;gap:12px;align-items:center;justify-content:center;padding:10px;">
+            <button type="button" id="tasks-prev">上一页</button>
+            <span id="tasks-page">第 1 页</span>
+            <button type="button" id="tasks-next">下一页</button>
+        </div>
         <div id="tasks-list" class="empty">正在加载...</div>
     </div>
 </div>
@@ -46,11 +51,32 @@
 <script>
     // 添加全局变量存储排序方式，默认为文件名排序
     let currentSort = 'name';
+    const taskPageSize = 100;
+    let taskOffset = 0;
+    let taskHasMore = false;
+    let taskNextOffset = null;
+
+    function updateTaskPageControls(data) {
+        const page = Math.floor((data.offset || 0) / (data.limit || taskPageSize)) + 1;
+        document.getElementById('tasks-page').textContent = `第 ${page} 页 · 共 ${data.total_tasks ?? (data.tasks || []).length} 项`;
+        document.getElementById('tasks-prev').disabled = (data.offset || 0) === 0;
+        document.getElementById('tasks-next').disabled = !data.has_more;
+        taskHasMore = data.has_more === true;
+        taskNextOffset = data.next_offset;
+    }
+
+    function changeTaskPage(direction) {
+        if (direction < 0) taskOffset = Math.max(0, taskOffset - taskPageSize);
+        else if (taskHasMore && Number.isInteger(taskNextOffset)) taskOffset = taskNextOffset;
+        else return;
+        fetchStatus();
+    }
     
     // 添加改变排序方式的函数
     function changeSort() {
         const select = document.getElementById('sort-select');
         currentSort = select.value;
+        taskOffset = 0;
         fetchStatus();
     }
     
@@ -75,13 +101,15 @@
     
     async function fetchStatus() {
         try {
-            const res = await fetch('/api/status');
+            const query = new URLSearchParams({offset:String(taskOffset), limit:String(taskPageSize), sort_by:currentSort});
+            const res = await fetch('/api/status?' + query.toString());
             if (!res.ok) throw new Error('获取任务状态失败');
             const data = await res.json();
             const tasks = data.tasks || [];
             
-            // 对任务进行排序
-            const sortedTasks = sortTasks(tasks, currentSort);
+            // The server selects a globally sorted page before sending it.
+            const sortedTasks = tasks;
+            updateTaskPageControls(data);
             
             const list = document.getElementById('tasks-list');
             if (sortedTasks.length===0){ list.innerHTML='<div class="empty">暂无任务</div>'; return; }
@@ -105,6 +133,8 @@
     // 页面加载时检查 Token 状态
     checkTokenStatus();
     bindTaskControls(fetchStatus);
+    document.getElementById('tasks-prev').addEventListener('click', () => changeTaskPage(-1));
+    document.getElementById('tasks-next').addEventListener('click', () => changeTaskPage(1));
     fetchStatus();
     setInterval(fetchStatus, 2000);
     setInterval(checkTokenStatus, 5000);

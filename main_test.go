@@ -72,7 +72,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	}
 	body, _ := io.ReadAll(response.Body)
 	response.Body.Close()
-	if response.StatusCode != 200 || !strings.Contains(string(body), `"status":"waiting_authorization"`) || !strings.Contains(string(body), `"ready":false`) {
+	if response.StatusCode != 200 || !strings.Contains(string(body), `"status":"waiting_authorization"`) || !strings.Contains(string(body), `"ready":false`) || !strings.Contains(string(body), `"cancelled":1`) {
 		t.Fatalf("health invented account readiness: %s", body)
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/status", nil)
@@ -92,6 +92,45 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	}
 	if json.Unmarshal(body, &status) != nil || len(status.Tasks) != 1 || status.Tasks[0].ID != "3400000000000000123" || status.Tasks[0].CanRetry || status.Tasks[0].CanCancel {
 		t.Fatalf("incorrect action DTO: %s", body)
+	}
+	req, _ = http.NewRequest("GET", srv.URL+"/api/status?offset=0&limit=1&sort_by=name", nil)
+	req.SetBasicAuth("admin", "private-administrator-password")
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(response.Body)
+	response.Body.Close()
+	if json.Unmarshal(body, &status) != nil || len(status.Tasks) != 1 || status.Tasks[0].ID != "3400000000000000123" || status.Tasks[0].CanRetry || status.Tasks[0].CanCancel {
+		t.Fatalf("incorrect paged action DTO: %s", body)
+	}
+	req, _ = http.NewRequest("GET", srv.URL+"/api/status?offset=1&limit=1&sort_by=name", nil)
+	req.SetBasicAuth("admin", "private-administrator-password")
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(response.Body)
+	response.Body.Close()
+	var pagedStatus struct {
+		Tasks      []json.RawMessage `json:"tasks"`
+		TotalTasks int               `json:"total_tasks"`
+		Counts     map[string]int    `json:"status_counts"`
+		Offset     int               `json:"offset"`
+		HasMore    bool              `json:"has_more"`
+	}
+	if json.Unmarshal(body, &pagedStatus) != nil || response.StatusCode != http.StatusOK || len(pagedStatus.Tasks) != 0 || pagedStatus.TotalTasks != 1 || pagedStatus.Counts["cancelled"] != 1 || pagedStatus.Offset != 1 || pagedStatus.HasMore {
+		t.Fatalf("incorrect paged status: %d %s", response.StatusCode, body)
+	}
+	req, _ = http.NewRequest("GET", srv.URL+"/api/status?limit=201", nil)
+	req.SetBasicAuth("admin", "private-administrator-password")
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized status page accepted: %d", response.StatusCode)
 	}
 	req, _ = http.NewRequest("POST", srv.URL+"/api/tasks/3400000000000000123/retry", nil)
 	req.SetBasicAuth("admin", "private-administrator-password")
@@ -121,13 +160,21 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	}
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, body, err = conn.ReadMessage()
-	conn.Close()
 	if err != nil || !strings.Contains(string(body), `"type":"status"`) {
 		t.Fatalf("missing WebSocket status: %v %s", err, body)
 	}
 	if !strings.Contains(string(body), `"task_id":"3400000000000000123"`) {
 		t.Fatal("WebSocket lost exact task ID")
 	}
+	if err := conn.WriteJSON(map[string]interface{}{"type": "status_page", "offset": 1, "limit": 100, "sort_by": "name"}); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, body, err = conn.ReadMessage()
+	if err != nil || !strings.Contains(string(body), `"total_tasks":1`) || !strings.Contains(string(body), `"tasks":[]`) {
+		t.Fatalf("WebSocket page request failed: %v %s", err, body)
+	}
+	conn.Close()
 	headers.Set("Origin", "http://evil.example")
 	conn, response, err = websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", headers)
 	if err == nil {

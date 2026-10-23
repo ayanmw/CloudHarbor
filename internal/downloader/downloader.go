@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +37,15 @@ type Task struct {
 	TaskID           string
 	CanCancel        bool
 	CanRetry         bool
+}
+
+type TaskPage struct {
+	Tasks   []*Task
+	Total   int
+	Counts  map[string]int
+	Offset  int
+	Limit   int
+	HasMore bool
 }
 
 // keep retains the cloud item and marks its name; delete removes it only after
@@ -351,18 +361,157 @@ func (d *Downloader) GetTasks() []*Task {
 	d.taskMutex.RLock()
 	defer d.taskMutex.RUnlock()
 	result := make([]*Task, 0, len(d.tasks))
-	for _, task := range d.tasks {
-		copy := *task
-		// Action IDs remain exact in browsers, including values above 2^53.
-		copy.TaskID = strconv.FormatInt(copy.FileInfo.FsID, 10)
-		job := d.queue.jobs[copy.FileInfo.FsID]
-		if copy.Root && job != nil && !d.queue.stopping && d.queue.err == nil && d.ctx.Err() == nil {
-			copy.CanCancel = job.Status == "pending" || job.Status == "downloading" || job.Status == "retry_wait" || job.Status == "auth_wait"
-			copy.CanRetry = job.SourceState == "" && !d.queue.blockedSources[job.Info.Path] && !d.queue.blockedIntakes[job.Info.Path] && (job.Status == "failed" || job.Status == "cancelled") && d.queue.active[job.Info.FsID] == nil && d.queue.eligible[job.Info.FsID] == job.Info && d.AuthenticationReady()
-		}
-		result = append(result, &copy)
+	for id, task := range d.tasks {
+		result = append(result, d.copyTaskLocked(id, task))
 	}
 	return result
+}
+
+// GetTaskPage selects a bounded window from the globally sorted task list while
+// counting all statuses. Only tasks returned to the caller are copied.
+func (d *Downloader) GetTaskPage(offset, limit int, sortBy string) TaskPage {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	if sortBy != "progress" && sortBy != "size" {
+		sortBy = "name"
+	}
+
+	q := d.queue
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	d.taskMutex.RLock()
+	defer d.taskMutex.RUnlock()
+
+	page := TaskPage{Offset: offset, Limit: limit, Counts: make(map[string]int)}
+	page.Total = len(d.tasks)
+	for _, task := range d.tasks {
+		page.Counts[task.Status]++
+	}
+	page.HasMore = offset < page.Total && limit < page.Total-offset
+	if limit == 0 || offset >= page.Total || page.Total == 0 {
+		return page
+	}
+
+	wanted := page.Total
+	if offset < page.Total && limit <= page.Total-offset {
+		wanted = offset + limit
+	}
+	selected := make([]*Task, 0, wanted)
+	for _, task := range d.tasks {
+		if len(selected) < wanted {
+			selected = append(selected, task)
+			siftTaskPageUp(selected, len(selected)-1, sortBy)
+			continue
+		}
+		if wanted > 0 && taskComesBefore(task, selected[0], sortBy) {
+			selected[0] = task
+			siftTaskPageDown(selected, 0, sortBy)
+		}
+	}
+	sort.Slice(selected, func(i, j int) bool { return taskComesBefore(selected[i], selected[j], sortBy) })
+
+	start := offset
+	if start > len(selected) {
+		start = len(selected)
+	}
+	end := len(selected)
+	if limit < len(selected)-start {
+		end = start + limit
+	}
+	page.Tasks = make([]*Task, 0, end-start)
+	for _, task := range selected[start:end] {
+		page.Tasks = append(page.Tasks, d.copyTaskLocked(task.FileInfo.FsID, task))
+	}
+	return page
+}
+
+func taskComesBefore(a, b *Task, sortBy string) bool {
+	if sortBy == "size" && a.FileInfo.Size != b.FileInfo.Size {
+		return a.FileInfo.Size > b.FileInfo.Size
+	}
+	if sortBy == "progress" {
+		aProgress, bProgress := float64(0), float64(0)
+		if a.FileInfo.Size > 0 {
+			aProgress = float64(a.Progress) / float64(a.FileInfo.Size)
+		}
+		if b.FileInfo.Size > 0 {
+			bProgress = float64(b.Progress) / float64(b.FileInfo.Size)
+		}
+		if aProgress != bProgress {
+			return aProgress > bProgress
+		}
+	}
+	if sortBy == "name" {
+		aName, bName := a.FileInfo.Path, b.FileInfo.Path
+		if aName == "" {
+			aName = a.FileInfo.ServerFilename
+		}
+		if bName == "" {
+			bName = b.FileInfo.ServerFilename
+		}
+		aName, bName = strings.ToLower(aName), strings.ToLower(bName)
+		if aName != bName {
+			return aName < bName
+		}
+	}
+	return a.FileInfo.FsID < b.FileInfo.FsID
+}
+
+// The bounded heap keeps the worst selected task at index 0.
+func siftTaskPageUp(tasks []*Task, child int, sortBy string) {
+	for child > 0 {
+		parent := (child - 1) / 2
+		if !taskComesBefore(tasks[parent], tasks[child], sortBy) {
+			break
+		}
+		tasks[parent], tasks[child] = tasks[child], tasks[parent]
+		child = parent
+	}
+}
+
+func siftTaskPageDown(tasks []*Task, parent int, sortBy string) {
+	for {
+		left := parent*2 + 1
+		if left >= len(tasks) {
+			return
+		}
+		worst := left
+		right := left + 1
+		if right < len(tasks) && taskComesBefore(tasks[worst], tasks[right], sortBy) {
+			worst = right
+		}
+		if !taskComesBefore(tasks[parent], tasks[worst], sortBy) {
+			return
+		}
+		tasks[parent], tasks[worst] = tasks[worst], tasks[parent]
+		parent = worst
+	}
+}
+
+func (d *Downloader) copyTaskLocked(id int64, task *Task) *Task {
+	copy := *task
+	// Action IDs remain exact in browsers, including values above 2^53.
+	copy.TaskID = strconv.FormatInt(copy.FileInfo.FsID, 10)
+	job := d.queue.jobs[id]
+	if copy.Root && job != nil && !d.queue.stopping && d.queue.err == nil && d.ctx.Err() == nil {
+		copy.CanCancel = job.Status == "pending" || job.Status == "downloading" || job.Status == "retry_wait" || job.Status == "auth_wait"
+		copy.CanRetry = job.SourceState == "" && !d.queue.blockedSources[job.Info.Path] && !d.queue.blockedIntakes[job.Info.Path] && (job.Status == "failed" || job.Status == "cancelled") && d.queue.active[id] == nil && d.queue.eligible[id] == job.Info && d.AuthenticationReady()
+	}
+	return &copy
+}
+
+func (d *Downloader) GetTaskStats() (int, map[string]int) {
+	d.taskMutex.RLock()
+	defer d.taskMutex.RUnlock()
+	counts := make(map[string]int)
+	for _, task := range d.tasks {
+		counts[task.Status]++
+	}
+	return len(d.tasks), counts
 }
 func (d *Downloader) GetTaskByFsID(id int64) *Task {
 	d.taskMutex.RLock()

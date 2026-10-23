@@ -36,6 +36,14 @@ type Server struct {
 	upgrader websocket.Upgrader
 }
 
+type wsMessage struct {
+	Type         string `json:"type"`
+	DownloadMode string `json:"download_mode,omitempty"`
+	Offset       int    `json:"offset,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+	SortBy       string `json:"sort_by,omitempty"`
+}
+
 func NewServer(dl *downloader.Downloader) *Server {
 	return &Server{
 		ctx: context.Background(),
@@ -116,11 +124,6 @@ func (s *Server) HandleRes(w http.ResponseWriter, r *http.Request) {
 	w.Write(content)
 }
 
-type wsMessage struct {
-	Type         string `json:"type"`
-	DownloadMode string `json:"download_mode,omitempty"`
-}
-
 // HandleWS WebSocket 实时状态通道
 func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
@@ -131,6 +134,8 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	done := make(chan struct{})
+	pageRequests := make(chan wsMessage, 1)
+	offset, limit, sortBy := 0, 100, "name"
 
 	// 读取前端消息（设置更新）
 	go func() {
@@ -145,6 +150,16 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 			if msg.Type == "update_settings" && msg.DownloadMode != "" {
 				log.Printf("[WebUI] 更新下载模式为: %s", msg.DownloadMode)
 				s.dl.SetDownloadMode(downloader.DownloadMode(msg.DownloadMode))
+			} else if msg.Type == "status_page" && msg.Offset >= 0 && msg.Limit >= 1 && msg.Limit <= 200 && (msg.SortBy == "name" || msg.SortBy == "progress" || msg.SortBy == "size") {
+				select {
+				case pageRequests <- msg:
+				default:
+					select {
+					case <-pageRequests:
+					default:
+					}
+					pageRequests <- msg
+				}
 			}
 		}
 	}()
@@ -159,8 +174,14 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-done:
 			return
+		case request := <-pageRequests:
+			offset, limit, sortBy = request.Offset, request.Limit, request.SortBy
+			if err := s.sendStatus(conn, offset, limit, sortBy); err != nil {
+				log.Printf("[WebUI] 发送状态失败: %v", err)
+				return
+			}
 		case <-ticker.C:
-			if err := s.sendStatus(conn); err != nil {
+			if err := s.sendStatus(conn, offset, limit, sortBy); err != nil {
 				log.Printf("[WebUI] 发送状态失败: %v", err)
 				return
 			}
@@ -168,8 +189,9 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) sendStatus(conn *websocket.Conn) error {
-	tasks := s.dl.GetTasks()
+func (s *Server) sendStatus(conn *websocket.Conn, offset, limit int, sortBy string) error {
+	page := s.dl.GetTaskPage(offset, limit, sortBy)
+	tasks := page.Tasks
 
 	// 与 /status 类似的结构
 	type TaskStatus struct {
@@ -224,8 +246,16 @@ func (s *Server) sendStatus(conn *websocket.Conn) error {
 	}
 
 	payload := map[string]interface{}{
-		"type":  "status",
-		"tasks": statuses,
+		"type": "status", "tasks": statuses,
+		"total_tasks": page.Total, "status_counts": page.Counts,
+		"offset": page.Offset, "limit": page.Limit, "has_more": page.HasMore,
+		"next_offset": func() *int {
+			if !page.HasMore {
+				return nil
+			}
+			next := page.Offset + page.Limit
+			return &next
+		}(),
 		"settings": map[string]interface{}{
 			"download_mode": string(s.dl.GetDownloadMode()),
 		},

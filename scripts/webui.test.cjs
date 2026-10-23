@@ -15,9 +15,10 @@ function page(name, tasks = []) {
     const sockets = [];
     class WebSocket {
         static OPEN = 1;
-        constructor() { sockets.push(this); }
+        constructor() { this.sent=[]; sockets.push(this); }
+        send(message) { this.sent.push(message); }
     }
-    const context = vm.createContext({URL, AbortController, console, WebSocket, location:{protocol:'http:',host:'localhost'},
+    const context = vm.createContext({URL, URLSearchParams, AbortController, console, WebSocket, location:{protocol:'http:',host:'localhost'},
         document:{getElementById:get, querySelectorAll:()=>[], addEventListener:(event,fn)=>listeners.set(event,fn)},
         setTimeout:()=>0, setInterval:()=>0,
         fetch:async url=>({ok:true,json:async()=>url.includes('status') && !url.includes('oauth') ? {tasks} : {authentication:{state:'unconfigured',ready:false},state:'unconfigured',ready:false}})
@@ -48,6 +49,32 @@ test('poll page escapes cloud text',async()=>{
     await new Promise(resolve=>setImmediate(resolve));
     assert.ok(p.get('tasks-list').innerHTML.includes('&lt;img'));
     assert.ok(!p.get('tasks-list').innerHTML.includes('<svg>'));
+});
+
+test('poll status page requests the next server page without loading full history',async()=>{
+ const p=page('index_poll.html');const requests=[];
+ p.context.fetch=async url=>{
+  requests.push(url);
+  const offset=Number(new URL(url,'http://localhost').searchParams.get('offset'));
+  return{ok:true,json:async()=>({tasks:[],total_tasks:201,status_counts:{done:201},offset,limit:100,has_more:offset<200,next_offset:offset<200?offset+100:null})};
+ };
+ await vm.runInContext('fetchStatus()',p.context);
+ p.listeners.get('tasks-next:click')();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.ok(requests.some(url=>url.includes('offset=100')));
+ assert.equal(p.get('tasks-next').disabled,false);
+});
+
+test('WebSocket status pages request server sorting and update global statistics',()=>{
+ const p=page('index_ws.html');
+ p.listeners.get('DOMContentLoaded')();
+ p.context.payload={tasks:[],total_tasks:250,status_counts:{downloading:2,done:240,failed:8},offset:0,limit:100,has_more:true,next_offset:100};
+ vm.runInContext('renderTasks(payload)',p.context);
+ assert.equal(p.get('total-tasks').textContent,250);
+ assert.equal(p.get('done-tasks').textContent,240);
+ p.sockets[0].readyState=1;
+ p.listeners.get('tasks-next:click')();
+ assert.equal(JSON.parse(p.sockets[0].sent.at(-1)).offset,100);
 });
 test('OAuth page only accepts HTTPS Baidu authorization links',()=>{
     const p=page('index_oauth.html');
