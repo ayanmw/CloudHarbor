@@ -4,6 +4,10 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## v0.7.1-preview.1 准备交付
+
+将可选 RUN_AS、普通用户目录准备/迁移说明纳入独立包。程序行为沿用已验证的 v0.7.0，保留 HTTPS 来源、认证与未知隔离规则；旧包不改动。本轮进一步验证新包本身的 Docker/Compose 和原生启动。
+
 ## 源码镜像实际构建与部署配置修复（源码检查点）
 
 - 复现源码 Compose 漏掉 BAIDU_REFRESH_TOKEN/ADMIN_PASSWORD：配置中设置假值却未转发。现补为可选变量，实际 Compose config 精确值通过；空值仍保留原行为。
