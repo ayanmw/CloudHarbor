@@ -6,7 +6,7 @@
 - 用户确认路线 1：保留自动源改名/删除，但操作前重新核对身份。持久化任务现在通过 `fs_id` 读取最新文件元数据；身份字段变化或源项已不存在时不发送改名/删除，任务失败并保留本地下载结果。
 - 可比身份字段：`fs_id`、完整路径、名称、大小、`server_mtime`、目录标记和 MD5。API 错误仍走现有重试/认证分类；请求已发送后的未知结果仍持久化隔离，无人工放行入口。
 - 尚存边界：身份读取与后续改名/删除不是原子操作，读取完成后云端仍可能立即变化；测试与本地 API 夹具不能证明百度服务端真实并发行为。
-- RED/GREEN 覆盖元数据查询参数/解码及源路径变化时不执行删除；Go 全模块测试/vet、WSL race 全模块、Node WebUI/userscript 15 项通过。三平台构建、ZIP payload 哈希/目录一致性、Windows 与 WSL Linux AMD64 版本/revision、ARM64 ELF 架构通过。验证记录：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.7-preview.1-validation.md`。
+- RED/GREEN 覆盖元数据查询参数/解码及源路径变化时不执行删除；Go 全模块测试/vet、WSL race 全模块、Node WebUI/userscript 15 项通过。三平台构建、ZIP payload 哈希/目录一致性、Windows 与 WSL Linux AMD64 版本/revision、ARM64 ELF 架构通过。后续补充了 Windows 正式包实际启动、认证/匿名 HTTP、管理页/脚本资源、未授权云目录拒绝和 Ctrl+C 退出检查。验证记录：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.7-preview.1-validation.md`。
 
 ## 总目标
 
