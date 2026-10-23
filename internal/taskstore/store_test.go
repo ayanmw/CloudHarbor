@@ -76,6 +76,40 @@ func TestRecordsSurviveReopenAndScopeCannotChange(t *testing.T) {
 	}
 }
 
+func TestSaveBatchRoundTripsRecordsAndRejectsInvalidBatchWithoutPublishing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	s, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.SaveBatch([]Record{
+		{ID: 7, Data: []byte(`{"status":"pending","id":7}`)},
+		{ID: 9, Data: []byte(`{"status":"done","id":9}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(loaded[7]) != `{"status":"pending","id":7}` || string(loaded[9]) != `{"status":"done","id":9}` {
+		t.Fatalf("batch records = %q, %q", loaded[7], loaded[9])
+	}
+
+	err = s.SaveBatch([]Record{
+		{ID: 11, Data: []byte(`{"status":"pending"}`)},
+		{ID: 12, Data: []byte(`{invalid}`)},
+	})
+	if err == nil {
+		t.Fatal("invalid JSON batch was accepted")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "jobs", "11.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("valid prefix of rejected batch was published: %v", err)
+	}
+}
+
 func TestLoadRetainsIndependentRecordBytes(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "queue"), "/preview")
 	if err != nil {

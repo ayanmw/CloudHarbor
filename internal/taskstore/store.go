@@ -25,6 +25,10 @@ type Store struct {
 	lock   *os.File
 	closed bool
 }
+type Record struct {
+	ID   int64
+	Data []byte
+}
 type manifest struct {
 	Version int    `json:"version"`
 	Scope   string `json:"scope"`
@@ -157,6 +161,33 @@ func (s *Store) Save(id int64, data []byte) error {
 		return err
 	}
 	return atomicWrite(name, data)
+}
+
+// SaveBatch writes individually synced atomic records and batches their parent
+// directory sync. Callers must keep source work available until this succeeds.
+func (s *Store) SaveBatch(records []Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return os.ErrClosed
+	}
+	files := make([]durablefs.File, len(records))
+	seen := make(map[int64]struct{}, len(records))
+	for i, record := range records {
+		if record.ID <= 0 || len(record.Data) > 1024*1024 || !json.Valid(record.Data) {
+			return fmt.Errorf("invalid job record")
+		}
+		if _, ok := seen[record.ID]; ok {
+			return fmt.Errorf("duplicate job record %d", record.ID)
+		}
+		seen[record.ID] = struct{}{}
+		name := filepath.Join(s.dir, "jobs", strconv.FormatInt(record.ID, 10)+".json")
+		if err := safePath(name); err != nil {
+			return err
+		}
+		files[i] = durablefs.File{Path: name, Data: record.Data}
+	}
+	return durablefs.WriteFilesAtomic(files)
 }
 func (s *Store) Load() (map[int64]json.RawMessage, error) {
 	result := make(map[int64]json.RawMessage)

@@ -30,6 +30,9 @@ type queueJob struct {
 	Updated     time.Time         `json:"updated"`
 	candidate   *candidateEntry
 }
+
+const maxNewJobPersistenceBatch = 1024
+
 type scheduler struct {
 	mu      sync.Mutex
 	owner   *Downloader
@@ -224,6 +227,39 @@ func (q *scheduler) persist(job *queueJob) error {
 	return err
 }
 
+func (q *scheduler) persistNewJobs(jobs []*queueJob) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+	for start := 0; start < len(jobs); start += maxNewJobPersistenceBatch {
+		end := min(start+maxNewJobPersistenceBatch, len(jobs))
+		records := make([]taskstore.Record, 0, end-start)
+		for _, job := range jobs[start:end] {
+			job.Error = errorSummary(job.Error)
+			job.Updated = time.Now()
+			if q.store == nil {
+				continue
+			}
+			body, err := json.Marshal(job)
+			if err != nil {
+				q.err = fmt.Errorf("队列序列化失败，停止调度: %w", err)
+				q.owner.cancel()
+				return q.err
+			}
+			records = append(records, taskstore.Record{ID: job.Info.FsID, Data: body})
+		}
+		if q.store != nil {
+			if err := q.store.SaveBatch(records); err != nil {
+				q.err = fmt.Errorf("队列批量保存失败，停止调度: %w", err)
+				q.owner.cancel()
+				return q.err
+			}
+		}
+	}
+	q.owner.taskStatsGeneration.Add(uint64(len(jobs)))
+	return nil
+}
+
 func errorSummary(message string) string {
 	if len(message) <= 8192 {
 		return message
@@ -302,6 +338,8 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 		return ErrAuthenticationWaiting
 	}
 	eligible := make(map[int64]*baiduapi.FileInfo)
+	newJobs := make([]*queueJob, 0)
+	seen := make(map[int64]struct{}, len(files))
 	for _, f := range files {
 		f = shareFileInfoStrings(f)
 		if q.blockedIntakes[f.Path] || q.blockedSources[f.Path] {
@@ -313,6 +351,10 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 		if f.FsID <= 0 {
 			return fmt.Errorf("invalid root fs_id")
 		}
+		if _, ok := seen[f.FsID]; ok {
+			return fmt.Errorf("duplicate root fs_id: %d", f.FsID)
+		}
+		seen[f.FsID] = struct{}{}
 		old := q.jobs[f.FsID]
 		if old != nil && old.Info == f {
 			eligible[f.FsID] = &old.Info
@@ -329,12 +371,16 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 			continue
 		}
 		job := &queueJob{Version: 1, Info: f, Mode: q.owner.GetDownloadMode(), Status: "pending", Created: time.Now()}
-		// Durable registration happens before a worker can observe the job.
-		if err := q.persist(job); err != nil {
-			return err
-		}
-		q.jobs[f.FsID] = job
+		newJobs = append(newJobs, job)
 		eligible[f.FsID] = &job.Info
+	}
+	// Persist the full scan's new roots before publishing them to the worker
+	// queue. The sources remain in the cloud queue until later post-processing.
+	if err := q.persistNewJobs(newJobs); err != nil {
+		return err
+	}
+	for _, job := range newJobs {
+		q.jobs[job.Info.FsID] = job
 		q.owner.taskCatalogGeneration.Add(1)
 		q.reflect(job)
 	}

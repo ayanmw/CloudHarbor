@@ -53,6 +53,41 @@ func TestReconcileSharesIdenticalPersistedFileInfoStorage(t *testing.T) {
 	}
 }
 
+func TestReconcileDoesNotPublishJobsWhenBatchPersistenceFails(t *testing.T) {
+	root := t.TempDir()
+	d := NewDownloader(&config.Config{LocalDownDir: root, QueueDir: "/queue"}, baiduapi.NewClient("token", "app"))
+	defer d.cancel()
+	store, err := taskstore.Open(filepath.Join(root, stateDirectory, "queue"), "/queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	d.queue.store = store
+	d.queue.started = true
+	d.SetAuthentication(baiduapi.NewClient("token", "app"), true, time.Now().Add(time.Hour))
+	if err := os.Mkdir(filepath.Join(root, stateDirectory, "queue", "jobs", "2.json"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	err = d.queue.reconcile([]baiduapi.FileInfo{file(1, "one.bin", 1), file(2, "two.bin", 1)}, d.authEpoch)
+	if err == nil {
+		t.Fatal("reconcile accepted a partial durable batch")
+	}
+	if len(d.queue.jobs) != 0 || len(d.queue.eligible) != 0 || !d.queue.started || d.ctx.Err() == nil {
+		t.Fatalf("failed batch was published: jobs=%d eligible=%d started=%v cancelled=%v", len(d.queue.jobs), len(d.queue.eligible), d.queue.started, d.ctx.Err())
+	}
+	if err := os.Remove(filepath.Join(root, stateDirectory, "queue", "jobs", "2.json")); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || len(d.queue.jobs) != 0 {
+		t.Fatalf("partial on-disk recovery state = %d records; in-memory jobs=%d", len(loaded), len(d.queue.jobs))
+	}
+}
+
 func TestReconcileRetainsChangedScanIdentityBesideUnknownJournal(t *testing.T) {
 	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	oldInfo := baiduapi.FileInfo{FsID: 72, Path: "/queue/original.bin", ServerFilename: "original.bin", Size: 1024, Mtime: 123}
@@ -290,6 +325,41 @@ func BenchmarkSchedulerClaimIdleHistory(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				if job, ctx, wait := d.queue.claim(); job != nil || ctx != nil || wait != 0 {
 					b.Fatal("idle history returned a runnable task")
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkReconcileNewJobs(b *testing.B) {
+	for _, count := range []int{1000, 10000} {
+		b.Run(fmt.Sprintf("jobs_%d", count), func(b *testing.B) {
+			files := make([]baiduapi.FileInfo, count)
+			for id := range files {
+				name := fmt.Sprintf("new-%06d.bin", id+1)
+				files[id] = baiduapi.FileInfo{FsID: int64(id + 1), Path: "/queue/" + name, ServerFilename: name, Size: int64(id + 1)}
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				root := b.TempDir()
+				d := NewDownloader(&config.Config{LocalDownDir: root, QueueDir: "/queue"}, baiduapi.NewClient("token", "app"))
+				store, err := taskstore.Open(filepath.Join(root, stateDirectory, "queue"), "/queue")
+				if err != nil {
+					b.Fatal(err)
+				}
+				d.queue.store = store
+				d.queue.started = true
+				d.SetAuthentication(baiduapi.NewClient("token", "app"), true, time.Now().Add(time.Hour))
+				b.StartTimer()
+				err = d.queue.reconcile(files, d.authEpoch)
+				b.StopTimer()
+				d.cancel()
+				if closeErr := store.Close(); err == nil {
+					err = closeErr
+				}
+				if err != nil {
+					b.Fatal(err)
 				}
 			}
 		})
