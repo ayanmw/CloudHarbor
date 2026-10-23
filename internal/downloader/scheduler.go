@@ -114,9 +114,14 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 	}
 	err = store.LoadEachRaw(func(id int64, body json.RawMessage) error {
 		var job queueJob
-		if decodeErr := json.Unmarshal(body, &job); decodeErr != nil || job.Version != 1 || job.Info.FsID != id || !validJobStatus(job.Status) || !validSourceRecord(&job) || job.Attempts < 0 || job.Failures < 0 || (job.Mode != DownloadModeKeep && job.Mode != DownloadModeDelete) {
+		decodeErr := json.Unmarshal(body, &job)
+		status, statusValid := canonicalJobStatus(job.Status)
+		mode, modeValid := canonicalJobMode(job.Mode)
+		if decodeErr != nil || job.Version != 1 || job.Info.FsID != id || !statusValid || !validSourceRecord(&job) || job.Attempts < 0 || job.Failures < 0 || !modeValid {
 			return fmt.Errorf("invalid persisted job %d", id)
 		}
+		job.Status = status
+		job.Mode = mode
 		job.Info = shareFileInfoStrings(job.Info)
 		if job.SourceState == "sending" {
 			job.SourceState = "unknown"
@@ -142,6 +147,42 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		return nil, err
 	}
 	return d, nil
+}
+
+// canonicalJobStatus lets the runtime share a persisted status value instead
+// of retaining a separate decoded string for every job.
+func canonicalJobStatus(status string) (string, bool) {
+	switch status {
+	case "pending":
+		return "pending", true
+	case "downloading":
+		return "downloading", true
+	case "retry_wait":
+		return "retry_wait", true
+	case "auth_wait":
+		return "auth_wait", true
+	case "failed":
+		return "failed", true
+	case "done":
+		return "done", true
+	case "cancelled":
+		return "cancelled", true
+	case "source_unknown":
+		return "source_unknown", true
+	default:
+		return status, false
+	}
+}
+
+func canonicalJobMode(mode DownloadMode) (DownloadMode, bool) {
+	switch mode {
+	case DownloadModeKeep:
+		return DownloadModeKeep, true
+	case DownloadModeDelete:
+		return DownloadModeDelete, true
+	default:
+		return mode, false
+	}
 }
 
 // shareFileInfoStrings reuses the path bytes for ServerFilename when it is

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/config"
@@ -191,6 +192,31 @@ func TestBenchmarkHistoryFixtureProducesRestorableRecords(t *testing.T) {
 		if job.Info.FsID != id || job.Status != "done" || job.Mode != DownloadModeKeep {
 			t.Fatalf("fixture job %d = %+v", id, job)
 		}
+	}
+}
+
+func TestOpenDownloaderSharesRepeatedPersistedEnumStrings(t *testing.T) {
+	root, _ := benchmarkHistoryFixture(t, 2)
+	d, err := OpenDownloader(&config.Config{LocalDownDir: root, QueueDir: "/preview"}, baiduapi.NewClient("", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.cancel()
+	defer d.queue.store.Close()
+	first, second := d.queue.jobs[1], d.queue.jobs[2]
+	if first == nil || second == nil {
+		t.Fatal("fixture jobs were not restored")
+	}
+	// Go 1.22 decodes each persisted enum to a separate string; canonicalization
+	// must share the immutable values retained by the queue after restoration.
+	if first.Info.Path != "/preview/file-1.bin" || second.Info.Path != "/preview/file-2.bin" {
+		t.Fatalf("restored paths were overwritten: first=%q second=%q", first.Info.Path, second.Info.Path)
+	}
+	if unsafe.StringData(first.Status) != unsafe.StringData(second.Status) {
+		t.Fatal("repeated persisted status strings were not shared")
+	}
+	if unsafe.StringData(string(first.Mode)) != unsafe.StringData(string(second.Mode)) {
+		t.Fatal("repeated persisted mode strings were not shared")
 	}
 }
 
