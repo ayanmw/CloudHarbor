@@ -1,12 +1,14 @@
 # 持续优化进度
 
-## D7 增量：空闲 worker 候选队列索引（待打包验证）
+## v0.8.4-preview.1（空闲 worker 候选堆）
 
 - `claim()` 由全量 `scheduler.jobs` 扫描改为两个内存堆：就绪任务按 `Created`/`FsID` 排序，退避任务按最早 `NextAttempt` 唤醒。只有最新云端扫描确认且可运行的任务进入索引；完成历史不创建堆项，持久化 JSON v1 不变。
 - 云端 reconciliation 清空并在原有全量扫描中重建候选索引；完成、取消、手动重试、认证轮换及 intake 隔离变化更新对应索引。认证变化清空旧扫描候选；intake unknown 隔离解除后已扫描任务恢复候选，不等待定时扫描。
 - 10,000/100,000 条已完成历史的 idle `claim()` Windows 基准分别约 25.1/26.1 ns/op，0 B/op、0 allocs/op；前一版单次测量约 104.7 μs/5.68 ms。不同运行/CPU 的数字不作跨机器性能承诺。
 - 新增排序/退避/认证失效和 intake 隔离往返测试；Windows 全模块 `go test`、`go vet`、Node WebUI/userscript 17 项通过，WSL 全模块 race/vet 通过。Windows `-race` 由 UCRT gcc 链接失败（本机既有工具链限制），不计为通过。
-- 包内测试版与大队列重启/HTTP 冒烟待完成；真实 NAS 空闲 CPU、活跃候选集和唤醒延迟未测。
+- 独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.4-preview.1.zip`，9,838,624 字节，SHA256 `83C13FFF7730C66E98EFDF0D25D676EEB7527F14659C2CF9497F19222C29CADB`；11 项 payload 哈希、Linux AMD64/ARM64 ELF 架构检查及 Linux AMD64 版本/revision 核对通过。
+- 包内 Windows 程序从隔离副本恢复 10,000 条合成完成任务；认证 health 显示未配置授权，状态接口显示 10,000 总数/完成、10 条分页，匿名访问 401；Ctrl+C 后服务停止且端口释放。验证明细：[v0.8.4-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.4-preview.1-validation.md)。
+- 没有真实百度凭证或云端写操作。真实 NAS 空闲 CPU、活跃候选集性能和唤醒延迟仍未验收；D6 的逐记录恢复 I/O 和 NAS 大队列启动验证继续开放。
 
 ## v0.8.3-preview.1（空闲 worker 事件驱动）
 

@@ -40,6 +40,6 @@
 - [x] Add indexed heap entries and scheduler helpers to clear, rebuild, remove, and enqueue eligible pending/retry jobs.
 - [x] Update reconcile/auth invalidation/completion/cancel/retry/intake-block transitions to maintain candidate heaps under `q.mu`.
 - [x] Run focused tests and benchmark idle claims with 10k/100k completed records; Windows full tests/vet, WSL race/vet and Node tests passed. Windows `-race` was attempted but GCC link failed.
-- [ ] Build and smoke-test an independent package, then record exact package evidence and remaining NAS validation boundary in D7 progress.
+- [x] Build and smoke-test independent package v0.8.4-preview.1, then record exact package evidence and remaining NAS validation boundary in D7 progress.
 
 **Validation:** no timing threshold in unit tests; benchmark should show `claim()` no longer scales with completed-history count. Existing retry, auth, cancellation, restart, and concurrency tests must pass.
