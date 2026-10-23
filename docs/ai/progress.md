@@ -4,14 +4,18 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
-## 源后处理完成与重放保护（准备 v0.6.0-preview.1）
+## v0.6.0-preview.1（源后处理完成与重放保护测试包已交付）
+
+- 源码 revision：`62586afd2809e1b54d5072a95eed783224830dad`；ZIP：发布根目录 v0.6.0-preview.1.zip，9,991,187 字节，SHA256 `b2c5fdc8d4b212f86c02b2fc6233fcd6cab0dc417b801cf4fcc5ea275a8b5a88`。
+- 干净提交 Node/Go/vet 门禁、三平台构建、11 项解压哈希和 ARM64 架构检查通过。Windows/Linux AMD64 包内程序从验证副本实际运行，合成 sending 恢复为 source_unknown；状态/健康正确，取消与重试 409，匿名 401。没有配置百度凭证，HTTPS 指向拒绝连接代理。
+- Windows Ctrl+C 日志停止（外层 PTY exit 1）；Linux 精确核对进程后 SIGTERM、Service stopped、exit 0。所有验证服务已停止，正式包无测试状态。完整证据在发布目录 v0.6.0-preview.1-validation.md。
 
 - Rename/Delete 改为严格同步单项完成解析：顶层成功不足以证明完成，异步 taskid/业务 111、缺字段、多项、截断/读取失败、网络/5xx/重定向保持未知；禁止 POST 跟随重定向，原 307 反例重放 10 次已修。
 - 根任务发送前原子保存 source_state=sending/source_unknown；确认成功先保存 confirmed/done。回复或凭据保存丢失、崩溃重开保持 unknown，不自动/手动重发；发送前保存失败无请求。
 - 隔离覆盖扫描/claim、Cancel/Retry、管理入队预检/登记及浏览资格。独立审查发现的同 ID 换路径覆写已先 RED 后修，关闭重开仍保留旧路径；同路径换 ID 也不可绕过。
 - 根任务本地完成不再提前显示 done；网页状态与健康新增 source_unknown，显示禁止重发。旧无字段记录可读，旧二进制不能处理新不确定状态；升级前停旧实例并备份状态目录。
 - 两平台全模块 race/vet 和 Node 14 项通过；最后补项后受影响 baiduapi/downloader/intakeapi/main 两平台 race/vet 再通过，独立最后复核无新确定重要问题。设计/证据见 [source-operation-plan.md](source-operation-plan.md)。
-- 准备 v0.6.0-preview.1，将下述业务错误恢复一并纳入；无真实账号操作，真实百度/NAS 和异步完成查询仍未验收。
+- v0.6.0-preview.1 已将下述业务错误恢复一并纳入；无真实账号操作，真实百度/NAS、同步响应兼容和异步完成查询仍未验收。
 
 ## 百度业务错误恢复源码检查点（已合入待发布 v0.6）
 

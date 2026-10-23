@@ -20,7 +20,7 @@
 - Windows UCRT 与 WSL 全模块非缓存 race、vet 通过；最后补 Rename/Delete 单项命名空间及多项 Move 异步迹象后，两平台 baiduapi/downloader race 与全模块 vet 再通过。
 - Node 13 项通过；独立只读复核最终无新增确定 important 问题，git diff --check 通过。
 - 本地 API 响应、实际调度、落盘和任务状态集成覆盖：20016/20017/31045 → auth_wait/预算不变；31034 → retry_wait/非立即重试/恢复一次完成；无 taskid 的运行 Move 在文件与目录两种情况下均 unknown/无新任务/不重发。
-- 没有访问真实账号，没有发布新包；当前独立版仍为 v0.5.0-preview.1。本轮为下一版源码检查点，不能把它描述成旧包已经更新。
+- 本检查点最初未独立打包，后续已合入 v0.6.0-preview.1；v0.5.0-preview.1 等旧包不变。没有访问真实账号。
 
 ## 后续核查
 
