@@ -1,5 +1,10 @@
 # 持续优化进度
 
+## v0.7.8 后续：已完成文件凭据身份漂移回归（仅测试）
+
+- 新增完成文件身份变化测试：旧版本已有 SHA256 完成凭据、本地目标内容有效时，云端 MD5 变化必须保留原文件，不能下载新内容，也不能执行源操作。
+- 当前 transfer 实现符合该约束；Go 全模块测试、`go vet`、WSL 全模块 race 和 diff 检查通过。此项只增加回归覆盖，不改变运行时二进制，因此 v0.7.8-preview.1 仍为当前独立测试包，不重打相同行为包。
+
 ## v0.7.8-preview.1（身份变化任务恢复已交付）
 
 - 源码 revision：`ead3278c9673c3abb4e758d347f34dd5aa380f34`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.8-preview.1.zip`；SHA256：`1b366832816eb3917ec014ecc5da3046bf450827534730d33d317b1eede60e3a`。

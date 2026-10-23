@@ -302,6 +302,45 @@ func TestChangedCloudVersionDoesNotResumeOldPartial(t *testing.T) {
 	}
 }
 
+func TestChangedCompletedCloudVersionPreservesLocalFile(t *testing.T) {
+	var downloads int
+	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		downloads++
+		io.WriteString(w, "NEWNEW")
+	})
+	old := file(81, "stable.txt", 6)
+	old.MD5 = "old-cloud-version"
+	local := filepath.Join(d.cfg.LocalDownDir, "stable.txt")
+	oldContent := []byte("OLDOLD")
+	if err := os.WriteFile(local, oldContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	key := sha256.Sum256([]byte("stable.txt"))
+	state := filepath.Join(d.cfg.LocalDownDir, stateDirectory, hex.EncodeToString(key[:]))
+	if err := os.MkdirAll(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	record := recordFor(old, "stable.txt")
+	oldDigest := sha256.Sum256(oldContent)
+	record.SHA256 = hex.EncodeToString(oldDigest[:])
+	if err := writeRecord(filepath.Join(state, "complete.json"), record); err != nil {
+		t.Fatal(err)
+	}
+	newVersion := old
+	newVersion.MD5 = "new-cloud-version"
+
+	d.downloadFile(newVersion)
+
+	assertStatus(t, d, old.FsID, "failed")
+	actual, err := os.ReadFile(local)
+	if err != nil || string(actual) != string(oldContent) {
+		t.Fatalf("old completed file was overwritten: content=%q err=%v", actual, err)
+	}
+	if downloads != 0 || len(p.actions) != 0 {
+		t.Fatalf("unverified new version triggered download/source cleanup: downloads=%d actions=%v", downloads, p.actions)
+	}
+}
+
 func TestModifiedCompletedFileBlocksSourceCleanup(t *testing.T) {
 	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "abcdef") })
 	f := file(1, "a.txt", 6)
