@@ -7,6 +7,7 @@
 - 源任务改名/删除前会重新查询并核对 FsID 对应的完整 `FileInfo`；发现缺失或身份变化时持久化为 `changed/failed`，不发送源操作、不允许重试旧身份。用户已选择保留自动处理但在操作前复核身份；复核与实际云端请求之间仍存在接口无法消除的竞态。结果未知的目录继续隔离，不提供人工放行。
 - Node WebUI/userscript 测试、Windows 全模块 Go test/vet、WSL Go 1.22.2 全模块 race/vet、三平台打包构建通过。Linux AMD64 包内启动/认证 health、匿名 401、SIGTERM 与 ARM64 ELF 检查见独立验证记录。
 - 未使用真实百度凭证或执行云端操作；真实百度/NAS、目标文件系统和长时间运行仍待验收。
+- 验证明细：[v0.8.15-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.15-preview.1-validation.md)。
 
 ## v0.8.14-preview.1（加速 Windows 队列恢复并保持重解析点检查）
 
