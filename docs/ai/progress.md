@@ -1,10 +1,11 @@
 # 持续优化进度
 
-## v0.7.8-preview.1（身份变化任务恢复，待打包）
+## v0.7.8-preview.1（身份变化任务恢复已交付）
 
+- 源码 revision：`ead3278c9673c3abb4e758d347f34dd5aa380f34`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.8-preview.1.zip`；SHA256：`1b366832816eb3917ec014ecc5da3046bf450827534730d33d317b1eede60e3a`。
 - 源项身份复核失败曾按普通 failed 保存；若下一次列表仍返回旧元数据，用户仍能重试旧任务，造成重复下载且必然再次拒绝源操作。
 - 现在持久化 `source_state=changed`：阻止旧身份的手动重试，不隔离源路径；下次扫描确认同一 fs_id 的新元数据后，才替换为新任务。重启后仍保留不可重试状态。结果未知的 `source_unknown` 策略未变化。
-- 新 RED/GREEN 覆盖旧列表状态下 Retry 返回冲突、进程重开后仍冲突，以及新目录元数据出现后自动重新入队并完成；Go 全模块测试/vet、Node 15 项通过，正在执行 WSL race 和独立打包。
+- 新 RED/GREEN 覆盖旧列表状态下 Retry 返回冲突、进程重开后仍冲突，以及新目录元数据出现后自动重新入队并完成；Go 全模块测试/vet、WSL race 全模块、Node 15 项通过。发布脚本三平台构建与哈希检查通过；Windows/WSL Linux AMD64 版本/revision 和 ARM64 ELF 架构匹配。正式包 Windows 启动验证认证 health、匿名 401、页面和资源、无百度授权时云目录 409，以及 Ctrl+C 停止和端口释放。验证记录：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.8-preview.1-validation.md`。
 
 ## v0.7.7-preview.1（源项身份复核已交付）
 
