@@ -44,7 +44,23 @@ func setup(t *testing.T, content http.HandlerFunc) (*Downloader, *provider) {
 		var result any
 		switch r.URL.Query().Get("method") {
 		case "filemetas":
-			result = map[string]any{"errno": 0, "list": []map[string]string{{"dlink": srv.URL}}}
+			if r.URL.Query().Get("dlink") == "1" {
+				result = map[string]any{"errno": 0, "list": []map[string]string{{"dlink": srv.URL}}}
+			} else {
+				var id int64
+				fmt.Sscanf(r.URL.Query().Get("fsids"), "[%d]", &id)
+				var found []baiduapi.FileInfo
+				p.mu.Lock()
+				for _, items := range p.lists {
+					for _, item := range items {
+						if item.FsID == id {
+							found = append(found, item)
+						}
+					}
+				}
+				p.mu.Unlock()
+				result = map[string]any{"errno": 0, "list": found}
+			}
 		case "list":
 			items := p.lists[r.URL.Query().Get("dir")]
 			if items == nil {

@@ -66,6 +66,23 @@ func TestListDirPageRequestsOnlyRequestedWindow(t *testing.T) {
 	}
 }
 
+func TestGetFileInfoReadsCurrentIdentityByFSID(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Query().Get("method") != "filemetas" || r.URL.Query().Get("fsids") != "[123]" || r.URL.Query().Get("dlink") != "0" {
+			t.Fatalf("unexpected metadata query: %s", r.URL.RawQuery)
+		}
+		info := FileInfo{FsID: 123, Path: "/queue/a.txt", ServerFilename: "a.txt", Size: 3, Mtime: 42}
+		body, _ := json.Marshal(map[string]any{"errno": 0, "list": []FileInfo{info}})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: r}, nil
+	})
+	got, err := NewClient("test", "app").GetFileInfo(123)
+	if err != nil || got != (FileInfo{FsID: 123, Path: "/queue/a.txt", ServerFilename: "a.txt", Size: 3, Mtime: 42}) {
+		t.Fatalf("metadata=%+v err=%v", got, err)
+	}
+}
+
 func TestDownloadRequestCanBeCancelled(t *testing.T) {
 	started := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(started); <-r.Context().Done() }))

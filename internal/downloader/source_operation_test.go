@@ -82,6 +82,33 @@ func TestUncertainSourceOperationSurvivesRestartWithoutReplay(t *testing.T) {
 	}
 }
 
+func TestChangedSourceIdentityPreventsPostprocess(t *testing.T) {
+	base, p := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "abc") })
+	d, err := OpenDownloader(base.cfg, base.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, d)
+	original := file(73, "original.txt", 3)
+	changed := file(73, "replacement.txt", 3)
+	p.lists["/queue"] = []baiduapi.FileInfo{changed}
+	job := &queueJob{Version: 1, Info: original, Mode: DownloadModeDelete, Status: "downloading", Created: time.Now()}
+	d.queue.mu.Lock()
+	d.queue.jobs[original.FsID] = job
+	if err = d.queue.persist(job); err != nil {
+		d.queue.mu.Unlock()
+		t.Fatal(err)
+	}
+	d.queue.mu.Unlock()
+	err = d.runRoot(context.Background(), original, DownloadModeDelete)
+	if !errors.Is(err, ErrSourceIdentityChanged) {
+		t.Fatalf("runRoot error=%v, want source identity change", err)
+	}
+	if len(p.actions) != 0 {
+		t.Fatalf("changed cloud item received source operation: %v", p.actions)
+	}
+}
+
 func TestSourceJournalSaveFailureNeverSendsRequest(t *testing.T) {
 	original, _ := setup(t, func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected download") })
 	d, err := OpenDownloader(original.cfg, original.getClient())

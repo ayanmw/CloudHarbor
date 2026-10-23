@@ -9,6 +9,7 @@ import (
 )
 
 var ErrSourceOperationUnknown = errors.New("网盘后处理结果未知，保持隔离，禁止重发")
+var ErrSourceIdentityChanged = errors.New("网盘源项身份已变化，未执行改名或删除")
 
 func validSourceRecord(job *queueJob) bool {
 	switch job.SourceState {

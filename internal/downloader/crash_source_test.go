@@ -47,7 +47,11 @@ func TestSourceOperationProcessCrashRemainsIsolated(t *testing.T) {
 				case "list":
 					json.NewEncoder(w).Encode(map[string]any{"errno": 0, "list": []baiduapi.FileInfo{file(1, "a.txt", 3)}})
 				case "filemetas":
-					json.NewEncoder(w).Encode(map[string]any{"errno": 0, "list": []map[string]string{{"dlink": "http://" + r.Host + "/content"}}})
+					if r.URL.Query().Get("dlink") == "1" {
+						json.NewEncoder(w).Encode(map[string]any{"errno": 0, "list": []map[string]string{{"dlink": "http://" + r.Host + "/content"}}})
+					} else {
+						json.NewEncoder(w).Encode(map[string]any{"errno": 0, "list": []baiduapi.FileInfo{file(1, "a.txt", 3)}})
+					}
 				case "filemanager":
 					wantOperation := "rename"
 					if mode == DownloadModeDelete {

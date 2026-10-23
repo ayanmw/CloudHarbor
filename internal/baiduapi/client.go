@@ -18,6 +18,8 @@ import (
 // The caller must restart from zero instead of appending that body.
 var ErrRangeIgnored = errors.New("server ignored Range; restart required")
 
+var ErrFileMetadataMissing = errors.New("file metadata missing")
+
 // net/http wraps failures in url.Error, whose Error string includes credentials
 // in the request URL. Preserve the cause without putting that URL in task/logs.
 func requestError(err error) error {
@@ -214,6 +216,52 @@ func (c *Client) listDirPage(dir string, start, limit int) ([]FileInfo, error) {
 		return nil, err
 	}
 	return page, nil
+}
+
+// GetFileInfo fetches current cloud metadata for a file ID.
+func (c *Client) GetFileInfo(fsid int64) (FileInfo, error) {
+	params := url.Values{}
+	params.Set("method", "filemetas")
+	params.Set("access_token", c.AccessToken)
+	params.Set("fsids", fmt.Sprintf("[%d]", fsid))
+	params.Set("dlink", "0")
+	resp, err := c.get("https://pan.baidu.com/rest/2.0/xpan/multimedia?" + params.Encode())
+	if err != nil {
+		return FileInfo{}, fmt.Errorf("获取文件元数据请求失败: %w", requestError(err))
+	}
+	defer resp.Body.Close()
+	const responseLimit = 16 * 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
+	if err != nil {
+		return FileInfo{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return FileInfo{}, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode}
+	}
+	if len(body) > responseLimit {
+		return FileInfo{}, fmt.Errorf("文件元数据响应超过大小限制")
+	}
+	var result struct {
+		Errno     *int       `json:"errno"`
+		ErrorCode int        `json:"error_code"`
+		List      []FileInfo `json:"list"`
+	}
+	if err = json.Unmarshal(body, &result); err != nil {
+		return FileInfo{}, fmt.Errorf("解析文件元数据失败: %w", err)
+	}
+	if result.ErrorCode != 0 {
+		return FileInfo{}, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.ErrorCode}
+	}
+	if result.Errno == nil {
+		return FileInfo{}, fmt.Errorf("文件元数据响应缺失 errno")
+	}
+	if *result.Errno != 0 {
+		return FileInfo{}, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
+	}
+	if len(result.List) != 1 || result.List[0].FsID != fsid {
+		return FileInfo{}, ErrFileMetadataMissing
+	}
+	return result.List[0], nil
 }
 
 // GetDownloadLink 获取文件下载链接

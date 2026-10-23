@@ -318,6 +318,15 @@ func (d *Downloader) postprocess(ctx context.Context, info baiduapi.FileInfo, mo
 		}
 		return err
 	}
+	if tracked {
+		current, verifyErr := client.GetFileInfo(info.FsID)
+		if errors.Is(verifyErr, baiduapi.ErrFileMetadataMissing) || (verifyErr == nil && current != info) {
+			verifyErr = ErrSourceIdentityChanged
+		}
+		if verifyErr != nil {
+			return d.finishSourceOperation(info, verifyErr)
+		}
+	}
 	if mode == DownloadModeDelete {
 		err = client.DeleteFile(info.Path)
 	} else {

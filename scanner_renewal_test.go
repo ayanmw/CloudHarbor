@@ -75,7 +75,11 @@ func TestScannerAutomaticallyRecoversDownloadAfterRenewal(t *testing.T) {
 					}
 					value = map[string]any{"errno": 0, "list": []baiduapi.FileInfo{{FsID: 1, Path: "/preview/a.txt", ServerFilename: "a.txt", Size: 6}}}
 				case "filemetas":
-					value = map[string]any{"errno": 0, "list": []map[string]string{{"dlink": srv.URL}}}
+					if r.URL.Query().Get("dlink") == "1" {
+						value = map[string]any{"errno": 0, "list": []map[string]string{{"dlink": srv.URL}}}
+					} else {
+						value = map[string]any{"errno": 0, "list": []baiduapi.FileInfo{{FsID: 1, Path: "/preview/a.txt", ServerFilename: "a.txt", Size: 6}}}
+					}
 				case "filemanager":
 					if r.URL.Query().Get("access_token") != "private-renewed" {
 						wrongCredential.Store(true)
