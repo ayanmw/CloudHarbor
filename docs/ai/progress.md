@@ -4,6 +4,14 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## v0.7.5-preview.1（配置与 API 响应校验测试包已交付）
+
+- 源码 revision：`9061e8aa2badb83bfaaf5e00de4812927c6042c4`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.5-preview.1.zip`；SHA256：`8e6d6c80310fa681a828ef230a4729121afc5af5f721b7d35652256dcae6d57c`。
+- 数值环境变量显式设置非数字时启动失败；百度目录列表和下载链接响应超上限时拒绝，避免截断后的合法 JSON 被误认成完整响应。超限 503 仍保留原可重试分类。
+- Node WebUI/userscript 14 项、发布脚本中的 Go 全模块 test/vet、Windows AMD64/Linux AMD64/ARM64 构建通过；WSL Go 1.22.2 全模块 race 通过。11 项 payload 哈希、ZIP 与发布目录一致，AMD64 版本/revision 精确匹配，ARM64 ELF 为 AArch64。
+- Windows 与 WSL Linux AMD64 正式包副本均实际启动：认证 health=200、匿名=401、版本/revision 匹配；Ctrl+C 后服务停止且端口释放。验证记录：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.5-preview.1-validation.md`。
+- 无真实百度凭证或云端操作；厂商 NAS、ARM64 实机、多日与断电仍未验收。未知结果目录继续隔离，无人工放行。
+
 ## v0.7.4-preview.1（Compose 自定义宿主端口/扫描间隔测试包已交付）
 
 - 源码 revision：`5cc32059ad3f7042353b232d9ac6dc40fa5e4ca0`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.4-preview.1.zip`；SHA256：`9766ac64e5598b7da67cb3da2ce02d8cc0342d1466ab6790dab5710f6c977f7b`。
@@ -11,17 +19,17 @@
 - Node WebUI/userscript 14 项、Go 全模块 test/vet、Windows AMD64/Linux AMD64/ARM64 构建通过；发布包 11 个文件哈希匹配，ARM64 ELF 为 AArch64。验收记录：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.4-preview.1-validation.md`。
 - 无真实百度凭证或云端操作。厂商 NAS、真实百度、ARM64 实机、多日和断电仍未验收；未知结果继续隔离，无人工放行。未 push/deploy，主工作区干净。
 
-## 数值环境变量格式错误检查（源码检查点，待后续测试包）
+## 数值环境变量格式错误检查（已纳入 v0.7.5-preview.1）
 
 - `SCAN_INTERVAL`、`MAX_PARALLEL`、`MAX_RETRIES`、`RETRY_BACKOFF_SECONDS` 显式设为非数字时，原先静默采用默认值，导致启动范围校验无法发现配置错误。现在仅在变量未设置/为空时采用默认值；显式无效值会进入校验失败路径并阻止服务启动。
 - 新增配置测试，覆盖四个变量的无效格式与未设置默认值；先确认新用例在旧行为下失败，再修改解析逻辑。`go test ./internal/config`、`go test ./...`、`go vet ./...` 通过。
-- 这是源码检查点，尚未打包；未连接百度账号或执行云端操作。
+- 实现与独立包验证见上方 v0.7.5-preview.1；未连接百度账号或执行云端操作。
 
-## 百度 API 响应大小上限校验（源码检查点，待后续测试包）
+## 百度 API 响应大小上限校验（已纳入 v0.7.5-preview.1）
 
 - 目录列表（16 MiB）与下载链接（1 MiB）原先只读取上限内字节，却未识别响应实际超限；若有效 JSON 后跟随足够多的空白，截断内容仍可解析并被当作完整成功结果。现最多读取上限加 1 字节，超过即失败，避免把超限响应当作完整列表/链接。
 - 两项本机 HTTP 回归先在旧行为下失败，修复后通过；另验证超限 503 仍保留可重试分类。`go test ./...`、`go vet ./...`、`git diff --check` 通过。超限目录结果失败时，不会被当作空/完整目录交给后续处理。
-- 这是源码检查点，尚未打包；未连接百度账号或执行云端操作。
+- 实现与独立包验证见上方 v0.7.5-preview.1；未连接百度账号或执行云端操作。
 
 ## v0.7.3-preview.1（Linux 目录项持久性测试包已交付）
 
