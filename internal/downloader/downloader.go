@@ -566,12 +566,16 @@ func (c taskCandidate) info() *baiduapi.FileInfo {
 	return &c.live.FileInfo
 }
 
-func (c taskCandidate) progress() int64 {
-	if c.live != nil {
-		return c.live.Progress
+func (c taskCandidate) progressRatio(info *baiduapi.FileInfo) float64 {
+	if info.Size <= 0 {
+		return 0
 	}
-	if c.job != nil && c.job.Status == "done" && c.job.Info.IsDir == 0 {
-		return c.job.Info.Size
+	if c.live != nil {
+		return float64(c.live.Progress) / float64(info.Size)
+	}
+	// Inactive history has a fixed ratio: done files are full and other jobs are zero.
+	if c.job != nil && c.job.Status == "done" && info.IsDir == 0 {
+		return 1
 	}
 	return 0
 }
@@ -590,13 +594,7 @@ func taskCandidateComesBefore(a, b taskCandidate, sortBy string) bool {
 		return aInfo.Size > bInfo.Size
 	}
 	if sortBy == "progress" {
-		aProgress, bProgress := float64(0), float64(0)
-		if aInfo.Size > 0 {
-			aProgress = float64(a.progress()) / float64(aInfo.Size)
-		}
-		if bInfo.Size > 0 {
-			bProgress = float64(b.progress()) / float64(bInfo.Size)
-		}
+		aProgress, bProgress := a.progressRatio(aInfo), b.progressRatio(bInfo)
 		if aProgress != bProgress {
 			return aProgress > bProgress
 		}

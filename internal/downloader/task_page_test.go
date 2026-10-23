@@ -84,6 +84,57 @@ func TestGetTaskPageMatchesFullSortAcrossModesAndOffsets(t *testing.T) {
 	}
 }
 
+func TestTaskCandidateProgressRatioMatchesTaskState(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		item taskCandidate
+		want float64
+	}{
+		{name: "done file", item: taskCandidate{job: &queueJob{Info: baiduapi.FileInfo{Size: 10}, Status: "done"}}, want: 1},
+		{name: "pending file", item: taskCandidate{job: &queueJob{Info: baiduapi.FileInfo{Size: 10}, Status: "pending"}}, want: 0},
+		{name: "done directory", item: taskCandidate{job: &queueJob{Info: baiduapi.FileInfo{Size: 10, IsDir: 1}, Status: "done"}}, want: 0},
+		{name: "live transfer", item: taskCandidate{live: &Task{FileInfo: baiduapi.FileInfo{Size: 10}, Progress: 5}}, want: 0.5},
+		{name: "zero size", item: taskCandidate{live: &Task{FileInfo: baiduapi.FileInfo{Size: 0}, Progress: 0}}, want: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.item.progressRatio(test.item.info()); got != test.want {
+				t.Fatalf("progress ratio = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func BenchmarkGetTaskPageProgress(b *testing.B) {
+	for _, count := range []int{10000, 100000} {
+		b.Run(fmt.Sprintf("tasks_%d", count), func(b *testing.B) {
+			d := NewDownloader(&config.Config{}, baiduapi.NewClient("", ""))
+			defer d.cancel()
+			d.queue.jobs = make(map[int64]*queueJob, count)
+			d.tasks = make(map[int64]*Task, count/5)
+			for id := 1; id <= count; id++ {
+				size := int64(5000 + id%1024)
+				info := baiduapi.FileInfo{FsID: int64(id), Path: fmt.Sprintf("/queue/file-%06d.bin", id), Size: size}
+				status := "done"
+				if id%5 == 0 {
+					status = "downloading"
+					d.tasks[int64(id)] = &Task{FileInfo: info, Status: status, Progress: int64((id * 37) % int(size))}
+				}
+				d.queue.jobs[int64(id)] = &queueJob{Info: info, Status: status, Mode: DownloadModeKeep}
+			}
+			if page := d.GetTaskPage(0, 100, "progress"); len(page.Tasks) != min(count, 100) {
+				b.Fatalf("prime page returned %d tasks", len(page.Tasks))
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if page := d.GetTaskPage(0, 100, "progress"); len(page.Tasks) != min(count, 100) {
+					b.Fatalf("page returned %d tasks", len(page.Tasks))
+				}
+			}
+		})
+	}
+}
+
 func TestGetTaskStatsCachesSummaryAndInvalidatesOnChanges(t *testing.T) {
 	d := NewDownloader(&config.Config{}, baiduapi.NewClient("", ""))
 	defer d.cancel()
