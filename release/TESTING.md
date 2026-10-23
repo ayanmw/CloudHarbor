@@ -89,6 +89,8 @@ docker compose -f compose.yml logs -f
 
 源码镜像的运行目录已由 `/root` 移到 `/app`，使指定普通 UID 可以访问程序；发布包镜像原已使用 `/app`。已在 WSL Docker/AMD64、临时 ext4 bind mount 验证普通 UID 启动、重启、状态权限、第二实例锁及不可写目录失败；不能替代厂商 NAS ACL、SMB/FUSE 或 ARM64 实机验收。v0.7.0-preview.1 原包尚无 RUN_AS 配置行，但可用 Compose 的独立 user 配置覆盖镜像用户；后续新包将直接提供该变量。
 
+源码仓库的 Compose 也支持可选 `BAIDU_REFRESH_TOKEN` 和 `ADMIN_PASSWORD`，与发布配置一致。源码根 `.dockerignore` 排除本地 `.env`、Git、下载和私有状态等内容，避免进入 `COPY . .` 构建层；自定义下载目录仍应放在源码树外。源码多阶段镜像已实际构建并用普通 UID 验证启动；其现有版本字段仍是 dev/unknown，不能代替带 BUILD-INFO 和哈希的独立发布包。
+
 ## HTTPS 反向代理（v0.7.0 起）
 
 在代理处终止 HTTPS、转发至 HTTP 后端时，设置 `PUBLIC_ORIGIN=https://nas.example:8443`，值为浏览器实际访问的 HTTPS 来源（域名及非默认端口，无路径前缀、query、fragment 或用户密码）。PowerShell 可在启动前设置 `$env:PUBLIC_ORIGIN` 或使用 `-PublicOrigin`；Linux 使用 `export PUBLIC_ORIGIN=...`，Compose 在 .env 填写。程序本身仍监听 HTTP，不管理 TLS 证书。

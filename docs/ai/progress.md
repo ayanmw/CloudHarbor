@@ -4,6 +4,14 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## 源码镜像实际构建与部署配置修复（源码检查点）
+
+- 复现源码 Compose 漏掉 BAIDU_REFRESH_TOKEN/ADMIN_PASSWORD：配置中设置假值却未转发。现补为可选变量，实际 Compose config 精确值通过；空值仍保留原行为。
+- 新增根 .dockerignore，排除已知本地 .env/Git/下载/私有状态和输出。独立 git archive 加假标记，实际 scratch COPY/export 先证明标记可见；补规则后 .env/.git/downloads 被排除，根 .env.example、go.mod 和嵌入 UI 保留。没有发送工作区真实配置或数据。
+- 使用原源码 Dockerfile 和原基础镜像地址实际构建成功，未拿替代镜像冒充。源码 Compose 以普通 UID 1000:1000、network none、临时 ext4 挂载运行，指定管理员密码有效，health has_refresh_token=true（仅假 Token），/app 与程序 0755、manifest owner/mode 正确；停止 exit 0。
+- 源码镜像按原构建方式仍显示 dev/unknown；本轮没有改变 Go 程序、版本注入或基础镜像，也未打新包。证据在发布目录 source-build-20261023，厂商 NAS、真实百度、ARM64、多日和断电仍待验收。
+- 独立只读审查未发现确定 important/critical，前后导出/配置/容器元数据独立核对通过，diff 检查通过。专用容器确认 exited 后精确清理，专用镜像标签已删除，保留测试日志与假标记副本；未执行 prune 或操作其他容器。
+
 ## NAS 普通用户部署与实际容器验证（源码检查点，待后续包）
 
 - 源码镜像 runtime WORKDIR 从 /root 移至 /app，CMD 使用绝对路径；两份 Compose 增加可选 RUN_AS=UID:GID，默认 0:0 保留现有行为，env 示例与迁移说明已补充。不自动修改已有下载目录 owner/ACL。

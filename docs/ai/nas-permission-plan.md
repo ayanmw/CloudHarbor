@@ -19,4 +19,15 @@
 
 [Compose user](https://docs.docker.com/reference/compose-file/services/#user) 覆盖容器进程用户；[Dockerfile WORKDIR](https://docs.docker.com/reference/dockerfile/#workdir) 决定运行命令的工作目录。显式可选身份避免假定 NAS 的 UID 恰好为 1000，不改变现有目录所有权。
 
-本轮实际 Docker/Compose 为 WSL Ubuntu、AMD64、临时 ext4 bind mount。发布镜像构建与普通用户容器已验证；源码多阶段镜像只做路径静态审查，未重新构建。不能据此声称厂商 NAS ACL、SMB/FUSE、ARM64 实机、真实百度或多日已验收。
+前一检查点使用 WSL Ubuntu、AMD64、临时 ext4 bind mount 验证发布镜像，源码镜像当时仅静态审查；后续源码构建结果见下一节。不能据此声称厂商 NAS ACL、SMB/FUSE、ARM64 实机、真实百度或多日已验收。
+
+## 源码镜像后续验证与修正
+
+继续构建实际源码 Dockerfile，使用 git archive 与独立假配置，绝不把实际 .env/下载目录送入构建。
+
+- [x] 已 RED 复现源码 Compose 缺少 Refresh Token/管理员密码转发，补齐与发布配置一致的可选变量并检查实际解析值。
+- [x] 已 RED 用 scratch COPY/export 证明缺少 dockerignore 会包含假 .env/.git/状态；加入忽略规则后复核排除，以及 go.mod/嵌入 UI 资源仍存在。
+- [x] 原源码多阶段 Dockerfile 实际构建成功，未替换基础镜像；普通 UID、专用 Linux 卷、network none，通过源码 Compose 启动并确认凭证环境输入/权限/exit 0。源码镜像保持原 dev/unknown，未当作正式发布版。
+- [x] 独立只读审查通过，保存前后配置、上下文导出与容器证据，精确清理本轮容器和镜像标签，无 prune；旧包不变。
+
+[Docker build context](https://docs.docker.com/build/concepts/context/) 说明匹配 dockerignore 的文件在发送给 builder 前移出上下文。本项目只排除已知本地配置与状态；自定义下载目录仍建议放在源码树外。
