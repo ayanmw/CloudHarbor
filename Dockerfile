@@ -11,7 +11,9 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o baidu-downloader .
+ARG BUILD_VERSION=dev
+ARG BUILD_REVISION=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags "-X main.version=${BUILD_VERSION} -X main.revision=${BUILD_REVISION}" -o baidu-downloader .
 
 
 

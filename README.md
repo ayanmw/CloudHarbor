@@ -131,7 +131,10 @@ go build -o get_token main.go
 #### 使用 Docker 命令直接运行
 ```bash
 # 构建镜像
-docker build -t baidu-nas-downloader .
+docker build \
+  --build-arg BUILD_VERSION="$(git describe --tags --always 2>/dev/null || echo dev)" \
+  --build-arg BUILD_REVISION="$(git rev-parse HEAD)" \
+  -t baidu-nas-downloader .
 
 # 运行容器
 docker run -d \
@@ -152,6 +155,12 @@ docker run -d \
 # 设置环境变量
 export BAIDU_APP_KEY=your_app_key
 export BAIDU_SECRET_KEY=your_secret_key
+# Optional image metadata; Compose passes these values to the source build.
+export BUILD_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
+export BUILD_REVISION=$(git rev-parse HEAD)
+
+# 构建时将版本与源码 revision 写入镜像；以后启动不需要重新构建
+docker-compose build
 
 # 启动服务
 docker-compose up -d
