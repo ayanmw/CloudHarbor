@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"web_browser_baidu_onekey_upload/internal/durablefs"
 )
 
 func validIntakeID(id string) bool {
@@ -30,7 +32,7 @@ func (s *Store) SaveIntake(id string, body []byte) error {
 	if err := safePath(dir); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := durablefs.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 	name := filepath.Join(dir, id+".json")

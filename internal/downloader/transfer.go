@@ -13,9 +13,12 @@ import (
 	"strings"
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"web_browser_baidu_onekey_upload/internal/durablefs"
 )
 
 const stateDirectory = ".nas-downloader"
+
+var syncPublishedDirectory = durablefs.SyncDirectory
 
 type fileRecord struct {
 	FsID         int64  `json:"fs_id"`
@@ -91,7 +94,7 @@ func rejectSymlinks(root, relative string) error {
 	}
 	return nil
 }
-func ensureDirectory(dir string) error { return os.MkdirAll(dir, 0755) }
+func ensureDirectory(dir string) error { return durablefs.MkdirAll(dir, 0755) }
 
 func readRecord(name string) (fileRecord, error) {
 	var record fileRecord
@@ -127,7 +130,10 @@ func writeRecord(name string, record fileRecord) error {
 	if err = temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempName, name)
+	if err = os.Rename(tempName, name); err != nil {
+		return err
+	}
+	return durablefs.SyncDirectory(filepath.Dir(name))
 }
 func hashFile(ctx context.Context, name string) (string, error) {
 	if err := ctx.Err(); err != nil {
@@ -186,7 +192,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		return err
 	}
 	state := filepath.Join(root, stateRel)
-	if err = os.MkdirAll(state, 0700); err != nil {
+	if err = durablefs.MkdirAll(state, 0700); err != nil {
 		return err
 	}
 	expected := recordFor(info, relative)
@@ -209,6 +215,9 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		}
 		if digest != record.SHA256 {
 			return fmt.Errorf("本地文件 SHA256 与完成记录不符，保留原文件: %s", local)
+		}
+		if err = syncPublishedDirectory(filepath.Dir(local)); err != nil {
+			return fmt.Errorf("同步已发布文件所在目录失败: %w", err)
 		}
 		d.updateProgress(info.FsID, info.Size)
 		return nil
@@ -353,6 +362,9 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	// Both paths are inside the download volume; hard links are required.
 	if err = os.Link(partialName, local); err != nil {
 		return fmt.Errorf("发布文件失败（目标存在或文件系统不支持硬链接）: %w", err)
+	}
+	if err = syncPublishedDirectory(filepath.Dir(local)); err != nil {
+		return fmt.Errorf("同步已发布文件所在目录失败: %w", err)
 	}
 	if err = os.Remove(partialName); err != nil {
 		return fmt.Errorf("清理临时文件失败: %w", err)

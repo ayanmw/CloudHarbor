@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"web_browser_baidu_onekey_upload/internal/durablefs"
 )
 
 type Store struct {
@@ -52,7 +54,7 @@ func Open(dir, scope string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if err = os.MkdirAll(absolute, 0700); err != nil {
+	if err = durablefs.MkdirAll(absolute, 0700); err != nil {
 		return nil, err
 	}
 	lockName := filepath.Join(absolute, "writer.lock")
@@ -103,7 +105,7 @@ func Open(dir, scope string) (*Store, error) {
 	if err = safePath(jobs); err != nil {
 		return nil, err
 	}
-	if err = os.MkdirAll(jobs, 0700); err != nil {
+	if err = durablefs.MkdirAll(jobs, 0700); err != nil {
 		return nil, err
 	}
 	success = true
@@ -131,7 +133,10 @@ func atomicWrite(name string, data []byte) error {
 	if err = temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temp.Name(), name)
+	if err = os.Rename(temp.Name(), name); err != nil {
+		return err
+	}
+	return durablefs.SyncDirectory(filepath.Dir(name))
 }
 
 func (s *Store) Save(id int64, data []byte) error {
