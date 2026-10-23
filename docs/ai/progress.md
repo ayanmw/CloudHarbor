@@ -4,6 +4,14 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## v0.7.3-preview.1（Linux 目录项持久性测试包已交付）
+
+- 源码 revision：`3426b016baf5acf4bc89a2d27713b87707984a6a`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.3-preview.1.zip`；SHA256：`378105077648a0be42c5523ec9290305fb7d79596d55dcca2461390649bc9a04`。
+- Node WebUI/userscript 14 项、Go 全模块测试/vet、Windows UCRT 与 WSL 全模块 race/vet 通过；Windows AMD64/Linux AMD64/ARM64 构建通过，包内 11 个 payload 哈希与清单一致，ARM64 ELF 为 AArch64。
+- Linux 对状态 rename、关键目录创建和最终文件硬链接同步父目录；失败会阻断后续源操作。回归覆盖首次发布与重试时目录同步失败，确认不发送网盘源请求。Windows 不宣称目录项掉电持久性。
+- Windows Start.ps1 与 WSL Linux 原生 start.sh 均用正式包副本实际启动；认证健康/页面 API、匿名 401、版本与 revision 验证通过，服务停止后端口释放。全程无真实百度凭证或云端写操作。
+- 真实 NAS/设备缓存、物理掉电、ARM64 实机、多日与真实百度验签仍未验收；未知结果目录继续隔离且无人工放行。验证详见发布目录 `v0.7.3-preview.1-validation.md`；未 push/deploy，主工作区保持干净。
+
 ## v0.7.2-preview.1（下载 Token 查询参数修复测试包已交付）
 
 - 源码 revision：`855ab0a8b4cf427e4c417f314db69e5f5b3de59a`；包 `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.2-preview.1.zip`，10,000,484 字节；SHA256 `e3dd0e74c6e8af62d0f9e03ae2a20c93eb69cff8dbf30d9a4762234a3a19e9a3`。
