@@ -1,11 +1,14 @@
 # 持续优化进度
 
-## D6 增量：按需生成非活动任务视图（候选包待验证）
+## v0.8.2-preview.1（按需生成非活动任务视图）
 
 - 启动恢复仍将每个 job 保留在 `scheduler.jobs`，但不再额外创建每个任务的 `Task` 对象；`Downloader.tasks` 只保留正在下载时无法从 job 恢复的实时进度对象。任务统计读取 job 状态，页面和 API 在读取时生成视图。
 - 分页排序现在用轻量候选项访问 job/活动任务字段，仅为返回页生成任务副本；10,000 条历史取 100 条基准约 38,248 B、108 次分配，与原分页基准的 39,152 B、108 次分配同一量级。
 - 10,000 条启动基准的本次 Windows 单次运行约 4.97 秒、22.51 MB 分配、150,435 次分配；前一基线单次约 6.33 秒、26.65 MB、160,545 次分配。WSL 单次约 105 ms、19.61 MB，前一基线约 221 ms、23.33 MB。运行时间受文件系统缓存/环境波动影响，不据此承诺提速；分配量下降与“启动不重建历史 Task 副本”一致。
-- RED/GREEN 覆盖重启后任务总数、状态、进度、时间、尝试次数、旧全量列表、分页排序和零历史 Task 常驻；Windows 全模块测试/vet、WSL 全模块 race/vet 通过。候选包及包内启动验证待完成。
+- RED/GREEN 覆盖重启后任务总数、状态、进度、时间、尝试次数、旧全量列表、分页排序和零历史 Task 常驻；Windows 全模块测试/vet、WSL 全模块 race/vet、Node WebUI/userscript 17 项通过。
+- 独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.2-preview.1.zip`，9,824,042 字节，SHA256 `1bdd4ed0bf527410ac255fbb5c41f99ef00debfa7b046cd5cce66e5bd62019e5`；三平台构建及 11 项 payload 哈希通过。
+- 包内 Windows 程序从隔离目录恢复 10,000 条合成完成任务；认证 health/page 正确返回版本、全局总数/完成数 10,000 和 10 项当前页，匿名接口 401；Ctrl+C 后服务停止、端口释放。验证明细：[v0.8.2-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.2-preview.1-validation.md)。真实 NAS 文件系统、峰值 RSS 和百度链路仍未验收。
+- 源码 revision：`168222a5e1d591b9a33627215f9ca709de82ab49`。验证包没有真实百度凭证，未执行百度 API 或云端写操作。
 
 ## v0.8.1-preview.1（启动时逐条恢复任务）
 
