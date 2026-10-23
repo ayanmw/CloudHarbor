@@ -170,6 +170,16 @@ func (s *Store) Load() (map[int64]json.RawMessage, error) {
 // callback must not call methods on the same Store, and body is only owned by
 // the callback until it returns.
 func (s *Store) LoadEach(visit func(int64, json.RawMessage) error) error {
+	return s.loadEach(visit, true)
+}
+
+// LoadEachRaw visits bounded record bytes without parsing their JSON. The
+// visitor must validate or decode each body before trusting it.
+func (s *Store) LoadEachRaw(visit func(int64, json.RawMessage) error) error {
+	return s.loadEach(visit, false)
+}
+
+func (s *Store) loadEach(visit func(int64, json.RawMessage) error, validateJSON bool) error {
 	if visit == nil {
 		return fmt.Errorf("nil job record visitor")
 	}
@@ -203,7 +213,7 @@ func (s *Store) LoadEach(visit func(int64, json.RawMessage) error) error {
 		if err != nil {
 			return err
 		}
-		if len(body) > 1024*1024 || !json.Valid(body) {
+		if len(body) > 1024*1024 || (validateJSON && !json.Valid(body)) {
 			return fmt.Errorf("corrupt job %d", id)
 		}
 		if err := visit(id, body); err != nil {

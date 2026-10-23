@@ -94,7 +94,7 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		}
 		d.downloadMode = saved.Mode
 	}
-	err = store.LoadEach(func(id int64, body json.RawMessage) error {
+	err = store.LoadEachRaw(func(id int64, body json.RawMessage) error {
 		var job queueJob
 		if decodeErr := json.Unmarshal(body, &job); decodeErr != nil || job.Version != 1 || job.Info.FsID != id || !validJobStatus(job.Status) || !validSourceRecord(&job) || job.Attempts < 0 || job.Failures < 0 || (job.Mode != DownloadModeKeep && job.Mode != DownloadModeDelete) {
 			return fmt.Errorf("invalid persisted job %d", id)

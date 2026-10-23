@@ -236,6 +236,32 @@ func TestOpenDownloaderClosesStoreWhenStreamingRestoreRejectsRecord(t *testing.T
 	}
 }
 
+func TestOpenDownloaderRejectsMalformedJSONFromRawRestore(t *testing.T) {
+	base, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	queuePath := filepath.Join(base.cfg.LocalDownDir, stateDirectory, "queue")
+	store, err := taskstore.Open(queuePath, base.cfg.QueueDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(queuePath, "jobs", "1.json"), []byte(`{broken`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if restored, err := OpenDownloader(base.cfg, base.getClient()); err == nil {
+		shutdown(t, restored)
+		t.Fatal("accepted malformed persisted JSON")
+	}
+	store, err = taskstore.Open(queuePath, base.cfg.QueueDir)
+	if err != nil {
+		t.Fatalf("malformed record leaked queue store lock: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWorkerLimitAndCapturedMode(t *testing.T) {
 	started := make(chan struct{}, 4)
 	release := make(chan struct{})

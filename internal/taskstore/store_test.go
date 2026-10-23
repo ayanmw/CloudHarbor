@@ -121,6 +121,30 @@ func TestLoadEachStopsAndReturnsCallbackError(t *testing.T) {
 	}
 }
 
+func TestLoadEachRawLeavesJSONValidationToVisitor(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	s, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := os.WriteFile(filepath.Join(dir, "jobs", "7.json"), []byte(`{broken`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("visitor rejected malformed JSON")
+	visited := false
+	err = s.LoadEachRaw(func(id int64, body json.RawMessage) error {
+		visited = true
+		if id != 7 || json.Valid(body) {
+			t.Fatalf("visitor received id=%d body=%q", id, body)
+		}
+		return wantErr
+	})
+	if !visited || !errors.Is(err, wantErr) {
+		t.Fatalf("visitor validation result: visited=%v err=%v", visited, err)
+	}
+}
+
 func TestStoreRejectsCorruptRecordAndSecondWriter(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "queue")
 	s, err := Open(dir, "/preview")

@@ -53,6 +53,33 @@ func BenchmarkOpenDownloaderHistory(b *testing.B) {
 	}
 }
 
+func BenchmarkStoreLoadEachValidationMode(b *testing.B) {
+	_, queuePath := benchmarkHistoryFixture(b, 10000)
+	for _, mode := range []string{"validated", "raw"} {
+		b.Run(mode, func(b *testing.B) {
+			store, err := taskstore.Open(queuePath, "/preview")
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer store.Close()
+			visit := func(int64, json.RawMessage) error { return nil }
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var loadErr error
+				if mode == "raw" {
+					loadErr = store.LoadEachRaw(visit)
+				} else {
+					loadErr = store.LoadEach(visit)
+				}
+				if loadErr != nil {
+					b.Fatal(loadErr)
+				}
+			}
+		})
+	}
+}
+
 func benchmarkHistoryFixture(b *testing.B, count int) (string, string) {
 	b.Helper()
 	root := b.TempDir()
