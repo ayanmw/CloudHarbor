@@ -100,4 +100,5 @@
 - [x] 新扫描发现多条根任务时，先完整校验并暂存新任务，按最多 1,024 条分批写入；每条数据文件独立 Sync、原子重命名，最多 4 个写入 worker，批次完成后同步 jobs 目录。所有批次成功前不发布到内存任务表或 worker 候选队列。失败时服务停止调度，云端源项目仍保留，可在恢复后重新扫描补齐部分批次。
 - [x] RED/GREEN 覆盖批量记录往返、无效批次零发布、目录同步次数/错误传播以及持久化失败不发布内存任务；保留单项状态更新的原持久化路径。
 - [x] WSL Go 1.22.2 ext4 合成 10,000 个新任务 reconcile：原逐条 Sync/目录 Sync 17.94 s；最终三次 3.90–4.78 s，约快 3.8–4.6 倍。Windows 10,000 条 taskstore 对照逐项 Save 34.38 s、批量 SaveBatch 26.89 s，约快 22%；Windows 目录同步按当前实现为空操作，因此该对照主要反映有界并行文件写入。合成样本不代表 NAS/SMB。
+- [x] v0.8.18-preview.1 三平台构建、全模块测试/race/vet、Node 测试、11 个 payload 哈希和 Linux AMD64 包内 smoke 通过，详见 [v0.8.18-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.18-preview.1-validation.md)。
 - [ ] 厂商 NAS/SMB 文件系统耐久语义和 10k+ 新任务扫描时延仍待目标环境验收。

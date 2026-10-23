@@ -13,5 +13,5 @@
 - [x] Add a reproducible fresh-queue reconcile benchmark and record 1,000/10,000-job baseline.
 - [x] Add RED tests for batch record round-trip, validation failure before any publication, and exactly one directory sync per successful batch.
 - [x] Implement `durablefs.WriteFilesAtomic`, taskstore batch-save API, and staged batch admission in `scheduler.reconcile`.
-- [x] Verify partial rename and directory-sync failure behavior; Windows/WSL package tests, WSL race, vet and Node tests pass. Three-platform build remains in packaging.
-- [ ] Keep the change only if measured fresh-queue admission improves materially while source tasks remain unchanged until durable task registration; package an immutable preview.
+- [x] Verify partial rename and directory-sync failure behavior; Windows/WSL package tests, WSL race, vet, Node tests and three-platform builds pass.
+- [x] Keep the change after measurable fresh-queue admission gains with source tasks unchanged until durable registration; package immutable v0.8.18-preview.1 and complete package smoke.

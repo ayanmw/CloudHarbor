@@ -5,7 +5,8 @@
 - 云端扫描发现多个新根任务时，先暂存完整扫描结果；最多每批 1,024 条、最多 4 个并行写入 worker。每条记录仍单独写入并 `Sync`，然后原子重命名；每批只同步一次 jobs 目录。全部批次成功后才写入内存队列/候选堆，既有任务状态更新仍单条持久化。
 - 中途持久化失败会停止调度且不发布本次扫描的内存任务；批次可能已有部分完整记录落盘，但源项目尚未进行后处理，重启后扫描可恢复已写记录并补齐缺项。
 - WSL Go 1.22.2，10,000 项新任务 reconcile：逐项持久化基线单次 17.94 s；当前三次 4.78/4.15/3.90 s，约快 3.8–4.6 倍。Windows taskstore 10,000 条逐项 Save 与批量 SaveBatch 的单次对照为 34.38 s 与 26.89 s，约快 22%；Windows 完整 reconcile 当前单样本 23.59 s，无同机前版本基线。数据为本机合成文件，不代表 NAS/SMB。
-- Windows 全模块 Go test/vet、WSL Go 1.22.2 全模块 race/vet、Node 17 项通过；三平台构建及发布包内验证待打包门禁复核。
+- Windows 全模块 Go test/vet、WSL Go 1.22.2 全模块 race/vet、Node 17 项、三平台构建通过。11 个 payload 哈希匹配；Windows/Linux AMD64 版本/revision、Linux ARM64 ELF 架构、Linux AMD64 包内启动/认证 health/匿名 401/SIGTERM 正常退出通过。未使用百度凭证或执行云端操作。
+- 源码 revision `0b864b70aa08e580f8ce45accddc03631fa2b14b`。独立 ZIP：10,107,235 字节，SHA256 `FA33C439C963A4ED0A2227E0827090DA35A1A106111F66946D1FC8C787E2F781`；验证记录：[v0.8.18-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.18-preview.1-validation.md)。
 - 未使用百度凭证或执行云端操作；真实 NAS/SMB durability 与长队列扫描验收仍待用户环境。
 
 ## v0.8.17-preview.1（缓存稳定历史进度排序）
