@@ -75,7 +75,15 @@ docker compose -f compose.yml up -d --build
 docker compose -f compose.yml logs -f
 ```
 
-只需要构建小型运行镜像，包内已有两种 Linux 架构的二进制。默认仅向 NAS 本机发布 18089 端口，可通过上述 SSH 转发访问。管理员随机密码同样位于宿主 downloads 下的 admin-key.json。Docker 构建需要联网拉取 Alpine 和证书包。当前优先测试回环或 SSH 转发；TLS 终止反代尚未验收，Origin 的 scheme/Host 必须与后端请求一致。
+只需要构建小型运行镜像，包内已有两种 Linux 架构的二进制。默认仅向 NAS 本机发布 18089 端口，可通过上述 SSH 转发访问。管理员随机密码同样位于宿主 downloads 下的 admin-key.json。Docker 构建需要联网拉取 Alpine 和证书包。
+
+## HTTPS 反向代理（源码已支持，等待后续测试包）
+
+在代理处终止 HTTPS、转发至 HTTP 后端时，设置 `PUBLIC_ORIGIN=https://nas.example:8443`，值为浏览器实际访问的 HTTPS 来源（域名及非默认端口，无路径前缀、query、fragment 或用户密码）。PowerShell 可在启动前设置 `$env:PUBLIC_ORIGIN` 或使用 `-PublicOrigin`；Linux 使用 `export PUBLIC_ORIGIN=...`，Compose 在 .env 填写。程序本身仍监听 HTTP，不管理 TLS 证书。
+
+代理需转发 Authorization、Origin 和 WebSocket Upgrade/Connection，支持长连接；后端保持回环或私有网络限制。服务只信任显式 PUBLIC_ORIGIN，不依据 Forwarded/X-Forwarded-* 放宽校验。配置后管理页应从该 HTTPS 地址访问；直接本机 HTTP 的浏览器 Origin 不再匹配。未配置时保留原来按请求 TLS/Host 校验的规则，回环与 SSH 转发仍可用。
+
+已验证本机 TLS 代理到 HTTP 后端的管理 POST/WSS、认证及恶意 Origin 拒绝；未验证具体 NAS 厂商代理、真实浏览器原生 Basic 登录框或用户证书部署。此配置从包含该功能的新版本生效，v0.6.3-preview.1 及更早包尚不支持。
 
 ## 建议测试顺序
 
@@ -144,7 +152,7 @@ Invoke-RestMethod http://127.0.0.1:18089/api/tasks/123/retry -Method Post -Heade
 
 包内 `tampermonkey_baidupan_nas_queue.user.js` 为新的选中项助手，可在 Tampermonkey 中新建脚本并粘贴保存。它只支持自己的 `/disk/home`、`/disk/main` 文件视图；不支持分享、回收站或未识别页面。首次测试前先登录 NAS 管理页，再打开百度文件页并勾选测试副本。
 
-1. 油猴菜单“设置 NAS 管理地址”只保存地址，默认 `http://127.0.0.1:18089`。使用其他端口时需修改；仅允许本机 HTTP 或远端 HTTPS，不填密码或 Token。远端 TLS 反代仍须单独验证。
+1. 油猴菜单“设置 NAS 管理地址”只保存地址，默认 `http://127.0.0.1:18089`。使用其他端口时需修改；仅允许本机 HTTP 或远端 HTTPS，不填密码或 Token。远端 TLS 反代配置见上文，真实油猴与 NAS 环境仍须单独验证。
 2. 点击右下角“交给 NAS 管理页核对”，核对提示中的目标地址和选中路径。此步骤不会移动文件，也不请求下载链接或 Cookie。
 3. 确认后打开管理页，路径通过 URL fragment 填入，页面读取后清除 fragment，不自动预检。务必核对 NAS 当前授权账号与百度页面账号一致，再手动预检并确认移动。
 4. 空选、选中数据无完整路径、多个适配结果不一致或页面无法识别时明确报错；直接从管理页选择即可。不要把整页列表当成选中项，也不要通过关闭隔离或重复移动绕过失败。

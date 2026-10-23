@@ -3,15 +3,48 @@
 package management
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
-type Gate struct{ password [32]byte }
+type Gate struct {
+	password [32]byte
+	origin   *url.URL
+}
+
+type originContextKey struct{}
+
+func NewWithOrigin(password, origin string) (*Gate, error) {
+	g, err := New(password)
+	if err != nil || origin == "" {
+		return g, err
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(origin, "#") || strings.HasSuffix(u.Host, ":") {
+		return nil, fmt.Errorf("PUBLIC_ORIGIN must be an HTTPS origin without credentials, path, query or fragment")
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return nil, fmt.Errorf("PUBLIC_ORIGIN port must be 1..65535")
+		}
+		// Browser Origin serialization removes default 443 and leading zeroes.
+		// The proxy review reproduced legal requests rejected without this step.
+		u.Host = strings.TrimSuffix(u.Host, ":"+port)
+		if n != 443 {
+			u.Host += ":" + strconv.Itoa(n)
+		}
+	}
+	g.origin = u
+	return g, nil
+}
 
 func New(password string) (*Gate, error) {
 	if len(password) < 16 || len(password) > 4096 {
@@ -35,7 +68,11 @@ func CheckOrigin(r *http.Request) bool {
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	return err == nil && u.User == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == "" && u.Scheme == scheme && strings.EqualFold(u.Host, r.Host)
+	host := r.Host
+	if expected, ok := r.Context().Value(originContextKey{}).(*url.URL); ok {
+		scheme, host = expected.Scheme, expected.Host
+	}
+	return err == nil && u.User == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == "" && u.Scheme == scheme && strings.EqualFold(u.Host, host)
 }
 
 func (g *Gate) Wrap(next http.Handler) http.Handler {
@@ -56,6 +93,11 @@ func (g *Gate) Wrap(next http.Handler) http.Handler {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Baidu NAS management", charset="UTF-8"`)
 			http.Error(w, "administrator authentication required", http.StatusUnauthorized)
 			return
+		}
+		// Only server configuration supplies this context. Forwarded headers
+		// cannot alter the shared gate/WebSocket origin rule.
+		if g.origin != nil {
+			r = r.WithContext(context.WithValue(r.Context(), originContextKey{}, g.origin))
 		}
 		if !CheckOrigin(r) {
 			http.Error(w, "cross-origin management request rejected", http.StatusForbidden)

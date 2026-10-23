@@ -19,6 +19,7 @@ services:
       - RETRY_BACKOFF_SECONDS=${RETRY_BACKOFF_SECONDS:-5}
       - SERVER_PORT=8080
       - SERVER_HOST=0.0.0.0
+      - PUBLIC_ORIGIN=${PUBLIC_ORIGIN:-}
     volumes:
       - ./downloads:/下载
     restart: unless-stopped

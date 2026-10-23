@@ -4,6 +4,7 @@ param(
     [string]$AppKey = $env:BAIDU_APP_KEY,
     [string]$SecretKey = $env:BAIDU_SECRET_KEY,
     [string]$AdminPassword = $env:ADMIN_PASSWORD,
+    [string]$PublicOrigin = $env:PUBLIC_ORIGIN,
     [string]$QueueDir = '/NAS_Download_Queue_preview',
     [string]$DownloadDir = (Join-Path $PSScriptRoot 'downloads'),
     [int]$Port = 18089,
@@ -17,6 +18,7 @@ $env:BAIDU_REFRESH_TOKEN = $RefreshToken
 $env:BAIDU_APP_KEY = $AppKey
 $env:BAIDU_SECRET_KEY = $SecretKey
 $env:ADMIN_PASSWORD = $AdminPassword
+$env:PUBLIC_ORIGIN = $PublicOrigin
 $env:QUEUE_DIR = $QueueDir
 $env:LOCAL_DOWNLOAD_DIR = [IO.Path]::GetFullPath($DownloadDir)
 $env:SCAN_INTERVAL = '30'

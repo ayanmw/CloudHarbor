@@ -50,6 +50,7 @@ type Config struct {
 	ServerPort    string
 	ServerHost    string
 	AdminPassword string
+	PublicOrigin  string // Optional external HTTPS management origin behind a TLS proxy.
 }
 
 // Load 从环境变量加载配置
@@ -74,6 +75,7 @@ func Load() *Config {
 		ServerPort:    getEnv("SERVER_PORT", "8080"),
 		ServerHost:    getEnv("SERVER_HOST", "127.0.0.1"),
 		AdminPassword: getEnv("ADMIN_PASSWORD", ""),
+		PublicOrigin:  getEnv("PUBLIC_ORIGIN", ""),
 	}
 	return cfg
 }

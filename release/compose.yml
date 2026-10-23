@@ -10,6 +10,7 @@ services:
       BAIDU_APP_KEY: ${BAIDU_APP_KEY:-}
       BAIDU_SECRET_KEY: ${BAIDU_SECRET_KEY:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       QUEUE_DIR: ${QUEUE_DIR:-/NAS_Download_Queue_preview}
       LOCAL_DOWNLOAD_DIR: /downloads
       SCAN_INTERVAL: "30"

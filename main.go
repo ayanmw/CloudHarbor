@@ -91,7 +91,7 @@ func main() {
 		cancel()
 		log.Fatal(err)
 	}
-	gate, err := management.New(adminKey)
+	gate, err := management.NewWithOrigin(adminKey, cfg.PublicOrigin)
 	if err != nil {
 		log.Fatal(err)
 	}

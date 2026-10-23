@@ -4,6 +4,14 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## HTTPS 终止代理支持（源码检查点，待后续包）
+
+- 新增可选 PUBLIC_ORIGIN 固定外部 HTTPS 来源。原行为保持为按实际 TLS/Host 校验；显式配置由 Gate 验证后放入私有 request context，外层 API 与 WebSocket 共享 CheckOrigin。拒绝 cross-site，认证仍必须，不读取 Forwarded/X-Forwarded-* 作为授权依据。
+- Config/main、原生 PS/sh、根/发布 Compose 和 env 示例接线。配置拒绝 HTTP、用户密码、路径前缀、query/fragment、非法/空端口；规范化默认 443、前导零端口，支持标准 IPv6 方括号。
+- 先 RED：HTTPS Origin 经 HTTP 后端被 403 拒绝。修复后真实本机 TLS 代理 → HTTP applicationHandler 的管理 POST 与 WSS 状态帧通过，代理刻意重写后端 Host；匿名 401、恶意 Origin 的 POST/WSS 403。TLS 客户端仅信任夹具证书，没有跳过校验。
+- 独立审查发现 :443 与浏览器 Origin 省略端口不一致，先 RED 后修，四项端口/IPv6 回归通过；复核无新确定重要问题。Windows UCRT/WSL 全模块 race/vet、Node 14 项、PS/sh 语法与 diff 检查通过；端口补项后两平台 main/management/config race 与全模块 vet 再通过。
+- 设计与步骤见 [reverse-proxy-plan.md](reverse-proxy-plan.md)，使用见 release/TESTING.md。未安装代理软件，未操作真实 NAS 或账号；本机协议验证不替代浏览器原生 Basic 框、厂商代理/证书部署验收。当前独立包仍为 v0.6.3-preview.1，尚不支持新配置。
+
 ## v0.6.3-preview.1（自动扫描与迟到认证拒绝恢复测试包已交付）
 
 - 源码 revision：`5f0da58ba09c940e9933caf3644d6c031f1bc61c`；ZIP：发布根目录 v0.6.3-preview.1.zip，9,992,945 字节；SHA256 `b68fb9c02f7a00331892bae3c379209fa73039af831a9db0221db69ad64dd96b`。

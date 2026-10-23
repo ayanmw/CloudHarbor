@@ -46,4 +46,5 @@
 - [x] 更新 v0.4.0-preview.1 发布包和测试指南，验证包内程序的管理入口与未授权边界，保留不可变旧包。
 - [x] v0.6 包在实际内置浏览器、受控本机 HTTP 转发入口下验证 Basic 挑战后认证缓存、真实 WebSocket 状态/停止重连、轮询页、未授权预检拒绝与 fragment 只导入；详见 [browser-validation.md](browser-validation.md)。
 - [ ] 目标浏览器直连时原生 Basic 登录框流程、TLS 终止反代仍待验收；本机受控资源挑战不能替代这两项。
+- [x] 本机 TLS 终止代理到 HTTP applicationHandler 的 POST/WSS 协议验证，新增显式 PUBLIC_ORIGIN，保留认证及来源拒绝；见 [reverse-proxy-plan.md](reverse-proxy-plan.md)。目标浏览器和厂商 NAS 代理/证书部署仍待实际验收，新配置尚未打包。
 - [ ] 真实百度/NAS、入队/移动/下载后处理链路仍需用户提供测试反馈；不能以 mock 或隐藏进程测试代替这些验收。
