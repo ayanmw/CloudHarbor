@@ -155,46 +155,65 @@ func (s *Store) Save(id int64, data []byte) error {
 	return atomicWrite(name, data)
 }
 func (s *Store) Load() (map[int64]json.RawMessage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return nil, os.ErrClosed
-	}
-	entries, err := os.ReadDir(filepath.Join(s.dir, "jobs"))
+	result := make(map[int64]json.RawMessage)
+	err := s.LoadEach(func(id int64, body json.RawMessage) error {
+		result[id] = body
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[int64]json.RawMessage)
+	return result, nil
+}
+
+// LoadEach validates and visits one record at a time in filename order. The
+// callback must not call methods on the same Store, and body is only owned by
+// the callback until it returns.
+func (s *Store) LoadEach(visit func(int64, json.RawMessage) error) error {
+	if visit == nil {
+		return fmt.Errorf("nil job record visitor")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return os.ErrClosed
+	}
+	entries, err := os.ReadDir(filepath.Join(s.dir, "jobs"))
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
 		if strings.HasSuffix(entry.Name(), ".tmp") {
 			continue
 		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			return nil, fmt.Errorf("unexpected state entry: %s", entry.Name())
+			return fmt.Errorf("unexpected state entry: %s", entry.Name())
 		}
 		id, err := strconv.ParseInt(strings.TrimSuffix(entry.Name(), ".json"), 10, 64)
 		if err != nil || id <= 0 || strconv.FormatInt(id, 10)+".json" != entry.Name() {
-			return nil, fmt.Errorf("invalid job filename: %s", entry.Name())
+			return fmt.Errorf("invalid job filename: %s", entry.Name())
 		}
 		name := filepath.Join(s.dir, "jobs", entry.Name())
 		if err = safePath(name); err != nil {
-			return nil, err
+			return err
 		}
 		f, err := os.Open(name)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		body, err := io.ReadAll(io.LimitReader(f, 1024*1024+1))
 		f.Close()
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if len(body) > 1024*1024 || !json.Valid(body) {
-			return nil, fmt.Errorf("corrupt job %d", id)
+			return fmt.Errorf("corrupt job %d", id)
 		}
-		result[id] = body
+		if err := visit(id, body); err != nil {
+			return err
+		}
 	}
-	return result, nil
+	return nil
 }
 func (s *Store) Close() error {
 	s.mu.Lock()

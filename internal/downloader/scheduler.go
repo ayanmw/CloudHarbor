@@ -91,18 +91,10 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		}
 		d.downloadMode = saved.Mode
 	}
-	records, err := store.Load()
-	if err != nil {
-		store.Close()
-		d.cancel()
-		return nil, err
-	}
-	for id, body := range records {
+	err = store.LoadEach(func(id int64, body json.RawMessage) error {
 		var job queueJob
-		if err = json.Unmarshal(body, &job); err != nil || job.Version != 1 || job.Info.FsID != id || !validJobStatus(job.Status) || !validSourceRecord(&job) || job.Attempts < 0 || job.Failures < 0 || (job.Mode != DownloadModeKeep && job.Mode != DownloadModeDelete) {
-			store.Close()
-			d.cancel()
-			return nil, fmt.Errorf("invalid persisted job %d", id)
+		if decodeErr := json.Unmarshal(body, &job); decodeErr != nil || job.Version != 1 || job.Info.FsID != id || !validJobStatus(job.Status) || !validSourceRecord(&job) || job.Attempts < 0 || job.Failures < 0 || (job.Mode != DownloadModeKeep && job.Mode != DownloadModeDelete) {
+			return fmt.Errorf("invalid persisted job %d", id)
 		}
 		if job.SourceState == "sending" {
 			job.SourceState = "unknown"
@@ -114,6 +106,12 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		}
 		d.queue.jobs[id] = &job
 		d.queue.reflect(&job)
+		return nil
+	})
+	if err != nil {
+		store.Close()
+		d.cancel()
+		return nil, err
 	}
 	d.queue.rebuildSourceBlocks()
 	if err = d.loadIntakes(); err != nil {

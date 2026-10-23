@@ -59,6 +59,29 @@ func TestDefaultModeSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestOpenDownloaderClosesStoreWhenStreamingRestoreRejectsRecord(t *testing.T) {
+	base, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	d, err := OpenDownloader(base.cfg, base.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.queue.store.Save(999, []byte(`{"version":99,"file":{"fs_id":999},"mode":"keep","status":"done"}`)); err != nil {
+		t.Fatal(err)
+	}
+	shutdown(t, d)
+	if reopened, err := OpenDownloader(d.cfg, d.getClient()); err == nil {
+		shutdown(t, reopened)
+		t.Fatal("accepted unsupported persisted job")
+	}
+	store, err := taskstore.Open(filepath.Join(d.cfg.LocalDownDir, stateDirectory, "queue"), d.cfg.QueueDir)
+	if err != nil {
+		t.Fatalf("restore failure leaked queue store lock: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWorkerLimitAndCapturedMode(t *testing.T) {
 	started := make(chan struct{}, 4)
 	release := make(chan struct{})

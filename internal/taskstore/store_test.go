@@ -1,10 +1,13 @@
 package taskstore
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -65,6 +68,56 @@ func TestRecordsSurviveReopenAndScopeCannotChange(t *testing.T) {
 	if other, err := Open(dir, "/another-queue"); err == nil {
 		other.Close()
 		t.Fatal("accepted different cloud queue")
+	}
+}
+
+func TestLoadEachVisitsRecordsInFilenameOrderWithoutBuildingResultMap(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	s, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []int64{9, 7} {
+		if err := s.Save(id, []byte(`{"id":`+strconv.FormatInt(id, 10)+`}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ids []int64
+	if err := s.LoadEach(func(id int64, body json.RawMessage) error {
+		ids = append(ids, id)
+		if !json.Valid(body) {
+			t.Fatalf("callback received invalid JSON for %d", id)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ids, []int64{7, 9}) {
+		t.Fatalf("record order=%v, want [7 9]", ids)
+	}
+}
+
+func TestLoadEachStopsAndReturnsCallbackError(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	s, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []int64{7, 9} {
+		if err := s.Save(id, []byte(`{"id":`+strconv.FormatInt(id, 10)+`}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantErr := errors.New("stop loading")
+	var visited []int64
+	err = s.LoadEach(func(id int64, _ json.RawMessage) error {
+		visited = append(visited, id)
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) || !reflect.DeepEqual(visited, []int64{7}) {
+		t.Fatalf("err=%v visited=%v", err, visited)
 	}
 }
 
