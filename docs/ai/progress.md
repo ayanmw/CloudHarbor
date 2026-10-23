@@ -4,6 +4,8 @@
 
 - 启动恢复将持久化的 `downloading` 任务改为 `pending` 后，恢复记录都处于非活动态，且派生 `Downloader.tasks` 表为空；移除每条记录上的 `reflect` 调用，避免逐条加锁并删除空表项。任务查询仍以 scheduler job 映射为持久化来源，运行期活动任务仍由既有 `reflect` 维护。
 - 现有恢复回归验证重开后的单任务视图、列表、分页和统计，并确认启动时不物化派生任务对象。Windows 全模块 `go test -count=1 ./...` / `go vet ./...` 与 WSL Go race 全模块测试/vet 通过。Windows 10,000 条启动基准各 3 次方向性样本约 1.11 s → 0.90 s；样本和缓存条件不足以宣称稳定端到端提速。
+- Windows AMD64、Linux AMD64、Linux ARM64 构建及 ZIP 11 项 SHA256 清单通过；Linux AMD64 包内版本/revision、ARM64 ELF 架构、认证 health=`waiting_authorization`、匿名 401、SIGTERM 后正常退出通过。验证记录：[v0.8.22-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.22-preview.1-validation.md)。
+- 源码 revision `2a8ba81eea5a4884c8c5fcfeab409a7bfbd3d28f`。独立 ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.22-preview.1.zip`，SHA256 `0EF7E5FC108D2621F7CC32F3DB776010548B7A245527A405E9DB9B3E1D2E5FB5`。
 - 未使用真实百度凭证或执行云端操作；真实 NAS/SMB 启动性能仍待目标环境验证。
 
 ## v0.8.21-preview.1（加速大队列启动时目录项排序）
