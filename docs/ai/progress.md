@@ -4,6 +4,14 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## 凭证轮换与下载并发集成验证（未改产品、未重新打包）
+
+- 新增实际 credentials.Manager、Downloader、私有磁盘存储与本机 HTTP 文件流的跨模块测试，使用与主程序一致的凭证更新/认证拒绝回调；测试显式控制扫描，没有运行主程序扫描循环。
+- 当前旧下载返回 401，实际后台 Manager.Run 被拒绝通知唤醒，完成一次刷新；另覆盖先轮换成功、旧下载随后返回 401，迟到拒绝不撤销新凭证。两种场景均保留失败预算、等待新扫描，随后以新 Token 下载精确 abcdef，并仅以新 Token 后处理源项一次。
+- 直接读取真实 credentials.json 对应存储，核对轮换后的 Access/Refresh、同账号绑定和 Generation=2；未输出凭证。Windows UCRT 与 WSL 全模块 race/vet、diff 检查通过。
+- 独立只读审查未发现确定重要问题；按审查建议补上超过 worker 轮询间隔的观察窗口及扫描资格为空断言，两平台定向 race 再通过。该观察不替代主程序自动扫描接线验收。
+- OAuth Refresh/Account 和百度文件管理是替身，文件流为真实本机 HTTP；不等同于真实百度续期、多日运行或跨重启凭证读回验收。现有 v0.6.2-preview.1 产品源码不变，继续使用该独立测试包。
+
 ## v0.6.2-preview.1（分块短流恢复测试包已交付）
 
 - 源码 revision：`88807c8302134223195b9918e29dfa7f22f5b92f`；ZIP：发布根目录 v0.6.2-preview.1.zip，9,992,101 字节；SHA256 `323bbdb948d800fdbd98bf7c0c89205a5ab07af871a5f06913072c5dab9b1ddb`。
