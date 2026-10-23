@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.13-preview.1（修复队列 Load 的记录缓冲区别名）
+
+- 修复 `Store.Load()` 在 `LoadEach` 复用缓冲区后，把多条记录保存成同一底层字节切片的问题。先添加 RED 回归：三条记录加载后，ID 1 实际读成 ID 3；逐条复制后通过。下载器启动仍使用 `LoadEachRaw` 逐条解码，不增加启动时全量 map。
+- Windows AMD64 单次合成基准：10,000 条 `OpenDownloader` 约 5.60 s、310.2 B/任务；100,000 条约 122.34 s、304.1 B/任务、保留堆 29.00 MiB。100,000 条端到端基准约 291 s，包含十万个独立记录文件的夹具生成；不能外推至 Linux/NAS。下一步要把枚举、打开、解码分项计时，再确定 Windows 大队列慢的主要成本。
+- 源码 revision `cc38ea46cd8b257d4d1c8ed7c9ddd35c2bc1f347`。独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.13-preview.1.zip`，10,067,637 字节，SHA256 `5423F0BB38DF38AA05C0CD6AA67432D332F43C81496F6C479FF12F0FB7500400`；11 个 payload 哈希全部匹配。
+- Node 17 项、Windows 全模块 Go test/vet、Windows AMD64/Linux AMD64/Linux ARM64 构建通过；WSL 全模块 race/vet 通过。Windows race 在本机 Cygwin GCC 被 Go 拒绝；切换 UCRT GCC 后链接仍失败，因此不计为通过。Windows 二进制版本/revision、Linux AMD64 包内启动与认证 health、匿名 401、SIGTERM 正常退出、ARM64 ELF 架构检查通过。
+- 验证明细：[v0.8.13-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.13-preview.1-validation.md)。未使用真实百度凭证或执行云端操作；真实 NAS、真实账号和长时间运行仍待验收。
+
 ## v0.8.12-preview.1（减少历史任务进度排序除法）
 
 - 进度排序中无活动 Task 的历史任务直接用固定比例：已完成文件进度为 1，其余为 0；仅活动传输根据实时字节数计算比率。排序结果与原浮点比率语义一致，边界测试覆盖完成文件、失败/待处理、目录、活动传输和零长度。
