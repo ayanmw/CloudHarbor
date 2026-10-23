@@ -263,6 +263,71 @@ func TestConcurrentFolderDownloadsShareMaxParallelTransferCap(t *testing.T) {
 	}
 }
 
+func TestConcurrentFoldersDoNotMultiplyWaitingFileWorkers(t *testing.T) {
+	started := make(chan struct{}, 32)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		select {
+		case <-release:
+			_, _ = io.WriteString(w, "abc")
+		case <-r.Context().Done():
+		}
+	})
+	d.cfg.MaxParallel = 4
+	d.transferSlots = make(chan struct{}, 4)
+	var roots []baiduapi.FileInfo
+	var childIDs []int64
+	for rootID := int64(10); rootID < 14; rootID++ {
+		root := file(rootID, fmt.Sprintf("folder-%d", rootID), 0)
+		root.IsDir = 1
+		roots = append(roots, root)
+		for i := int64(1); i <= 4; i++ {
+			childID := rootID*10 + i
+			child := file(childID, fmt.Sprintf("file-%d.bin", childID), 3)
+			child.Path = path.Join(root.Path, child.ServerFilename)
+			p.lists[root.Path] = append(p.lists[root.Path], child)
+			childIDs = append(childIDs, childID)
+		}
+	}
+	var wg sync.WaitGroup
+	for _, root := range roots {
+		wg.Add(1)
+		go func(root baiduapi.FileInfo) {
+			defer wg.Done()
+			if err := d.downloadLocalFolder(d.ctx, root, root.ServerFilename); err != nil {
+				t.Errorf("download %s: %v", root.Path, err)
+			}
+		}(root)
+	}
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+		wg.Wait()
+	}()
+	for i := 0; i < 4; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for globally capped transfers")
+		}
+	}
+	time.Sleep(30 * time.Millisecond)
+	d.taskMutex.RLock()
+	waitingOrActive := 0
+	for _, id := range childIDs {
+		if task := d.tasks[id]; task != nil && task.Status == "downloading" {
+			waitingOrActive++
+		}
+	}
+	d.taskMutex.RUnlock()
+	if waitingOrActive > 8 {
+		t.Fatalf("downloading child tasks = %d, want at most global transfers plus one waiting coordinator per root (8)", waitingOrActive)
+	}
+	releaseOnce.Do(func() { close(release) })
+	wg.Wait()
+}
+
 func TestFolderDownloadsRemainSequentialWhenMaxParallelIsOne(t *testing.T) {
 	var active, peak atomic.Int32
 	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) {

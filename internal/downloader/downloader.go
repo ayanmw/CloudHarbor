@@ -310,7 +310,33 @@ func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.File
 	if workers > len(files) {
 		workers = len(files)
 	}
-	if workers > 0 {
+	// Reserve slots before starting goroutines. Otherwise every active root
+	// could create MaxParallel workers that block inside downloadLocalFile.
+	reserved := 0
+	for i := 0; i < workers; i++ {
+		select {
+		case d.transferSlots <- struct{}{}:
+			reserved++
+		default:
+			i = workers
+		}
+	}
+	if reserved == 0 {
+		for _, child := range files {
+			childErr := d.downloadLocalFile(ctx, child, filepath.Join(relative, child.ServerFilename))
+			if errors.Is(childErr, ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(childErr) {
+				d.finish(info.FsID, childErr)
+				return childErr
+			}
+			if err := ctx.Err(); err != nil {
+				d.finish(info.FsID, err)
+				return err
+			}
+			if childErr != nil {
+				failures = append(failures, fmt.Errorf("%s: %w", child.Path, childErr))
+			}
+		}
+	} else {
 		childCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		type fileJob struct {
@@ -322,16 +348,17 @@ func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.File
 		var authErr error
 		var authOnce sync.Once
 		var wg sync.WaitGroup
-		for i := 0; i < workers; i++ {
+		for i := 0; i < reserved; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer func() { <-d.transferSlots }()
 				for job := range jobs {
 					if childCtx.Err() != nil {
 						continue
 					}
 					childRelative := filepath.Join(relative, job.info.ServerFilename)
-					err := d.downloadLocalFile(childCtx, job.info, childRelative)
+					err := d.downloadLocalFileWithSlot(childCtx, job.info, childRelative)
 					if errors.Is(err, ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(err) {
 						authOnce.Do(func() { authErr = err; cancel() })
 						continue
@@ -383,14 +410,26 @@ func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.File
 }
 
 func (d *Downloader) downloadLocalFile(ctx context.Context, info baiduapi.FileInfo, relative string) error {
+	return d.downloadLocalFileWithSlotHeld(ctx, info, relative, false)
+}
+
+// downloadLocalFileWithSlot uses a permit already reserved by a directory
+// worker; ordinary roots acquire a slot only for the duration of one transfer.
+func (d *Downloader) downloadLocalFileWithSlot(ctx context.Context, info baiduapi.FileInfo, relative string) error {
+	return d.downloadLocalFileWithSlotHeld(ctx, info, relative, true)
+}
+
+func (d *Downloader) downloadLocalFileWithSlotHeld(ctx context.Context, info baiduapi.FileInfo, relative string, slotHeld bool) error {
 	local, err := d.localPath(relative)
 	d.beginTask(info, local)
 	if err == nil {
-		select {
-		case d.transferSlots <- struct{}{}:
-			defer func() { <-d.transferSlots }()
-		case <-ctx.Done():
-			err = ctx.Err()
+		if !slotHeld {
+			select {
+			case d.transferSlots <- struct{}{}:
+				defer func() { <-d.transferSlots }()
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
 		}
 		if err == nil {
 			err = d.transfer(ctx, info, relative, local)
