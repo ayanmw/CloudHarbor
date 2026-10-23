@@ -6,11 +6,12 @@
 
 ## v0.7.6-preview.1（管理页大目录分页优化）
 
+- 源码 revision：`9e018c2a4854c1f6ca1b6f07a5813ef5b32837ee`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.6-preview.1.zip`；SHA256：`cfa810c5b3d0d6f04a5398d1e420e26e1d1a9c67f5844c65501ba299bb79ca9b`。
 - `/api/cloud` 过去先完整遍历网盘目录，再裁剪当前 100 项页面；目录越大，每次翻页都重复读取全部目录。现在直接按 Baidu `start/limit` 读取请求窗口，并额外读取 1 项判断是否有下一页，成本与当前页接近。
 - 上游列表没有可依赖的准确总数，因此 `total` 明确返回 `null`，管理页显示“总数未知”和是否仍有下一页，不伪造总数。页内路径校验、重复 FSID 防护和既有隔离行为保留。
 - 集成回归用 250 项模拟目录请求第 2 页，确认仅向上游发一次 `start=100&limit=101` 请求；Node UI 回归检查未知总数提示和翻页 offset。
 - 真实百度目录分页/并发增删一致性尚未验收；变化中的目录采用 offset 分页，翻页期间新增/删除可能改变后续页内容。
-- `go test ./...`、`go vet ./...`、WSL `go test -race -count=1 ./...`、Node WebUI/userscript 15 项和 `git diff --check` 通过。Windows race 运行受本机 GCC/MinGW 链接器失败影响，未作为通过证据。
+- 发布脚本 `go test ./...`、`go vet ./...`、Windows AMD64/Linux AMD64/ARM64 构建通过；WSL `go test -race -count=1 ./...`、Node WebUI/userscript 15 项、payload 哈希、ZIP 内容一致和 Windows 版本命令通过。Windows race 运行受本机 GCC/MinGW 链接器失败影响，未作为通过证据。验证记录：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.6-preview.1-validation.md`。
 - 接续已确认的优化：网盘源项在改名/删除前重新核对身份；保持未知结果隔离且无人工放行入口。
 
 ## v0.7.5-preview.1（配置与 API 响应校验测试包已交付）
