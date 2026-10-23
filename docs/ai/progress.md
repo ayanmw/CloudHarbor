@@ -4,7 +4,7 @@
 
 - 将 `github.com/gorilla/websocket` 从 v1.5.1 更新到 v1.5.3；此版本修复子协议选择和随机值生成等问题。升级后的库不再声明 `golang.org/x/net` 依赖，`go mod tidy` 删除了原 v0.17.0 间接依赖，项目仍保持 Go 1.22 兼容目标。
 - 同包纳入队列重启后复用已发布文件的回归，以及下载响应头停滞时从请求开始计时的超时回归。Windows 当前 Go 工具链、WSL Go 1.22.2 全模块 race/vet、Node 15 项和差异检查均通过。
-- 独立包构建和包内启动验证在提交后执行，并在交付记录中补充版本 revision、ZIP 哈希与验证边界。
+- 源码 revision：`febb2d9086ed8429e85d8a0a0574fae91b28ee53`；独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.9-preview.1.zip`，SHA256 `e686f85b612f37118ef281d03cdc5a1f8b5d0754d812d00d3a79550fce4e0782`。三平台构建、11 项 payload 哈希、Windows/Linux AMD64 版本/revision、ARM64 ELF 架构通过。包内 Windows 启动的匿名 401、认证 health/page 200、Ctrl+C 停止与端口释放通过。验证明细：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.9-preview.1-validation.md`。
 
 ## v0.7.8 后续：已完成文件凭据身份漂移回归（仅测试）
 
