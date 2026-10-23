@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.9-preview.1（压缩云端扫描资格索引）
+
+- `scheduler.eligible` 从 `map[int64]FileInfo` 改为指针索引：同一云端身份指向任务的持久化元数据，只有活动任务或源操作结果未知且扫描身份变化时才持有独立快照；所有入队、重试、认证续期和源操作仍对 `FileInfo` 做逐字段精确比较。
+- WSL 单次 `BenchmarkReconcileRetainedHeap/tasks_100000`：v0.8.7 基线 51.19 MiB（536.7 B/任务），当前 36.84 MiB（386.3 B/任务），约减少 28%。这是合成任务保留堆样本，不代表 NAS RSS；启动逐条读取和完整 job 映射仍在。
+- 源码 revision `8c5c96e2b3a778d73263635edd4bfb162bb643c5`。独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.9-preview.1.zip`，9,848,831 字节，SHA256 `C15241B9695DC92140BEB80E7DF59A640D3F5D0AA0EEF0081F8862D7EE15DF81`；清单 11 个 payload 全部匹配。
+- Node 17 项、Windows Go 全模块 test/vet、WSL 全模块 race/vet 与三平台构建通过。包内 Linux AMD64 恢复 10,000 条合成完成任务；版本/revision、认证 health/name 分页、匿名 401、SIGINT 停止通过。
+- 验证明细：[v0.8.9-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.9-preview.1-validation.md)。无真实百度凭证或云端操作；NAS 和真实浏览器验收仍待进行。
+
 ## v0.8.8-preview.1（减少队列元数据重复驻留）
 
 - 恢复和扫描时让 `ServerFilename` 在确为路径 basename 时复用 `Path` 的底层字符串；已持久化任务与新扫描元数据完全相同时，`eligible` 索引复用原任务的不可变元数据。不同名称/路径和变更元数据仍独立保留，队列 JSON v1 与源项隔离/操作前身份核对语义不变。
