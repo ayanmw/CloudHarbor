@@ -321,7 +321,9 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 			}
 		}
 		if err == nil && written != info.Size {
-			err = fmt.Errorf("下载长度不符: got %d, want %d", written, info.Size)
+			// A chunked response can end cleanly below the known file size.
+			// Preserve short-stream classification so the queue can resume it.
+			err = fmt.Errorf("下载长度不符: got %d, want %d: %w", written, info.Size, io.ErrUnexpectedEOF)
 		}
 		if err == nil {
 			err = out.Sync()

@@ -4,6 +4,14 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## 分块短流恢复源码检查点（待纳入下一测试包）
+
+- 实际 HTTP 分块响应没有 Content-Length，正常 EOF 但不足网盘元数据大小时，旧实现只报普通长度错误，持久化队列直接 failed，不进入后台重试。已先 RED 复现。
+- 现该短流错误保留 io.ErrUnexpectedEOF 错误链，复用既有有界退避和预算；不生成完成凭据、不发布、不执行云端后处理。超长响应、错误范围、声明长度不匹配的拒绝逻辑不变。
+- 新增真实本机 chunked HTTP/临时磁盘/持久化调度器测试：保留 3 字节后以 Range bytes=3- 恢复为 abcdef，只后处理一次；持续短流耗尽一次重试预算后 failed，无最终文件、无源操作。Windows UCRT 与 WSL 全模块 race/vet、Node 14 项通过。
+- 独立只读审查及非缓存短流/Range/源操作定向测试通过，未发现新增确定重要问题；错误范围、超长数据、取消及磁盘写入错误不会被该分支覆盖。git diff --check 通过。
+- 当前独立测试版仍为 v0.6.1-preview.1；本源码修复尚未包含在该不可变 ZIP 中。没有访问真实百度账号或部署。
+
 ## v0.6.1-preview.1（校验取消修复测试包已交付）
 
 - 源码 revision：`d488e25bbe2e66fcad3924c4a8b7d4a9bde3b703`；ZIP：发布根目录 v0.6.1-preview.1.zip，9,991,746 字节；SHA256 `55559ad63316664253e0c2a1756a1090efdeb6b8438aa489de7c3768024d177e`。
