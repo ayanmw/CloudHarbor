@@ -1,5 +1,11 @@
 # 持续优化进度
 
+## D6 增量：Linux 逐任务读取少一次路径系统调用（待打包验证）
+
+- `taskstore.LoadEach` 在 Linux 上通过 `O_NOFOLLOW` 打开记录，合并每条任务文件的 `Lstat` 防符号链接检查与后续 `Open`。符号链接仍被拒绝，并新增 Linux 直达 `Store.Load` 的回归测试；Windows/其他平台保持原来的 `safePath` 检查。
+- WSL Linux 单文件对照基准：旧 `Lstat + Open` 为 2.34–2.80 μs/op、449 B、9 allocs；新 `O_NOFOLLOW Open` 为 1.30–1.33 μs/op、192 B、7 allocs。10,000 条合成历史的 `OpenDownloader` 五次单迭代为 63–84 ms、约 16.5 MB、200k allocations；这是本机 WSL 文件系统样本，不等同 NAS。
+- Windows 全模块 test/vet、WSL 全模块 race/vet、Node WebUI/userscript 17 项及 Linux symlink 拒绝/普通记录测试通过。仍需打包和包内启动复验；实际 NAS 启动性能、逐记录 JSON 解码和全部历史驻内存尚未改变。
+
 ## v0.8.4-preview.1（空闲 worker 候选堆）
 
 - `claim()` 由全量 `scheduler.jobs` 扫描改为两个内存堆：就绪任务按 `Created`/`FsID` 排序，退避任务按最早 `NextAttempt` 唤醒。只有最新云端扫描确认且可运行的任务进入索引；完成历史不创建堆项，持久化 JSON v1 不变。

@@ -194,10 +194,7 @@ func (s *Store) LoadEach(visit func(int64, json.RawMessage) error) error {
 			return fmt.Errorf("invalid job filename: %s", entry.Name())
 		}
 		name := filepath.Join(s.dir, "jobs", entry.Name())
-		if err = safePath(name); err != nil {
-			return err
-		}
-		f, err := os.Open(name)
+		f, err := openJobFile(name)
 		if err != nil {
 			return err
 		}
