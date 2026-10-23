@@ -44,4 +44,4 @@
 - [x] Add failure aggregation, auth fail-fast, cancellation, and MaxParallel=1 regressions.
 - [x] Implement the shared transfer semaphore and bounded per-directory direct-file worker pool, keeping recursive child-directory calls sequential.
 - [x] Run focused downloader tests and a fixed-latency benchmark. All-package race/vet checks remain before release.
-- [ ] Review diff and docs; package an immutable preview only if the concurrency bound and root semantics hold and the latency benchmark improves.
+- [x] Review diff and docs; package the immutable preview after the global cap, root completion semantics, and latency comparison passed.

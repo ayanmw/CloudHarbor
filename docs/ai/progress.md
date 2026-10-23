@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.19-preview.1（目录内文件有界并行下载）
+
+- 单个目录内的直接文件可按 `MaxParallel` 使用固定 worker 并行传输；所有根任务和嵌套目录共用同一 Downloader 级传输槽位，不突破全局并发上限。目录递归仍逐层进行，父目录只在所有文件成功后完成并进入原有源项后处理。
+- 新增回归覆盖同目录并行、多个根目录共享上限、`MaxParallel=1` 顺序行为、普通子项失败后的兄弟继续下载、认证失败停止继续排队、取消停止新任务并等待活动请求结束。独立的 8 小文件本机 HTTP 固定延迟对照，每个响应 10 ms：串行 172.077 ms/op，并行 4 为 55.664 ms/op，单样本约快 3.1 倍；这不是百度或 NAS 吞吐数据。
+- Windows `go test -count=1 ./...` / `go vet ./...`、WSL Go 1.22.2 `go test -race -count=1 ./...` / `go vet ./...`、Node 17 项通过；Windows AMD64、Linux AMD64、Linux ARM64 构建通过。ZIP 解压后 11 个 payload 哈希匹配；Linux AMD64 包内启动、版本/revision、认证 health、匿名 401、SIGTERM 正常退出及 ARM64 ELF 架构检查通过。
+- 源码 revision `fb05fef87163d1a1ab5e13b42dcaeb985a127d35`。独立 ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.19-preview.1.zip`，SHA256 `75A848FDEDC3E0DC1DB0C1A23083E641182D5964598B87160469D31253B7D4DA`；验证记录：[v0.8.19-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.19-preview.1-validation.md)。
+- 没有真实百度凭证或云端操作。真实百度限流、NAS 吞吐/耐久、多日运行和突然断电未验收。源项改名/删除仍在发送前重读 `fs_id` 元数据核对身份，但核对到执行间存在云端竞态；结果未知且缺少完成凭据的目录持续隔离，不提供人工放行。
+
 ## v0.8.18-preview.1（批量持久化新发现的队列任务）
 
 - 云端扫描发现多个新根任务时，先暂存完整扫描结果；最多每批 1,024 条、最多 4 个并行写入 worker。每条记录仍单独写入并 `Sync`，然后原子重命名；每批只同步一次 jobs 目录。全部批次成功后才写入内存队列/候选堆，既有任务状态更新仍单条持久化。
