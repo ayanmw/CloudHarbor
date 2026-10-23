@@ -49,7 +49,7 @@ type scheduler struct {
 }
 
 func newScheduler(d *Downloader) *scheduler {
-	return &scheduler{owner: d, jobs: make(map[int64]*queueJob), eligible: make(map[int64]baiduapi.FileInfo), blockedIntakes: make(map[string]bool), active: make(map[int64]context.CancelFunc), wake: make(chan struct{}, 1), done: make(chan struct{})}
+	return &scheduler{owner: d, jobs: make(map[int64]*queueJob), eligible: make(map[int64]baiduapi.FileInfo), blockedIntakes: make(map[string]bool), active: make(map[int64]context.CancelFunc), wake: make(chan struct{}, 32), done: make(chan struct{})}
 }
 func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, error) {
 	if cfg.MaxParallel < 0 || cfg.MaxParallel > 32 || cfg.MaxRetries < 0 || cfg.MaxRetries > 20 || cfg.RetryBackoffSeconds < 0 {
@@ -188,9 +188,23 @@ func (q *scheduler) reflect(job *queueJob) {
 	}
 }
 func (q *scheduler) signal() {
-	select {
-	case q.wake <- struct{}{}:
-	default:
+	// Callers hold q.mu; one queued notification per worker coalesces state changes.
+	if !q.started {
+		return
+	}
+	workers := q.owner.cfg.MaxParallel
+	if workers <= 0 {
+		workers = 2
+	}
+	if workers > cap(q.wake) {
+		workers = cap(q.wake)
+	}
+	for i := 0; i < workers; i++ {
+		select {
+		case q.wake <- struct{}{}:
+		default:
+			return
+		}
 	}
 }
 func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
@@ -278,19 +292,27 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 	q.signal()
 	return nil
 }
-func (q *scheduler) claim() (*queueJob, context.Context) {
+func (q *scheduler) claim() (*queueJob, context.Context, time.Duration) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.stopping || q.err != nil || q.owner.ctx.Err() != nil {
-		return nil, nil
+		return nil, nil, 0
 	}
 	if !q.owner.AuthenticationReady() {
 		q.parkAuthenticationWaiting()
-		return nil, nil
+		return nil, nil, 0
 	}
 	var chosen *queueJob
+	var nextRetry time.Time
+	now := time.Now()
 	for _, job := range q.jobs {
-		if q.blockedIntakes[job.Info.Path] || q.blockedSources[job.Info.Path] || (job.Status != "pending" && job.Status != "retry_wait") || q.active[job.Info.FsID] != nil || q.eligible[job.Info.FsID] != job.Info || time.Now().Before(job.NextAttempt) {
+		if q.blockedIntakes[job.Info.Path] || q.blockedSources[job.Info.Path] || (job.Status != "pending" && job.Status != "retry_wait") || q.active[job.Info.FsID] != nil || q.eligible[job.Info.FsID] != job.Info {
+			continue
+		}
+		if now.Before(job.NextAttempt) {
+			if nextRetry.IsZero() || job.NextAttempt.Before(nextRetry) {
+				nextRetry = job.NextAttempt
+			}
 			continue
 		}
 		if chosen == nil || job.Created.Before(chosen.Created) || (job.Created.Equal(chosen.Created) && job.Info.FsID < chosen.Info.FsID) {
@@ -298,13 +320,20 @@ func (q *scheduler) claim() (*queueJob, context.Context) {
 		}
 	}
 	if chosen == nil {
-		return nil, nil
+		if !nextRetry.IsZero() {
+			wait := time.Until(nextRetry)
+			if wait <= 0 {
+				wait = time.Nanosecond
+			}
+			return nil, nil, wait
+		}
+		return nil, nil, 0
 	}
 	chosen.Status = "downloading"
 	chosen.Attempts++
 	chosen.NextAttempt = time.Time{}
 	if err := q.persist(chosen); err != nil {
-		return nil, nil
+		return nil, nil, 0
 	}
 	ctx, cancel := context.WithCancel(q.owner.ctx)
 	q.active[chosen.Info.FsID] = cancel
@@ -313,23 +342,37 @@ func (q *scheduler) claim() (*queueJob, context.Context) {
 	q.owner.taskMutex.Unlock()
 	q.reflect(chosen)
 	copy := *chosen
-	return &copy, ctx
+	return &copy, ctx, 0
 }
 func (q *scheduler) worker() {
 	defer q.wg.Done()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
 	for {
-		if job, ctx := q.claim(); job != nil {
+		job, ctx, wait := q.claim()
+		if job != nil {
 			err := q.owner.runRoot(ctx, job.Info, job.Mode)
 			q.complete(job, err)
 			continue
 		}
+		var retryTimer *time.Timer
+		var retryC <-chan time.Time
+		if wait > 0 {
+			retryTimer = time.NewTimer(wait)
+			retryC = retryTimer.C
+		}
 		select {
 		case <-q.owner.ctx.Done():
+			if retryTimer != nil {
+				retryTimer.Stop()
+			}
 			return
 		case <-q.wake:
-		case <-ticker.C:
+		case <-retryC:
+		}
+		if retryTimer != nil && !retryTimer.Stop() {
+			select {
+			case <-retryTimer.C:
+			default:
+			}
 		}
 	}
 }

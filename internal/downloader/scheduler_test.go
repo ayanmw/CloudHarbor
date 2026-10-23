@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"web_browser_baidu_onekey_upload/internal/config"
 	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
@@ -105,6 +107,63 @@ func TestRestoreKeepsTaskViewsWithoutMaterializingEveryTask(t *testing.T) {
 	total, counts := restored.GetTaskStats()
 	if total != 1 || counts["done"] != 1 {
 		t.Fatalf("restored task stats = total %d counts %+v", total, counts)
+	}
+}
+
+func TestSchedulerSignalWakesEveryConfiguredWorker(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	d.cfg.MaxParallel = 3
+	d.queue.mu.Lock()
+	d.queue.started = true
+	d.queue.signal()
+	d.queue.mu.Unlock()
+	if got := len(d.queue.wake); got != 3 {
+		t.Fatalf("queued worker wakeups = %d, want 3", got)
+	}
+}
+
+func TestClaimWaitsUntilEarliestRetryDeadline(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	laterInfo := file(81, "later.txt", 3)
+	earlierInfo := file(82, "earlier.txt", 3)
+	laterJob := &queueJob{Version: 1, Info: laterInfo, Mode: DownloadModeKeep, Status: "retry_wait", NextAttempt: time.Now().Add(100 * time.Millisecond)}
+	earlierJob := &queueJob{Version: 1, Info: earlierInfo, Mode: DownloadModeKeep, Status: "retry_wait", NextAttempt: time.Now().Add(40 * time.Millisecond)}
+	d.queue.jobs[laterInfo.FsID] = laterJob
+	d.queue.eligible[laterInfo.FsID] = laterInfo
+	d.queue.jobs[earlierInfo.FsID] = earlierJob
+	d.queue.eligible[earlierInfo.FsID] = earlierInfo
+
+	claimed, ctx, wait := d.queue.claim()
+	if claimed != nil || ctx != nil || wait <= 0 || wait > time.Second {
+		t.Fatalf("claim before retry deadline = job %v, ctx %v, wait %v", claimed, ctx, wait)
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	<-timer.C
+
+	claimed, ctx, wait = d.queue.claim()
+	if claimed == nil || claimed.Info.FsID != earlierJob.Info.FsID || claimed.Status != "downloading" || ctx == nil || wait != 0 {
+		t.Fatalf("claim at retry deadline = job %v, ctx %v, wait %v", claimed, ctx, wait)
+	}
+}
+
+func BenchmarkSchedulerClaimIdleHistory(b *testing.B) {
+	for _, count := range []int{10000, 100000} {
+		b.Run(fmt.Sprintf("jobs_%d", count), func(b *testing.B) {
+			d := NewDownloader(&config.Config{}, baiduapi.NewClient("", ""))
+			defer d.cancel()
+			d.queue.jobs = make(map[int64]*queueJob, count)
+			for id := 1; id <= count; id++ {
+				d.queue.jobs[int64(id)] = &queueJob{Info: baiduapi.FileInfo{FsID: int64(id)}, Status: "done"}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if job, ctx, wait := d.queue.claim(); job != nil || ctx != nil || wait != 0 {
+					b.Fatal("idle history returned a runnable task")
+				}
+			}
+		})
 	}
 }
 
