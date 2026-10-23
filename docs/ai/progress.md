@@ -4,6 +4,13 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## v0.7.4-preview.1（Compose 自定义宿主端口/扫描间隔测试包已交付）
+
+- 源码 revision：`5cc32059ad3f7042353b232d9ac6dc40fa5e4ca0`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.4-preview.1.zip`；SHA256：`9766ac64e5598b7da67cb3da2ce02d8cc0342d1466ab6790dab5710f6c977f7b`。
+- 发布 Compose 允许在 `.env` 设置 `HOST_PORT` 和 `SCAN_INTERVAL`；默认回环端口仍为 18089，扫描间隔 30 秒。配置展开测试和正式包副本内实际 Compose 容器运行通过，认证 health 200、匿名 401，运行日志确认自定义扫描间隔，版本与 revision 匹配。
+- Node WebUI/userscript 14 项、Go 全模块 test/vet、Windows AMD64/Linux AMD64/ARM64 构建通过；发布包 11 个文件哈希匹配，ARM64 ELF 为 AArch64。验收记录：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.4-preview.1-validation.md`。
+- 无真实百度凭证或云端操作。厂商 NAS、真实百度、ARM64 实机、多日和断电仍未验收；未知结果继续隔离，无人工放行。未 push/deploy，主工作区干净。
+
 ## v0.7.3-preview.1（Linux 目录项持久性测试包已交付）
 
 - 源码 revision：`3426b016baf5acf4bc89a2d27713b87707984a6a`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.3-preview.1.zip`；SHA256：`378105077648a0be42c5523ec9290305fb7d79596d55dcca2461390649bc9a04`。
