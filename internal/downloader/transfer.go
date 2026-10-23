@@ -129,15 +129,39 @@ func writeRecord(name string, record fileRecord) error {
 	}
 	return os.Rename(tempName, name)
 }
-func hashFile(name string) (string, error) {
+func hashFile(ctx context.Context, name string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	f, err := os.Open(name)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
+	return hashReader(ctx, f)
+}
+
+func hashReader(ctx context.Context, reader io.Reader) (string, error) {
 	hash := sha256.New()
-	if _, err = io.Copy(hash, f); err != nil {
-		return "", err
+	buffer := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		n, readErr := reader.Read(buffer)
+		// Cancellation during the final Read must not produce a valid digest.
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if n > 0 {
+			hash.Write(buffer[:n])
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return "", readErr
+		}
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
@@ -179,7 +203,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		if stat.IsDir() || recordErr != nil || !record.matches(expected) || record.SHA256 == "" || stat.Size() != info.Size {
 			return fmt.Errorf("本地文件已存在且无法确认身份，请移走或更名后重试: %s", local)
 		}
-		digest, hashErr := hashFile(local)
+		digest, hashErr := hashFile(ctx, local)
 		if hashErr != nil {
 			return hashErr
 		}
@@ -208,7 +232,12 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		// A failed oversized response can fill the partial. Size alone cannot
 		// authorize publication: recovery requires a verified success receipt.
 		receipt, receiptErr := readRecord(receiptName)
-		digest, hashErr := hashFile(partialName)
+		digest, hashErr := hashFile(ctx, partialName)
+		// Cancelled verification is not evidence of corrupt partial data. Stop
+		// before the zero-offset recovery path can truncate the bound partial.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if receiptErr != nil || hashErr != nil || !receipt.matches(expected) || receipt.SHA256 == "" || receipt.SHA256 != digest {
 			offset = 0
 		}
@@ -305,7 +334,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 			return err
 		}
 	}
-	digest, err := hashFile(partialName)
+	digest, err := hashFile(ctx, partialName)
 	if err != nil {
 		return err
 	}
