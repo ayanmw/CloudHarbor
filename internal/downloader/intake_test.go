@@ -69,6 +69,34 @@ func intakeFixture(t *testing.T) (*Downloader, *provider, *atomic.Int32, *atomic
 	return d, p, calls, unavailable, loseReply
 }
 
+func TestIntakeBlockChangesRefreshEligibleSchedulerCandidates(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	info := baiduapi.FileInfo{FsID: 902, Path: "/queue/moved.bin", ServerFilename: "moved.bin", Size: 3}
+	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeKeep, Status: "pending", Created: time.Now()}
+	d.queue.jobs[info.FsID] = job
+	d.queue.eligible[info.FsID] = info
+	d.queue.rebuildCandidates()
+
+	intakeID := "0123456789abcdef0123456789abcdef"
+	record := intakeRecord{Intake: Intake{Items: []IntakeItem{{Target: info.Path, State: "unknown"}}}}
+	d.intakeMutex.Lock()
+	d.intakes[intakeID] = record
+	d.intakeMutex.Unlock()
+	d.refreshIntakeBlocks()
+	if job.candidate != nil {
+		t.Fatal("unknown intake left a runnable scheduler candidate")
+	}
+
+	record.Items[0].State = "moved"
+	d.intakeMutex.Lock()
+	d.intakes[intakeID] = record
+	d.intakeMutex.Unlock()
+	d.refreshIntakeBlocks()
+	if job.candidate == nil {
+		t.Fatal("resolved intake did not restore the already-scanned candidate")
+	}
+}
+
 func TestRunningMoveWithoutTaskIDStaysQuarantinedAndDoesNotRejectToken(t *testing.T) {
 	for _, directory := range []int{0, 1} {
 		t.Run(fmt.Sprint(directory), func(t *testing.T) {

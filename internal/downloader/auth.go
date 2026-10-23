@@ -64,6 +64,7 @@ func (d *Downloader) SetAuthentication(client *baiduapi.Client, ready bool, expi
 	if changed {
 		d.authEpoch++
 		q.eligible = make(map[int64]baiduapi.FileInfo)
+		q.clearCandidates()
 	}
 	usable := d.authenticationReadyLocked()
 	d.clientMutex.Unlock()
@@ -78,6 +79,7 @@ func (d *Downloader) SetAuthenticationFailureHandler(handler func(string)) {
 	d.onRejected = handler
 }
 func (q *scheduler) parkAuthenticationWaiting() {
+	q.clearCandidates()
 	for _, job := range q.jobs {
 		if job.Status != "pending" && job.Status != "retry_wait" {
 			continue

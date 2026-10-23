@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## D7 增量：空闲 worker 候选队列索引（待打包验证）
+
+- `claim()` 由全量 `scheduler.jobs` 扫描改为两个内存堆：就绪任务按 `Created`/`FsID` 排序，退避任务按最早 `NextAttempt` 唤醒。只有最新云端扫描确认且可运行的任务进入索引；完成历史不创建堆项，持久化 JSON v1 不变。
+- 云端 reconciliation 清空并在原有全量扫描中重建候选索引；完成、取消、手动重试、认证轮换及 intake 隔离变化更新对应索引。认证变化清空旧扫描候选；intake unknown 隔离解除后已扫描任务恢复候选，不等待定时扫描。
+- 10,000/100,000 条已完成历史的 idle `claim()` Windows 基准分别约 25.1/26.1 ns/op，0 B/op、0 allocs/op；前一版单次测量约 104.7 μs/5.68 ms。不同运行/CPU 的数字不作跨机器性能承诺。
+- 新增排序/退避/认证失效和 intake 隔离往返测试；Windows 全模块 `go test`、`go vet`、Node WebUI/userscript 17 项通过，WSL 全模块 race/vet 通过。Windows `-race` 由 UCRT gcc 链接失败（本机既有工具链限制），不计为通过。
+- 包内测试版与大队列重启/HTTP 冒烟待完成；真实 NAS 空闲 CPU、活跃候选集和唤醒延迟未测。
+
 ## v0.8.3-preview.1（空闲 worker 事件驱动）
 
 - 源码 revision：`9a4de892749e390f6a84840f6b719d850bbfcf06`。基线测得：在 10,000/100,000 条全部完成的合成历史上，单次 idle `claim()` 扫描约 0.105/5.68 ms，且旧 worker 用 100ms ticker 固定重扫。现改为状态/队列信号唤醒所有配置 worker；无可运行项时等待事件或最近一个可运行 retry 的 `NextAttempt` 定时器，不再周期轮询。

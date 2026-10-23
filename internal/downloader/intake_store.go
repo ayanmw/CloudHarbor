@@ -81,7 +81,28 @@ func (d *Downloader) refreshIntakeBlocks() {
 	}
 	d.intakeMutex.RUnlock()
 	d.queue.mu.Lock()
-	d.queue.blockedIntakes = blocked
+	q := d.queue
+	changed := len(q.blockedIntakes) != len(blocked)
+	if !changed {
+		for target := range q.blockedIntakes {
+			if !blocked[target] {
+				changed = true
+				break
+			}
+		}
+	}
+	q.blockedIntakes = blocked
+	if changed {
+		// Candidate entries cache intake-block eligibility; refresh them when a
+		// durable intake moves into or out of quarantine.
+		q.clearCandidates()
+		for id, info := range q.eligible {
+			if job := q.jobs[id]; job != nil && job.Info == info {
+				q.enqueueCandidate(job)
+			}
+		}
+		q.signal()
+	}
 	d.queue.mu.Unlock()
 }
 func (d *Downloader) saveIntake(record intakeRecord) error {

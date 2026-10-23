@@ -28,12 +28,15 @@ type queueJob struct {
 	Error       string            `json:"error,omitempty"`
 	Created     time.Time         `json:"created"`
 	Updated     time.Time         `json:"updated"`
+	candidate   *candidateEntry
 }
 type scheduler struct {
 	mu             sync.Mutex
 	owner          *Downloader
 	store          *taskstore.Store
 	jobs           map[int64]*queueJob
+	ready          candidateHeap
+	delayed        candidateHeap
 	eligible       map[int64]baiduapi.FileInfo
 	blockedIntakes map[string]bool
 	blockedSources map[string]bool
@@ -252,6 +255,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 		q.reflect(job)
 	}
 	q.eligible = eligible
+	q.clearCandidates()
 	for id, job := range q.jobs {
 		// A quarantined target was deliberately excluded above, not missing.
 		if q.blockedIntakes[job.Info.Path] || q.blockedSources[job.Info.Path] {
@@ -266,6 +270,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 			q.reflect(job)
 		}
 		if _, present := eligible[id]; present || q.active[id] != nil {
+			q.enqueueCandidate(job)
 			continue
 		}
 		if job.Status == "pending" || job.Status == "retry_wait" || job.Status == "auth_wait" {
@@ -277,6 +282,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 			}
 			q.reflect(job)
 		}
+		q.enqueueCandidate(job)
 	}
 	if !q.started {
 		q.started = true
@@ -302,26 +308,11 @@ func (q *scheduler) claim() (*queueJob, context.Context, time.Duration) {
 		q.parkAuthenticationWaiting()
 		return nil, nil, 0
 	}
-	var chosen *queueJob
-	var nextRetry time.Time
 	now := time.Now()
-	for _, job := range q.jobs {
-		if q.blockedIntakes[job.Info.Path] || q.blockedSources[job.Info.Path] || (job.Status != "pending" && job.Status != "retry_wait") || q.active[job.Info.FsID] != nil || q.eligible[job.Info.FsID] != job.Info {
-			continue
-		}
-		if now.Before(job.NextAttempt) {
-			if nextRetry.IsZero() || job.NextAttempt.Before(nextRetry) {
-				nextRetry = job.NextAttempt
-			}
-			continue
-		}
-		if chosen == nil || job.Created.Before(chosen.Created) || (job.Created.Equal(chosen.Created) && job.Info.FsID < chosen.Info.FsID) {
-			chosen = job
-		}
-	}
+	chosen := q.popReadyCandidate(now)
 	if chosen == nil {
-		if !nextRetry.IsZero() {
-			wait := time.Until(nextRetry)
+		if len(q.delayed) > 0 {
+			wait := time.Until(q.delayed[0].job.NextAttempt)
 			if wait <= 0 {
 				wait = time.Nanosecond
 			}
@@ -448,6 +439,7 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 		}
 	}
 	q.reflect(job)
+	q.enqueueCandidate(job)
 	q.signal()
 }
 
@@ -474,6 +466,7 @@ func (d *Downloader) Cancel(id int64) error {
 	if err := q.persist(job); err != nil {
 		return err
 	}
+	q.removeCandidate(job)
 	if cancel := q.active[id]; cancel != nil {
 		cancel()
 	}
@@ -500,6 +493,7 @@ func (d *Downloader) Retry(id int64) error {
 		return err
 	}
 	q.reflect(job)
+	q.enqueueCandidate(job)
 	q.signal()
 	return nil
 }

@@ -132,6 +132,7 @@ func TestClaimWaitsUntilEarliestRetryDeadline(t *testing.T) {
 	d.queue.eligible[laterInfo.FsID] = laterInfo
 	d.queue.jobs[earlierInfo.FsID] = earlierJob
 	d.queue.eligible[earlierInfo.FsID] = earlierInfo
+	d.queue.rebuildCandidates()
 
 	claimed, ctx, wait := d.queue.claim()
 	if claimed != nil || ctx != nil || wait <= 0 || wait > time.Second {
@@ -144,6 +145,51 @@ func TestClaimWaitsUntilEarliestRetryDeadline(t *testing.T) {
 	claimed, ctx, wait = d.queue.claim()
 	if claimed == nil || claimed.Info.FsID != earlierJob.Info.FsID || claimed.Status != "downloading" || ctx == nil || wait != 0 {
 		t.Fatalf("claim at retry deadline = job %v, ctx %v, wait %v", claimed, ctx, wait)
+	}
+}
+
+func TestClaimUsesEligibleReadyQueueAndKeepsFutureRetriesDelayed(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	readyFirst := file(11, "ready-first.bin", 3)
+	readyTie := file(10, "ready-tie.bin", 3)
+	delayed := file(1, "delayed.bin", 3)
+	d.queue.jobs[readyFirst.FsID] = &queueJob{Version: 1, Info: readyFirst, Mode: DownloadModeKeep, Status: "pending", Created: created}
+	d.queue.eligible[readyFirst.FsID] = readyFirst
+	d.queue.jobs[readyTie.FsID] = &queueJob{Version: 1, Info: readyTie, Mode: DownloadModeKeep, Status: "pending", Created: created}
+	d.queue.eligible[readyTie.FsID] = readyTie
+	d.queue.jobs[delayed.FsID] = &queueJob{Version: 1, Info: delayed, Mode: DownloadModeKeep, Status: "retry_wait", Created: created.Add(-time.Hour), NextAttempt: time.Now().Add(time.Hour)}
+	d.queue.eligible[delayed.FsID] = delayed
+	for id := int64(100); id < 100100; id++ {
+		d.queue.jobs[id] = &queueJob{Info: baiduapi.FileInfo{FsID: id}, Status: "done"}
+	}
+	d.queue.rebuildCandidates()
+
+	claimed, ctx, wait := d.queue.claim()
+	if claimed == nil || claimed.Info.FsID != readyTie.FsID || ctx == nil || wait != 0 {
+		t.Fatalf("claim = job %v, ctx %v, wait %v; want equal-created ready job with lowest fs_id", claimed, ctx, wait)
+	}
+	d.queue.active[claimed.Info.FsID]()
+}
+
+func TestAuthenticationChangeClearsReadyCandidatesUntilFreshScan(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	info := file(92, "auth-gated.bin", 3)
+	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeKeep, Status: "pending", Created: time.Now()}
+	d.queue.jobs[info.FsID] = job
+	d.queue.eligible[info.FsID] = info
+	d.queue.rebuildCandidates()
+	if job.candidate == nil {
+		t.Fatal("fixture did not create a runnable candidate")
+	}
+
+	d.SetAuthentication(baiduapi.NewClient("rotated", "app"), true, time.Now().Add(time.Hour))
+	if job.candidate != nil {
+		t.Fatal("credential rotation left a candidate authorized by the previous scan")
+	}
+	claimed, ctx, wait := d.queue.claim()
+	if claimed != nil || ctx != nil || wait != 0 || job.Status != "pending" {
+		t.Fatalf("claim after credential rotation = job %v, ctx %v, wait %v, status %s", claimed, ctx, wait, job.Status)
 	}
 }
 
