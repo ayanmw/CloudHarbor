@@ -47,4 +47,4 @@
 - [x] Implement lazy stable-ID sorting and merge the currently downloading candidates using the existing comparator semantics; use precomputed compact sort keys during rebuild to reduce lock-held cold latency.
 - [x] Run existing full-sort equivalence, offset boundary, generation, task-stat and race tests.
 - [x] Compare 100k warm progress-page benchmark against the current 6.9–7.3 ms/op baseline; measure cold rebuild and allocations.
-- [ ] Keep the cache only if warm 100k progress pages improve materially with bounded index memory and no correctness or regression concerns; then run full platform checks and package a preview.
+- [x] Keep the cache after correctness, race, cold/warm benchmark, full platform checks and immutable preview package passed; cold rebuild cost is documented alongside the warm improvement.

@@ -4,7 +4,8 @@
 
 - 进度页缓存非下载中任务的排序 FsID；当前下载任务每次分页按最新进度排序，再与稳定索引合并。保持原有完成文件/其他状态进度比率、FsID 同分顺序、offset/limit、全局计数和接口响应不变。状态或任务集合持久化变化使缓存失效，实时进度 tick 不重建索引。
 - 100,000 条合成历史，WSL Go 1.22.2：热页三次 100x 约 9.4–15.9 μs/op，38,171 B/op、106 allocs/op；索引冷重建三次 100x 约 112.7–118.8 ms/op，841,299–841,300 B/op、111 allocs/op，紧凑键优化后冷重建三次 30x 约 32.9–36.2 ms/op、3,241,596–3,241,599 B/op、113 allocs/op。热页较 6.87–7.34 ms/op 基线约快 450–780 倍；变化后首次页有全量排序成本。数据为本机合成队列，不代表 NAS 绝对时延。
-- 新增实时进度不失效稳定索引、非活动持久化状态变化使索引重建的回归，并增加 progress_cold 基准。Node 17 项、Windows 全模块 Go test/vet、WSL Go 1.22.2 全模块 race/vet、三平台构建待打包脚本复核；发布包内 smoke 与哈希见本版本验证记录。
+- 新增实时进度不失效稳定索引、非活动持久化状态变化使索引重建的回归，并增加 progress_cold 基准。Node 17 项、Windows 全模块 Go test/vet、WSL Go 1.22.2 全模块 race/vet、三平台构建通过；11 个 payload 哈希匹配，Windows AMD64 版本/revision 与 ARM64 ELF 架构正确。Linux AMD64 包内启动、认证 health、匿名 401、SIGTERM 退出通过。
+- 源码 revision `a9c457c8be1069eda64dcf58e4d8978647b7970b`。独立 ZIP：SHA256 `73CBE5D3E43E77123AC04F205E3DD6F394E83F14A68CBD33658EC7643A06E825`；验证记录：[v0.8.17-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.17-preview.1-validation.md)。
 - 未使用真实百度凭证或执行云端操作；真实百度/NAS、目标文件系统和长时间运行仍待验收。
 
 ## v0.8.16-preview.1（Windows 大队列记录并行读取）
