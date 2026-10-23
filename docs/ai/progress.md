@@ -1,10 +1,13 @@
 # 持续优化进度
 
-## D6 增量：Linux 逐任务读取少一次路径系统调用（待打包验证）
+## v0.8.5-preview.1（Linux 逐任务读取少一次路径系统调用）
 
 - `taskstore.LoadEach` 在 Linux 上通过 `O_NOFOLLOW` 打开记录，合并每条任务文件的 `Lstat` 防符号链接检查与后续 `Open`。符号链接仍被拒绝，并新增 Linux 直达 `Store.Load` 的回归测试；Windows/其他平台保持原来的 `safePath` 检查。
 - WSL Linux 单文件对照基准：旧 `Lstat + Open` 为 2.34–2.80 μs/op、449 B、9 allocs；新 `O_NOFOLLOW Open` 为 1.30–1.33 μs/op、192 B、7 allocs。10,000 条合成历史的 `OpenDownloader` 五次单迭代为 63–84 ms、约 16.5 MB、200k allocations；这是本机 WSL 文件系统样本，不等同 NAS。
-- Windows 全模块 test/vet、WSL 全模块 race/vet、Node WebUI/userscript 17 项及 Linux symlink 拒绝/普通记录测试通过。仍需打包和包内启动复验；实际 NAS 启动性能、逐记录 JSON 解码和全部历史驻内存尚未改变。
+- Windows 全模块 test/vet、WSL 全模块 race/vet、Node WebUI/userscript 17 项及 Linux symlink 拒绝/普通记录测试通过；发布脚本三平台构建通过。
+- 源码 revision：`c9d1b168ea38a573446abfb1990c97750e816c6b`。独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.5-preview.1.zip`，9,839,210 字节，SHA256 `1C33F73E93C8B4F6872D7527AAEC7C3BBB5A74CF5EB610BB6DE371BFDA895F7D`；ZIP 12 项中 11 个 payload 与 SHA256 清单全部匹配，Linux AMD64/ARM64 架构及 AMD64 版本标识正确。
+- 包内 Linux AMD64 `start.sh` 从隔离的 `/tmp` 状态目录启动，恢复 10,000 条合成任务；health=`unconfigured`，状态总数/完成数 10,000，分页 10 条，匿名 401；SIGINT 后 `Service stopped` 且端口释放。验证明细：[v0.8.5-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.5-preview.1-validation.md)。
+- 没有真实百度凭证或云端写操作。实际 NAS 启动性能、逐记录 JSON 解码成本和全部历史驻内存尚未改变。
 
 ## v0.8.4-preview.1（空闲 worker 候选堆）
 
