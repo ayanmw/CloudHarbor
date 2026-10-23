@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.0-preview.1（任务历史分页）
+
+- 已完成任务列表服务端分页：两种管理页与 WebSocket 默认每页 100 项；文件名、进度、大小排序覆盖全队列，页面任务总数/状态数仍为全局统计。分页状态接口不再复制和序列化完整任务快照；健康检查也改为只统计任务状态。`/api/status` 无分页参数时保留原有完整列表响应。
+- 任务历史仍全部保留；本轮未改变队列去重与云端操作语义。启动仍读取所有持久化记录，分页请求仍线性扫描任务以计算统计和选择排序窗口。真实目标浏览器长队列与 NAS 性能仍待验收。
+- 本机 10,000 条合成任务单次基准：全量快照约 2.21 ms、3.64 MB、19,902 allocations；100 项分页约 0.69 ms、37 KB、108 allocations。此数值仅是当前 Windows 开发机的一次合成基准。
+- Windows Go 1.27.1 全模块测试/vet、WSL Go 1.22.2 全模块 race/vet、Node WebUI/userscript 17 项、三平台交叉构建通过。Windows race 因本机 GCC/MinGW 链接器失败，未计为通过。
+- 源码 revision：`293cdf0f9e7dd56db374fbfc7abd817fc663063a`；独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.0-preview.1.zip`，SHA256 `6ad2108907d2c1ab1930505b665a0d92388b54b7f0bad75866a6fd652c8c7dc3`。11 个 ZIP payload 哈希通过；包内 Windows 启动后验证匿名 401、认证 health/page 200、旧状态接口兼容、非法页大小 400、页面资源及 Ctrl+C 停止/端口释放。明细：[v0.8.0-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.0-preview.1-validation.md)。
+
 ## v0.7.9-preview.1（WebSocket 依赖维护与恢复回归）
 
 - 将 `github.com/gorilla/websocket` 从 v1.5.1 更新到 v1.5.3；此版本修复子协议选择和随机值生成等问题。升级后的库不再声明 `golang.org/x/net` 依赖，`go mod tidy` 删除了原 v0.17.0 间接依赖，项目仍保持 Go 1.22 兼容目标。
