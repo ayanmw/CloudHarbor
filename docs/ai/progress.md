@@ -4,7 +4,11 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
-## v0.6.1 校验取消修复（源码验证完成，准备补丁包）
+## v0.6.1-preview.1（校验取消修复测试包已交付）
+
+- 源码 revision：`d488e25bbe2e66fcad3924c4a8b7d4a9bde3b703`；ZIP：发布根目录 v0.6.1-preview.1.zip，9,991,746 字节；SHA256 `55559ad63316664253e0c2a1756a1090efdeb6b8438aa489de7c3768024d177e`。
+- 干净提交打包门禁、三平台构建、11 项解压哈希和 ARM64 ELF machine=183 检查通过。仅在 verification 副本运行，Windows/Linux AMD64 启动、版本/健康、认证页面/API 200、匿名 401 通过；无百度凭证、HTTPS 指向拒绝连接代理。
+- Windows Ctrl+C 后 Service stopped（外层 PTY exit 1），Linux 精确核对进程路径后 SIGTERM、Service stopped、exit 0。服务均停止，原 main 工作区干净，无推送/部署；详细记录在发布目录 v0.6.1-preview.1-validation.md。
 
 - 三处 SHA256 校验接入任务 context，分块读取前后检查取消；包括最后一次读取同时返回 EOF 的情况，取消后不生成有效摘要。
 - 已复现完整临时文件恢复校验被取消后误走重置分支、将文件截断为 0 的问题；现收到取消直接退出，保留绑定的临时文件。正常摘要和非取消恢复规则不变。
