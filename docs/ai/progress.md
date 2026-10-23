@@ -1,5 +1,14 @@
 # 持续优化进度
 
+## v0.8.12-preview.1（减少历史任务进度排序除法）
+
+- 进度排序中无活动 Task 的历史任务直接用固定比例：已完成文件进度为 1，其余为 0；仅活动传输根据实时字节数计算比率。排序结果与原浮点比率语义一致，边界测试覆盖完成文件、失败/待处理、目录、活动传输和零长度。
+- WSL 对照 v0.8.11（两组各运行 100 次）：10,000/100,000 条任务的 100 项 progress 页约 449/12,468 μs 降至 368/10,983 μs，约快 18%/12%；分配量保持约 38,296 B/op、127 allocs/op。仍需扫描任务集并维护 offset+limit 大小的有界堆，复杂度不变。
+- 顺带复测 D7 空闲 claim：10,000/100,000 条全部完成历史约 60.5 ns/op，0 alloc，耗时不随历史数量增长；NAS CPU 和活跃任务唤醒延迟仍未验证。
+- 源码 revision `43d0831a4386c0a5eeeb0202f2cdb0b035bc1fec`。独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.12-preview.1.zip`，9,850,463 字节，SHA256 `75339B767C5650A2B302902F8536D2F31BEDC68A171CC1115D2CB3ACB8737A9B`；11 个 payload 全部匹配。
+- Node 17 项、Windows 全模块 Go test/vet、WSL 全模块 race/vet 和三平台构建通过。Linux AMD64 包内混合完成/失败历史恢复、进度排序结果、认证 health、匿名 401 与 SIGINT 停止通过。
+- 验证明细：[v0.8.12-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.12-preview.1-validation.md)。未接入真实百度凭证或云端；目标浏览器/NAS 仍需实际验收。
+
 ## v0.8.11-preview.1（复用队列历史读取缓冲区）
 
 - `LoadEach` / `LoadEachRaw` 在一个回调扫描周期内复用单个 `bytes.Buffer`，按最多 1 MiB + 1 字节读取以保持记录尺寸上限；RAW 回调的字节切片生命周期明确为仅本次回调。队列 JSON、校验责任和错误传播不变。
