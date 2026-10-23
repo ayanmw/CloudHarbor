@@ -4,6 +4,15 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## v0.7.2-preview.1（下载 Token 查询参数修复测试包已交付）
+
+- 源码 revision：`855ab0a8b4cf427e4c417f314db69e5f5b3de59a`；包 `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.2-preview.1.zip`，10,000,484 字节；SHA256 `e3dd0e74c6e8af62d0f9e03ae2a20c93eb69cff8dbf30d9a4762234a3a19e9a3`。
+- 干净提交执行打包门禁：Node WebUI/userscript 14 项、Go 全模块测试/vet、Windows AMD64/Linux AMD64/ARM64 构建通过；包内 11 项哈希再次核对一致。Windows 与 Linux AMD64 --version/revision 匹配；ARM64 ELF machine=AArch64。
+- 包内 Windows Start.ps1 实际启动：认证 health、首页、intake、status=200，匿名 health=401，源码版本/revision 精确匹配；固定假密码、无百度凭证、百度 HTTPS 指向拒绝连接代理。Ctrl+C 后 Service stopped，端口确认释放。
+- 从包副本运行 Linux AMD64 原生 start.sh：认证 health=200 且版本/revision 匹配；匿名 health=401；SIGTERM 后 Service stopped、进程退出 0。测试仅在隔离 WSL home 目录进行，状态 owner/mode 不覆盖发布目录。
+- 新 Token 链接查询参数的七项实际 HTTP 回归及 Windows UCRT/WSL Go1.22.2 全模块 race/vet 在打包前通过；进程强制终止后未知操作保持隔离的回归也随源码包含。
+- 包内代码尚未对真实百度签名链接验签；无百度真实下载、厂商 NAS/ACL、ARM64 实机、多日或断电验收。未知目录继续隔离，没提供人工放行。验证明细在发布根目录 `v0.7.2-preview.1-validation.md`；未推送或部署。
+
 ## 下载链接查询参数修复（源码检查点，待后续包）
 
 - 本机真实 HTTP 回归先 RED 复现：裸拼接 Token 遇到查询分隔符/片段会改变或丢失凭据；strings.Contains 把相似参数/路径误判为已有 Token，编码参数名则被重复追加。不能据此声称当前百度链接实际使用了这些形式。
