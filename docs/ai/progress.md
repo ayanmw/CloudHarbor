@@ -4,6 +4,13 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## 源操作请求中进程强制终止验证（测试检查点）
+
+- 新增 crash_source_test.go，补足此前正常 Shutdown/合成记录重开之外的真实 Process.Kill 窗口。keep/delete 分别启动子进程，真实本机 HTTP 服务收到 rename/delete 请求后保持响应未完成；父进程核对 sending/source_unknown 已落盘且最终文件内容完整，再强制结束子进程，不执行优雅退出。
+- 重开真实 Downloader 成功取得写锁；fresh scan 后仍 source_unknown，保留原模式，CanCancel/CanRetry=false，Cancel/Retry 返回冲突；直到重新打开的实例关闭，源操作请求计数始终为 1。父子进程所有 provider 请求均改写到本机夹具，仅使用假凭证。
+- Windows 定向 race 及连续 5 次 race、WSL Go1.22.2 定向 race、Windows 全模块非缓存 test/vet、diff 检查通过；独立只读审查无确定 important/critical，并独立复跑定向测试通过。
+- 本轮仅新增测试，没有发现需修改产品代码的缺陷，不重打相同行为包。当前可测版本仍为 v0.7.1-preview.1，ZIP SHA256 未变。证据只证明进程被强制终止后的恢复，不证明断电、文件系统丢写或真实百度服务端操作结果；不增加人工放行入口。原 main 保持干净，未推送/部署。
+
 ## v0.7.1-preview.1（普通用户容器运行测试包已交付）
 
 将可选 RUN_AS、普通用户目录准备/迁移说明纳入独立包。程序行为沿用已验证的 v0.7.0，保留 HTTPS 来源、认证与未知隔离规则；旧包不改动。
