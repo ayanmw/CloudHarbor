@@ -18,6 +18,13 @@
 - `docker compose config` 验证显式参数可传给 build args；Go 本机 linker 输出验证通过。使用现有 WSL Docker 真实构建源码镜像，并在专用容器验证 `/api/health` 精确返回版本与完整 revision、匿名返回 401；验后移除本轮专用容器与镜像。
 - 独立发布包使用 `release/Dockerfile` 启动已注入版本的预构建二进制，此变更针对源码仓库多阶段 Dockerfile，未改变当前 v0.7.3-preview.1 包或其文件；后续预览包与其他产品改进合并交付。真实 NAS 不在本地 Docker 验证范围内。
 
+## 源码 Docker 直接端口映射修复（源码检查点）
+
+- 源码 Dockerfile 原来没有覆盖应用默认 `SERVER_HOST=127.0.0.1`；直接 `docker run -p` 虽然映射端口，容器服务却只监听容器 loopback。先用原镜像实际复现：日志为 `127.0.0.1:8080`，宿主映射的健康请求失败。
+- 容器内默认改为监听 `0.0.0.0:8080`；README 的直接运行示例只发布到 `127.0.0.1` 并设置管理员密码，移除没有被应用当作本地队列读取的 `/NAS_Download_Queue` 挂载。
+- 修复后实际构建/运行源码镜像：认证 health=200、匿名 health=401，版本与完整 revision 匹配；日志确认容器监听 `0.0.0.0:8080`。Compose 配置解析也断言容器监听与宿主回环发布地址；测试容器/镜像已清理。没有配置百度凭证或访问真实账号。
+- revision：`93b5f4805b1c0870250c514f0e7dce26eb084b03`。该源码 Dockerfile 与 README 修复尚未进入独立预览包；当前 v0.7.3-preview.1 不变，后续合并应用功能后再打新包。厂商 NAS 网络/防火墙验收仍未进行。
+
 ## v0.7.2-preview.1（下载 Token 查询参数修复测试包已交付）
 
 - 源码 revision：`855ab0a8b4cf427e4c417f314db69e5f5b3de59a`；包 `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.2-preview.1.zip`，10,000,484 字节；SHA256 `e3dd0e74c6e8af62d0f9e03ae2a20c93eb69cff8dbf30d9a4762234a3a19e9a3`。
