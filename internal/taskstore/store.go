@@ -159,7 +159,9 @@ func (s *Store) Save(id int64, data []byte) error {
 func (s *Store) Load() (map[int64]json.RawMessage, error) {
 	result := make(map[int64]json.RawMessage)
 	err := s.LoadEach(func(id int64, body json.RawMessage) error {
-		result[id] = body
+		// LoadEach reuses its record buffer after the callback returns; Load's
+		// map API must retain an independent copy for every record.
+		result[id] = append(json.RawMessage(nil), body...)
 		return nil
 	})
 	if err != nil {

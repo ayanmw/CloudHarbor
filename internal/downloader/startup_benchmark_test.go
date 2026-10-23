@@ -1,12 +1,14 @@
 package downloader
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -160,32 +162,109 @@ func BenchmarkStoreLoadEachValidationMode(b *testing.B) {
 	}
 }
 
-func benchmarkHistoryFixture(b *testing.B, count int) (string, string) {
-	b.Helper()
-	root := b.TempDir()
+func TestBenchmarkHistoryFixtureProducesRestorableRecords(t *testing.T) {
+	root, queuePath := benchmarkHistoryFixture(t, 3)
+	if !filepath.IsAbs(root) {
+		t.Fatalf("fixture root is not absolute: %q", root)
+	}
+	store, err := taskstore.Open(queuePath, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	records, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("fixture record count = %d, want 3", len(records))
+	}
+	for id := int64(1); id <= 3; id++ {
+		var job queueJob
+		body, ok := records[id]
+		if !ok {
+			t.Fatalf("fixture record %d is missing", id)
+		}
+		if err := json.Unmarshal(body, &job); err != nil {
+			t.Fatalf("decode fixture job %d: %v", id, err)
+		}
+		if job.Info.FsID != id || job.Status != "done" || job.Mode != DownloadModeKeep {
+			t.Fatalf("fixture job %d = %+v", id, job)
+		}
+	}
+}
+
+func benchmarkHistoryFixture(tb testing.TB, count int) (string, string) {
+	tb.Helper()
+	root := tb.TempDir()
 	queuePath := filepath.Join(root, stateDirectory, "queue")
 	store, err := taskstore.Open(queuePath, "/preview")
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	if err = store.Close(); err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	jobsPath := filepath.Join(queuePath, "jobs")
 	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	workers := min(runtime.GOMAXPROCS(0), 16)
+	if workers < 1 {
+		workers = 1
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ids := make(chan int)
+	writeErr := make(chan error, 1)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case id, ok := <-ids:
+					if !ok {
+						return
+					}
+					job := queueJob{
+						Version: 1,
+						Info:    baiduapi.FileInfo{FsID: int64(id), Path: fmt.Sprintf("/preview/file-%d.bin", id), ServerFilename: fmt.Sprintf("file-%d.bin", id), Size: 1024},
+						Mode:    DownloadModeKeep, Status: "done", Created: created, Updated: created,
+					}
+					body, marshalErr := json.Marshal(job)
+					if marshalErr == nil {
+						marshalErr = os.WriteFile(filepath.Join(jobsPath, fmt.Sprintf("%d.json", id)), body, 0600)
+					}
+					if marshalErr != nil {
+						select {
+						case writeErr <- marshalErr:
+						default:
+						}
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
 	for id := 1; id <= count; id++ {
-		job := queueJob{
-			Version: 1,
-			Info:    baiduapi.FileInfo{FsID: int64(id), Path: fmt.Sprintf("/preview/file-%d.bin", id), ServerFilename: fmt.Sprintf("file-%d.bin", id), Size: 1024},
-			Mode:    DownloadModeKeep, Status: "done", Created: created, Updated: created,
+		select {
+		case ids <- id:
+		case <-ctx.Done():
+			break
 		}
-		body, marshalErr := json.Marshal(job)
-		if marshalErr != nil {
-			b.Fatal(marshalErr)
+		if ctx.Err() != nil {
+			break
 		}
-		if writeErr := os.WriteFile(filepath.Join(jobsPath, fmt.Sprintf("%d.json", id)), body, 0600); writeErr != nil {
-			b.Fatal(writeErr)
-		}
+	}
+	close(ids)
+	wg.Wait()
+	select {
+	case err := <-writeErr:
+		tb.Fatal(err)
+	default:
 	}
 	return root, queuePath
 }

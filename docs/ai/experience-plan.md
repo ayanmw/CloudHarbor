@@ -77,6 +77,8 @@
 - [x] Linux `LoadEachRaw` 现在先以 `O_NOFOLLOW|O_DIRECTORY` 打开 jobs 目录一次，保持目录文件描述符，并对已校验的 basename 用 `openat(...|O_NOFOLLOW)` 读取；按原文件名顺序排序。非 Linux 保留逐条安全检查和完整路径打开。避免每条记录重复解析 jobs 目录路径，同时固定读取目录身份。
 - [x] WSL ext4 合成对照（3 次/样本）：100,000 条 `OpenDownloader` 约从 900 ms 降至 606 ms；10,000 条 `LoadEachRaw` 约从 33.3 ms 降至 28.5 ms。样本说明本地路径查找/文件打开有改进，不代表厂商 NAS、SMB 或其他挂载的性能。
 - [x] `LoadEach` / `LoadEachRaw` 在回调返回后复用同一个最多 1 MiB 的记录缓冲区；回调中的 `RawMessage` 生命周期在 `LoadEachRaw` 文档中明确为仅限本次回调。v0.8.10 对照后，10,000 条 `LoadEachRaw` 的分配由约 8.02 MB 降至 2.90 MB，100,000 条恢复 `OpenDownloader` 由约 144.93 MB 降至 93.72 MB；这是临时分配下降，不等于恢复后常驻堆下降。
+- [x] 修复 `Store.Load()` 对 `LoadEach` 复用缓冲区的不兼容：收集到 map 的每条 `RawMessage` 必须复制，否则所有值会在扫描后变为最后读取记录；多记录回归测试曾先失败（记录 1 读回 ID 3），修复后通过。
+- [x] Windows AMD64 单次合成基准：10,000 条 `OpenDownloader` 约 5.60 s、310.2 B/任务；100,000 条约 122.34 s、304.1 B/任务（保留堆 29.00 MiB）。100,000 条基准端到端耗时约 291 s，包含任务文件夹具创建；这暴露出 Windows 大队列恢复延迟，但不能外推 Linux/NAS，下一步需分离枚举、文件打开和 JSON 解码成本。
 - [ ] 重启仍要打开并解码每条 JSON 记录，恢复后仍将全部根任务保存在 scheduler job 映射中；逐文件 I/O 是实测主要成本，后续是否改为分段/数据库存储需单独权衡兼容迁移和断电语义。
 - [ ] 目标 NAS 文件系统的大队列重启时间、峰值内存和存储行为待用户环境验证；合成包内启动不能替代真实存储设备。
 

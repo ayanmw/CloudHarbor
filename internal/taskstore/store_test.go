@@ -71,6 +71,35 @@ func TestRecordsSurviveReopenAndScopeCannotChange(t *testing.T) {
 	}
 }
 
+func TestLoadRetainsIndependentRecordBytes(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "queue"), "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []int64{1, 2, 3} {
+		body := []byte(`{"id":` + strconv.FormatInt(id, 10) + `}`)
+		if err := s.Save(id, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id := int64(1); id <= 3; id++ {
+		var record struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal(records[id], &record); err != nil {
+			t.Fatalf("decode record %d: %v", id, err)
+		}
+		if record.ID != id {
+			t.Fatalf("record %d contains id %d", id, record.ID)
+		}
+	}
+}
+
 func TestLoadEachVisitsRecordsInFilenameOrderWithoutBuildingResultMap(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "queue")
 	s, err := Open(dir, "/preview")
