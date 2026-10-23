@@ -8,6 +8,12 @@
 - Windows Go 1.27.1 全模块测试/vet、WSL Go 1.22.2 全模块 race/vet、Node WebUI/userscript 17 项、三平台交叉构建通过；ZIP 11 项 payload 哈希通过。
 - 源码 revision：`c217a9bf31c1d2518655a232443cf1176deb8c4d`；独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.1-preview.1.zip`，SHA256 `8e051715edbbca0edfbc06d9cef3a553cf81db9ecbc85ea235835bbd3cbba858`。验证明细：[v0.8.1-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.1-preview.1-validation.md)。
 
+### D6 后续：有界并行读取对照实验（未改变生产代码）
+
+- 在相同 10,000 条小型 JSON 夹具上比较当前串行读取与每批 2/4/8/16 个并行读取；Windows 串行两次约 5.60/7.09 秒，4 worker 约 3.52/3.67 秒、8 worker 约 3.29/3.56 秒，单次额外分配约 1.5–1.8 MB。单次基准波动较大，不能当作目标部署的固定加速比例。
+- WSL 访问同一工作树时串行约 54.5 ms，4 worker 约 83.3 ms，16 worker 约 55.7 ms；没有显示 Linux 本地文件系统的稳定收益。并行试验代码已移除，没有接入产品实现或打包。
+- 结论：不将该并行方案默认用于 NAS/Linux 启动恢复。下一步需优先基于真实 NAS/目标文件系统测量；如果无法提供该环境，先评估持久化摘要/索引方案的迁移与崩溃一致性成本，再决定是否改变全量历史恢复结构。
+
 ## v0.8.0-preview.1（任务历史分页）
 
 - 已完成任务列表服务端分页：两种管理页与 WebSocket 默认每页 100 项；文件名、进度、大小排序覆盖全队列，页面任务总数/状态数仍为全局统计。分页状态接口不再复制和序列化完整任务快照；健康检查也改为只统计任务状态。`/api/status` 无分页参数时保留原有完整列表响应。
