@@ -1,5 +1,14 @@
 # 持续优化进度
 
+## v0.8.7-preview.1（缓存稳定排序的任务分页）
+
+- 名称和大小排序的任务页首次按需构建 FsID 顺序索引；后续分页按 offset/limit 读取窗口。任务集合或元数据变化时索引失效并重建。进度排序仍使用实时进度和原有扫描堆算法。
+- 全局任务状态计数通过 generation 惰性缓存；持久化任务变化、非根任务新增/状态变化会使摘要失效。返回的计数 map 每次复制，调用方不能污染缓存。队列 JSON v1、API/WS 格式及排序语义不变。
+- WSL 内存合成基准（单次）：10,000 条 name/size 热页约 25–34 μs，冷建约 2.65–2.87 ms；100,000 条热页约 15–23 μs，冷建约 53–55 ms；100,000 条 progress 扫描约 7.32 ms；热状态统计约 0.8–1.1 μs。基准本身与目标 NAS 有差异，不承诺跨设备比例。
+- 独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.7-preview.1.zip`，9,847,067 字节，SHA256 `23E152680A5EB7D7C99E301A2544FF3F56C49D6D7442ADB7803CC0496C4B704A`；源码 revision `236bc0796e261106f3c79b642b541854ee435e24`。ZIP 12 项，独立核对清单中的 11 个 payload 哈希全部匹配。
+- Node 17 项、Windows Go 全模块测试/vet、WSL 全模块 race/vet、Windows AMD64/Linux AMD64/ARM64 构建通过。Linux AMD64 包从隔离副本恢复 100,000 条合成完成记录；认证 health 计数正确，name/size 分页顺序正确，匿名请求 401，SIGINT 停止且端口释放。HTTP 样本 name 冷/热约 83/0.9 ms，size 冷建约 57 ms；包含 WSL 文件系统与 JSON 响应开销，不代表 NAS。
+- 验证明细：[v0.8.7-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.7-preview.1-validation.md)。未接入真实百度凭证或云端操作；目标 NAS/真实浏览器仍待测试。
+
 ## v0.8.6-preview.1（恢复队列避免重复 JSON 语法扫描）
 
 - `OpenDownloader` 恢复时改用有界原始记录读取，再由原有 `json.Unmarshal` 完成语法和结构校验；`LoadEach` 与 `Store.Load` 的既有校验行为不变。新增损坏 JSON 的恢复拒绝/锁释放回归测试。

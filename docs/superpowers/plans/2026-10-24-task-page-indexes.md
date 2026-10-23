@@ -71,5 +71,5 @@
 
 - [x] **Step 1: 增加 benchmark**：覆盖 10,000/100,000 条历史的 name/size 冷建与热命中、progress 动态扫描、stats 命中；分开报告分配量。
 - [x] **Step 2: 验证**：Windows `go test ./...`、`go vet ./...`、WSL `go test -race -count=1 ./... && go vet ./...`。Node 与发布构建由打包门禁覆盖。
-- [ ] **Step 3: 打包并实际启动独立预览包**：核对三平台构建、payload 哈希、Linux AMD64 版本/revision、认证与分页、合成大队列、优雅关闭及端口释放。
-- [ ] **Step 4: 更新计划/进度与验证记录并提交**：明确冷建仍为 O(n log n)、进度排序仍为 O(n log k)，只报告实际测量边界。
+- [x] **Step 3: 打包并实际启动独立预览包**：核对三平台构建、payload 哈希、Linux AMD64 版本/revision、认证与分页、合成大队列、优雅关闭及端口释放。
+- [x] **Step 4: 更新计划/进度与验证记录并提交**：明确冷建仍为 O(n log n)、进度排序仍为 O(n log k)，只报告实际测量边界。
