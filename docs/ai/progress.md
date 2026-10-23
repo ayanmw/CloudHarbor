@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.1-preview.1（启动时逐条恢复任务）
+
+- 队列恢复改用 `taskstore.LoadEach`：逐条按文件名读取/校验、解码并反射为任务，避免启动期间同时保留整份原始 JSON map 和运行期任务映射；公开的 `Store.Load()` 兼容接口仍保留。
+- 新增 `LoadEach` 顺序、回调失败停止测试，以及无效记录拒绝启动并释放 writer lock 的下载器回归；新增 100/1,000/10,000 合成记录启动基准。多次单迭代耗时波动明显，不据此宣称启动加速；更新目标为降低临时原始记录映射的同时驻留。
+- 包内 Windows 实际恢复隔离的 10,000 条合成完成任务，约 7 秒启动并开始监听；认证状态接口正确返回 10,000 总数/完成数和 10 条当前页，匿名接口 401。此为当前 Windows 本地文件系统合成验收，不代表目标 NAS 性能。
+- Windows Go 1.27.1 全模块测试/vet、WSL Go 1.22.2 全模块 race/vet、Node WebUI/userscript 17 项、三平台交叉构建通过；ZIP 11 项 payload 哈希通过。
+- 源码 revision：`c217a9bf31c1d2518655a232443cf1176deb8c4d`；独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.1-preview.1.zip`，SHA256 `8e051715edbbca0edfbc06d9cef3a553cf81db9ecbc85ea235835bbd3cbba858`。验证明细：[v0.8.1-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.1-preview.1-validation.md)。
+
 ## v0.8.0-preview.1（任务历史分页）
 
 - 已完成任务列表服务端分页：两种管理页与 WebSocket 默认每页 100 项；文件名、进度、大小排序覆盖全队列，页面任务总数/状态数仍为全局统计。分页状态接口不再复制和序列化完整任务快照；健康检查也改为只统计任务状态。`/api/status` 无分页参数时保留原有完整列表响应。
