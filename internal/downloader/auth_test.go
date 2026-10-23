@@ -83,6 +83,55 @@ func TestExpiredAuthenticationPreventsSourcePostprocessing(t *testing.T) {
 	}
 }
 
+func TestLateRejectionOnlyResumesWithFreshMatchingNewCredential(t *testing.T) {
+	for _, scenario := range []string{"fresh", "no_scan", "changed_version", "expired", "same_token", "unmanaged", "missing_fingerprint"} {
+		t.Run(scenario, func(t *testing.T) {
+			d, _ := setup(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+			old := baiduapi.NewClient("old", "app")
+			link, err := old.GetDownloadLink(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, rejection := old.DownloadFileWithRange(link, 0)
+			if !baiduapi.IsAuthenticationError(rejection) {
+				t.Fatalf("fixture did not reject old request: %v", rejection)
+			}
+			if scenario != "unmanaged" {
+				client := baiduapi.NewClient("new", "app")
+				if scenario == "same_token" {
+					client = old
+				}
+				expiry := time.Now().Add(time.Hour)
+				if scenario == "expired" {
+					expiry = time.Now().Add(-time.Second)
+				}
+				d.SetAuthentication(client, true, expiry)
+			}
+			info := file(1, "a.txt", 6)
+			job := &queueJob{Version: 1, Info: info, Mode: DownloadModeKeep, Status: "downloading"}
+			d.queue.jobs[1] = job
+			if scenario != "no_scan" {
+				scanned := info
+				if scenario == "changed_version" {
+					scanned.Mtime++
+				}
+				d.queue.eligible[1] = scanned
+			}
+			if scenario == "missing_fingerprint" {
+				rejection = &baiduapi.APIError{Operation: "download", Status: http.StatusUnauthorized}
+			}
+			d.queue.complete(job, rejection)
+			want := "auth_wait"
+			if scenario == "fresh" {
+				want = "pending"
+			}
+			if job.Status != want || job.Failures != 0 {
+				t.Fatalf("incorrect admission after late rejection: status=%s failures=%d want=%s", job.Status, job.Failures, want)
+			}
+		})
+	}
+}
+
 func TestShutdownWaitsForBackgroundBeforeClosingStore(t *testing.T) {
 	original, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	d, err := OpenDownloader(original.cfg, original.getClient())

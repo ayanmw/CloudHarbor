@@ -359,6 +359,17 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 			job.Status = "failed"
 			if errors.Is(err, ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(err) {
 				job.Status = "auth_wait"
+				// Rotation may already have triggered a fresh scan before the old
+				// request returns 401. Do not lose that scan's admission and wait
+				// another full scan interval for an already verified new credential.
+				fingerprint, rejected := baiduapi.AuthenticationFingerprint(err)
+				q.owner.clientMutex.RLock()
+				if rejected && fingerprint != "" && q.owner.authManaged && q.owner.authenticationReadyLocked() &&
+					fingerprint != q.owner.client.Fingerprint() && q.eligible[id] == job.Info {
+					job.Status = "pending"
+					job.Error = ""
+				}
+				q.owner.clientMutex.RUnlock()
 			} else if q.stopping || errors.Is(err, context.Canceled) {
 				job.Status = "pending"
 			} else if baiduapi.IsRetryable(err) {

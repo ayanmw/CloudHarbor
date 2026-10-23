@@ -76,15 +76,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	dl.SetAuthentication(client, false, time.Time{})
-	auth, err = credentials.Open(dl, credentials.Options{AppKey: cfg.BaiduAppKey, SecretKey: cfg.BaiduSecretKey, AccessToken: cfg.AccessToken, RefreshToken: cfg.RefreshToken}, nil, func(update credentials.Update) {
-		dl.SetAuthentication(baiduapi.NewClient(update.AccessToken, cfg.BaiduAppKey), update.Ready, update.ExpiresAt)
-		if update.Ready {
-			select {
-			case scanRequests <- struct{}{}:
-			default:
-			}
-		}
-	})
+	auth, err = credentials.Open(dl, credentials.Options{AppKey: cfg.BaiduAppKey, SecretKey: cfg.BaiduSecretKey, AccessToken: cfg.AccessToken, RefreshToken: cfg.RefreshToken}, nil, applyCredentialUpdate)
 	if err != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		dl.Shutdown(shutdownCtx)
@@ -150,6 +142,16 @@ func main() {
 		log.Printf("Scanner shutdown incomplete")
 	}
 	log.Println("Service stopped")
+}
+
+func applyCredentialUpdate(update credentials.Update) {
+	dl.SetAuthentication(baiduapi.NewClient(update.AccessToken, cfg.BaiduAppKey), update.Ready, update.ExpiresAt)
+	if update.Ready {
+		select {
+		case scanRequests <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.Server) http.Handler {
