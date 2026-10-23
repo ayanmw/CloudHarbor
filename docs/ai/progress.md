@@ -4,13 +4,19 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
-## HTTPS 终止代理支持（准备 v0.7.0-preview.1）
+## v0.7.0-preview.1（HTTPS 终止代理支持测试包已交付）
+
+- 源码 revision：`eaf332c9cfe2ed77f79da6d3b02bbed499a72b81`；ZIP：发布根目录 v0.7.0-preview.1.zip，9,999,005 字节；SHA256 `19173bbc81dcfffd25d5e5950ee41bc05cca9d33c7c959969e3a2f78af3226c4`。
+- 干净提交 Node 14 项、Go 测试/vet、三平台构建通过；最终 ZIP 解压 11 项哈希、ARM64 ELF machine=183 和 Windows --version/revision 核对通过。
+- 仅在 verification 副本运行 Windows Start.ps1 -PublicOrigin 与 WSL Linux AMD64 start.sh+PUBLIC_ORIGIN。临时本机 TLS 代理逐一转发到实际包内进程，刻意改写后端 Host/伪造 Forwarded 头；认证 health/POST 200、WSS 状态帧、恶意 Origin HTTP/WSS 403、匿名 401 均通过。证书只在测试客户端信任，未安装到系统。
+- 两平台预置合成 sending/source_unknown 记录：隔离状态与精确大整数 ID 保留，can_cancel/can_retry=false，TLS 入口操作 409。配置固定 HTTPS 后，直接 HTTP 浏览器 Origin 403；无 Origin 的认证 CLI 仍可读状态。没有百度凭证，HTTPS 指向拒绝连接代理。
+- TLS 探针已退出；Windows Ctrl+C 后 Service stopped（外层 PTY exit 1），Linux 精确核对进程后 SIGTERM、Service stopped、exit 0，测试服务均已停止。正式包无验证状态，旧包不变；详情见发布目录 v0.7.0-preview.1-validation.md。
 
 - 新增可选 PUBLIC_ORIGIN 固定外部 HTTPS 来源。原行为保持为按实际 TLS/Host 校验；显式配置由 Gate 验证后放入私有 request context，外层 API 与 WebSocket 共享 CheckOrigin。拒绝 cross-site，认证仍必须，不读取 Forwarded/X-Forwarded-* 作为授权依据。
 - Config/main、原生 PS/sh、根/发布 Compose 和 env 示例接线。配置拒绝 HTTP、用户密码、路径前缀、query/fragment、非法/空端口；规范化默认 443、前导零端口，支持标准 IPv6 方括号。
 - 先 RED：HTTPS Origin 经 HTTP 后端被 403 拒绝。修复后真实本机 TLS 代理 → HTTP applicationHandler 的管理 POST 与 WSS 状态帧通过，代理刻意重写后端 Host；匿名 401、恶意 Origin 的 POST/WSS 403。TLS 客户端仅信任夹具证书，没有跳过校验。
 - 独立审查发现 :443 与浏览器 Origin 省略端口不一致，先 RED 后修，四项端口/IPv6 回归通过；复核无新确定重要问题。Windows UCRT/WSL 全模块 race/vet、Node 14 项、PS/sh 语法与 diff 检查通过；端口补项后两平台 main/management/config race 与全模块 vet 再通过。
-- 设计与步骤见 [reverse-proxy-plan.md](reverse-proxy-plan.md)，使用见 release/TESTING.md。未安装代理软件，未操作真实 NAS 或账号；本机协议验证不替代浏览器原生 Basic 框、厂商代理/证书部署验收。当前独立包仍为 v0.6.3-preview.1，尚不支持新配置。
+- 设计与步骤见 [reverse-proxy-plan.md](reverse-proxy-plan.md)，使用见 release/TESTING.md；新配置已纳入 v0.7.0-preview.1。未安装代理软件，未操作真实 NAS 或账号；本机协议验证不替代浏览器原生 Basic 框、厂商代理/证书部署验收。
 
 ## v0.6.3-preview.1（自动扫描与迟到认证拒绝恢复测试包已交付）
 
