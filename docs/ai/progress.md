@@ -4,6 +4,13 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## v0.6 实际浏览器补充验证（未改产品、未重新打包）
+
+- 从 verification 副本运行实际 v0.6 包，使用隔离合成任务、无百度凭证。内置浏览器直连无法操作 Basic 原生框，保留该未验收项。
+- 经临时本机 HTTP 转发入口，在只读资源请求中完成实际 Basic 挑战、清除拦截后，真实任务页通过浏览器认证缓存建立 WebSocket；状态帧显示 source_unknown 与禁止重发，实际截图保存在发布目录 v0.6.0-browser-reconnect.jpg。
+- 服务停止后显示断线/3 秒重连，服务重开后无需刷新自动恢复并保留隔离任务。轮询页、实际扫描提交、fragment 只导入和未授权手动预检拒绝也完成实际页面验证。
+- 详细条件、证据和边界见 [browser-validation.md](browser-validation.md)。不把受控 HTTP 入口证据扩大为原生登录框、TLS 反代或真实百度/NAS 已验收；所有测试服务已停止，原 ZIP 不变。
+
 ## v0.6.0-preview.1（源后处理完成与重放保护测试包已交付）
 
 - 源码 revision：`62586afd2809e1b54d5072a95eed783224830dad`；ZIP：发布根目录 v0.6.0-preview.1.zip，9,991,187 字节，SHA256 `b2c5fdc8d4b212f86c02b2fc6233fcd6cab0dc417b801cf4fcc5ea275a8b5a88`。
