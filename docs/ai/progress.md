@@ -25,6 +25,12 @@
 - 修复后实际构建/运行源码镜像：认证 health=200、匿名 health=401，版本与完整 revision 匹配；日志确认容器监听 `0.0.0.0:8080`。Compose 配置解析也断言容器监听与宿主回环发布地址；测试容器/镜像已清理。没有配置百度凭证或访问真实账号。
 - revision：`93b5f4805b1c0870250c514f0e7dce26eb084b03`。该源码 Dockerfile 与 README 修复尚未进入独立预览包；当前 v0.7.3-preview.1 不变，后续合并应用功能后再打新包。厂商 NAS 网络/防火墙验收仍未进行。
 
+## 源码 Compose 与部署说明对齐
+
+- revision：`2ae69e40cb0d96b8e3321571afd752577d743a7f`。源码 Compose 现读取 `HOST_PORT`、`QUEUE_DIR`、`SCAN_INTERVAL`，`.env.example` 不再列看似可配置但实际被 Compose 忽略的本地目录/服务端口/监听地址；README 更新网页设备授权、Compose 构建和 keep/delete 说明。
+- Compose 使用 `.env.example` 展开验证默认远端队列、30 秒扫描、宿主 `127.0.0.1:8080` 通过；注入自定义队列、77 秒间隔、19190 端口及 build metadata 的展开断言也通过。`git diff --check` 通过。
+- 移除了旧 Kubernetes `LoadBalancer` 样板：该示例会公开管理服务，并把远端队列路径误作为容器本地卷。README 现明确 Kubernetes manifest、卷权限和集群网络未经维护/验证。未改变当前 v0.7.3-preview.1 包。
+
 ## v0.7.2-preview.1（下载 Token 查询参数修复测试包已交付）
 
 - 源码 revision：`855ab0a8b4cf427e4c417f314db69e5f5b3de59a`；包 `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.2-preview.1.zip`，10,000,484 字节；SHA256 `e3dd0e74c6e8af62d0f9e03ae2a20c93eb69cff8dbf30d9a4762234a3a19e9a3`。
