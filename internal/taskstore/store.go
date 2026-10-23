@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -188,10 +189,16 @@ func (s *Store) loadEach(visit func(int64, json.RawMessage) error, validateJSON 
 	if s.closed {
 		return os.ErrClosed
 	}
-	entries, err := os.ReadDir(filepath.Join(s.dir, "jobs"))
+	jobsDir, err := openJobDirectory(filepath.Join(s.dir, "jobs"))
 	if err != nil {
 		return err
 	}
+	defer jobsDir.Close()
+	entries, err := jobsDir.ReadDir(-1)
+	if err != nil {
+		return err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	for _, entry := range entries {
 		if strings.HasSuffix(entry.Name(), ".tmp") {
 			continue
@@ -203,8 +210,7 @@ func (s *Store) loadEach(visit func(int64, json.RawMessage) error, validateJSON 
 		if err != nil || id <= 0 || strconv.FormatInt(id, 10)+".json" != entry.Name() {
 			return fmt.Errorf("invalid job filename: %s", entry.Name())
 		}
-		name := filepath.Join(s.dir, "jobs", entry.Name())
-		f, err := openJobFile(name)
+		f, err := openJobFileAt(jobsDir, entry.Name())
 		if err != nil {
 			return err
 		}

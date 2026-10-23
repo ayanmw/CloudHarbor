@@ -21,7 +21,12 @@ func TestOpenJobFileRejectsSymlink(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	file, err := openJobFile(link)
+	jobsDir, err := openJobDirectory(filepath.Dir(link))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jobsDir.Close()
+	file, err := openJobFileAt(jobsDir, filepath.Base(link))
 	if err == nil {
 		file.Close()
 		t.Fatal("opened a symlinked job record")
@@ -29,6 +34,22 @@ func TestOpenJobFileRejectsSymlink(t *testing.T) {
 	got, err := os.ReadFile(target)
 	if err != nil || string(got) != string(want) {
 		t.Fatalf("symlink target changed: data=%q err=%v", got, err)
+	}
+}
+
+func TestOpenJobDirectoryRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "real-jobs")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "jobs-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if dir, err := openJobDirectory(link); err == nil {
+		dir.Close()
+		t.Fatal("opened a symlinked jobs directory")
 	}
 }
 
@@ -83,7 +104,12 @@ func BenchmarkOpenJobFile(b *testing.B) {
 	if err := os.WriteFile(name, []byte(`{"version":1,"status":"done"}`), 0600); err != nil {
 		b.Fatal(err)
 	}
-	for _, mode := range []string{"lstat_then_open", "open_nofollow"} {
+	jobsDir, err := openJobDirectory(filepath.Dir(name))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer jobsDir.Close()
+	for _, mode := range []string{"lstat_then_open", "open_nofollow", "openat_nofollow"} {
 		b.Run(mode, func(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -95,7 +121,11 @@ func BenchmarkOpenJobFile(b *testing.B) {
 						f, err = os.Open(name)
 					}
 				} else {
-					f, err = openJobFile(name)
+					if mode == "openat_nofollow" {
+						f, err = openJobFileAt(jobsDir, filepath.Base(name))
+					} else {
+						f, err = openJobFile(name)
+					}
 				}
 				if err != nil {
 					b.Fatal(err)
