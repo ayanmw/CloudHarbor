@@ -4,14 +4,19 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
-## 自动扫描与迟到认证拒绝恢复修复（准备 v0.6.3-preview.1）
+## v0.6.3-preview.1（自动扫描与迟到认证拒绝恢复测试包已交付）
+
+- 源码 revision：`5f0da58ba09c940e9933caf3644d6c031f1bc61c`；ZIP：发布根目录 v0.6.3-preview.1.zip，9,992,945 字节；SHA256 `b68fb9c02f7a00331892bae3c379209fa73039af831a9db0221db69ad64dd96b`。
+- 干净提交 Node 14 项、Go 测试/vet 和三平台构建通过；最终 ZIP 解压 11 项哈希及 ARM64 ELF machine=183 检查通过。Windows/Linux AMD64 包内脚本运行，版本/revision/等待授权正确，认证页面与状态可读，匿名 401。
+- 两平台验证副本预置合成 sending/source_unknown、大整数 ID 记录；恢复后仍显示 source_unknown=1，任务 ID 精确，can_retry/can_cancel=false，操作均 409。无真实百度凭证，HTTPS 指向拒绝连接代理。正式包与旧版本不含本轮验证状态。
+- Windows Ctrl+C 后 Service stopped（外层 PTY exit 1）；Linux 精确核对进程后 SIGTERM、Service stopped、exit 0，服务均已停止。明细见发布目录 v0.6.3-preview.1-validation.md；原 main 工作区干净，无推送或部署。
 
 - 主程序实际 applyCredentialUpdate 回调、runScanner、后台 Manager.Run 与下载器集成发现时序问题：轮换成功并完成新扫描后，旧下载才返回 401，complete 又把任务设为 auth_wait；续期扫描通知已被消费，需要等下次定时扫描。
 - 先 RED 后修复：只在拒绝带非空旧凭证指纹、当前 managed 新凭证有效、该根任务拥有完全匹配的新扫描资格时恢复 pending；否则保持 auth_wait，不消耗失败预算。同一凭证再次拒绝不会形成无预算重试。
 - 主程序原回调提取为共享 applyCredentialUpdate，main 与测试使用相同函数，逻辑不变。扫描周期设为 3600 秒，两种认证时序均无需手动扫描即可在测试限时内完成，新 Token 下载精确 abcdef、源操作一次；Shutdown 后管理器 closed，同目录可重新打开证明锁释放。
 - 七项准入用例覆盖新扫描匹配、无扫描、版本变化、已过期、相同 Token、非托管与缺失指纹；后六项仍等待。既有 unknown/cancel 处理优先级不变。
 - 独立审查指出扫描时间戳可能误认旧扫描，已改为在新 Token 的 list 请求处设可取消 barrier，等其实际结果发布再返回旧 401；移除修复重新 RED、恢复后 GREEN。两平台全模块 race/vet、Node 14 项通过；最终测试同步与退出补项后两平台 main/downloader race/vet 再通过。
-- 集成测试不含进程 main() 的监听/信号路径或真实百度 OAuth；文件流为本机 HTTP，其他百度接口是替身。准备独立 v0.6.3-preview.1 包验证，旧包保持不变。没有推送/部署或真实网盘操作。
+- 集成测试不含进程 main() 的监听/信号路径或真实百度 OAuth；文件流为本机 HTTP，其他百度接口是替身。包内进程启动/停止证据见本节交付记录，不据此扩大为真实凭证续期验收。旧包保持不变。
 
 ## 凭证轮换与下载并发集成验证（未改产品、未重新打包）
 
