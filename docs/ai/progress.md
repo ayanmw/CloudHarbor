@@ -4,14 +4,18 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
-## D3 油猴衔接已实现（准备 v0.5.0-preview.1）
+## v0.5.0-preview.1（油猴选中项衔接已交付本地测试包）
+
+- 源码 revision：`f5abf5500c6bdf2a7076113de09cff057fc0a70d`；ZIP 位于发布根目录 v0.5.0-preview.1.zip，9,982,087 字节，SHA256 `db5b7a164a41e60c4ea85964404e2d783f0d829024e2992c7cd8328f5ddeefaf`。
+- 从干净提交打包 Node/Go/vet 门禁、三平台构建、解压 11 项哈希及 ARM64 架构检查均通过；油猴已纳入包及清单。
+- Windows 与 Linux AMD64 包内启动、管理认证及新版嵌入 JS、未授权 cloud 409 验证通过。Windows Ctrl+C 日志停止（外层 PTY exit 1），Linux 精确核对进程后 SIGTERM、exit 0。验证目录与正式包隔离，所有服务已关闭；详见发布目录 v0.5.0-preview.1-validation.md。
 
 - 原占位脚本已替换：从旧 context/已知 Vue selectedList 提取明确选中路径，多来源不一致/空选/无路径失败，不回退 FILEINFO；沙箱从 unsafeWindow.document 读取页面 Vue 对象。
 - GM 仅存管理地址，默认 localhost；拒绝远端 HTTP、URL 凭证和附加参数。点击先展示管理地址/路径，再用 fragment 交给管理页；没有 API、Cookie、Token 或管理员密码桥接。
 - 管理页在 API 请求前清除并解析 fragment，只填输入并提示核对账号，仍需手动预检/勾选/确认；无效载荷和无法清除时不导入。
 - Windows/WSL Go 全模块测试和 vet、两平台 Node 13 项、独立只读 review、diff 检查通过。内置浏览器隔离夹具验证导入/URL 清除/账号提示/未自动预检；夹具服务已停止。
 - 计划及兼容边界见 [userscript-plan.md](userscript-plan.md)。真实百度网页、真实油猴沙箱及所有 SPA 视图未验收。unknown 目录隔离规则不变；异步完成查询仍待可靠契约。
-- 准备新独立版本 v0.5.0-preview.1，油猴脚本纳入包及哈希清单；已有 v0.4.0-preview.1 不变。
+- 已交付新独立版本 v0.5.0-preview.1；已有 v0.4.0-preview.1 不变。继续推进真实适配证据与可靠异步完成查询，不据本轮夹具宣称整项目完成。
 
 ## v0.4.0-preview.1（管理页入队与任务操作已交付本地测试包）
 
