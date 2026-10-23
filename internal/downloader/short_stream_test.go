@@ -97,3 +97,72 @@ func TestChunkedShortStreamBackoffResumesAndHonorsBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestChunkedShortStreamRestartRequiresScanAndKeepsBudget(t *testing.T) {
+	var requests atomic.Int32
+	ranges := make(chan string, 3)
+	original, p := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		n := requests.Add(1)
+		ranges <- r.Header.Get("Range")
+		if n == 1 {
+			w.(http.Flusher).Flush()
+			io.WriteString(w, "abc")
+			return
+		}
+		w.Header().Set("Content-Range", "bytes 3-5/6")
+		w.WriteHeader(http.StatusPartialContent)
+		w.(http.Flusher).Flush() // Empty suffix: the persisted retry budget must exhaust.
+	})
+	original.cfg.MaxRetries = 1
+	original.cfg.RetryBackoffSeconds = 1
+	p.lists["/queue"] = []baiduapi.FileInfo{file(1, "a.txt", 6)}
+	d, err := OpenDownloader(original.cfg, original.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { shutdown(t, d) }()
+	if err = d.ScanAndDownload(); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, d, 1, "retry_wait")
+	before := d.GetTaskByFsID(1)
+	shutdown(t, d)
+	reopened, err := OpenDownloader(original.cfg, original.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d = reopened
+	after := d.GetTaskByFsID(1)
+	if after.Status != "retry_wait" || after.Attempts != before.Attempts || !after.NextAttempt.Equal(before.NextAttempt) {
+		t.Fatalf("restart lost pending retry: before=%+v after=%+v", before, after)
+	}
+	partials, err := filepath.Glob(filepath.Join(d.cfg.LocalDownDir, stateDirectory, "*", "content.part"))
+	if err != nil || len(partials) != 1 {
+		t.Fatalf("restart lost bound partial: %v %v", partials, err)
+	}
+	partial, err := os.ReadFile(partials[0])
+	if err != nil || string(partial) != "abc" {
+		t.Fatalf("restart changed partial content: %q %v", partial, err)
+	}
+	// Let the persisted deadline pass. Restart alone must not authorize a request.
+	if delay := time.Until(after.NextAttempt) + 150*time.Millisecond; delay > 0 {
+		time.Sleep(delay)
+	}
+	if requests.Load() != 1 {
+		t.Fatal("restart retried without a fresh scan")
+	}
+	if err = d.ScanAndDownload(); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, d, 1, "failed")
+	shutdown(t, d)
+	if requests.Load() != 2 || <-ranges != "" || <-ranges != "bytes=3-" {
+		t.Fatal("restart discarded partial or reset the retry budget")
+	}
+	if len(p.actions) != 0 {
+		t.Fatalf("incomplete stream touched source across restart: %v", p.actions)
+	}
+	if _, err = os.Stat(filepath.Join(d.cfg.LocalDownDir, "a.txt")); !os.IsNotExist(err) {
+		t.Fatalf("restart published an incomplete file: %v", err)
+	}
+}
