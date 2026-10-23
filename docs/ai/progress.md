@@ -1,5 +1,14 @@
 # 持续优化进度
 
+## v0.8.14-preview.1（加速 Windows 队列恢复并保持重解析点检查）
+
+- Windows 每条任务记录恢复改为通过 `FILE_FLAG_OPEN_REPARSE_POINT` 单次打开，再从已打开句柄检测符号链接；不先 `Lstat` 再 `Open`，缩短路径查找并消除两步之间替换链接的竞态窗口。其他平台行为不变。
+- Windows 单文件 A/B（5 次、每次 5,000 次）中位数：旧 `Lstat + Open` 约 522 μs/次，新句柄检查约 191 μs/次，约减少 63%。完整 10,000 条 `OpenDownloader` 三次为 2.764/2.726/2.758 s，对 v0.8.13 一次 4.581 s 样本约快 40%。完整 100,000 条三次为 36.01/45.83/36.79 s；对 v0.8.13 一次 122.34 s 样本约快 70%，但 Windows 文件系统波动大、基线只有单次，数字只代表本机合成趋势。100k `-count=3` 整轮含临时文件夹具和清理约 253 s。
+- 符号链接检测在 Windows 实际以已打开句柄 `Stat()` 判定；当前 Windows 用户没有创建 symlink 的权限，因此 Windows symlink 回归测试被 Go test 明确 skip。Windows 常规文件与任务存储全套测试通过，WSL Linux `openat|O_NOFOLLOW` 行为及全套 race 测试通过。真实 Windows 重解析点创建环境仍需补验。
+- 源码 revision `23dd6efcb3b464bb4e4a9eed7c5ca0a5c644d256`。独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.14-preview.1.zip`，10,068,020 字节，SHA256 `FCE1A7119B84B43A776B3631D7909783479F528C11BA84827CF135357AE1CB4E`；11 个 payload 哈希全匹配。
+- Node 17 项、Windows 全模块 Go test/vet、三平台构建、WSL 全模块 race/vet 通过。Windows/Linux 包版本信息正确；Linux AMD64 包内启动、认证 health、匿名 401、SIGTERM 退出、ARM64 ELF 检查通过。没有真实百度凭证或云端操作。
+- 验证明细：[v0.8.14-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.14-preview.1-validation.md)。真实 NAS、目标存储、真实百度及长时间运行仍待验收。
+
 ## v0.8.13-preview.1（修复队列 Load 的记录缓冲区别名）
 
 - 修复 `Store.Load()` 在 `LoadEach` 复用缓冲区后，把多条记录保存成同一底层字节切片的问题。先添加 RED 回归：三条记录加载后，ID 1 实际读成 ID 3；逐条复制后通过。下载器启动仍使用 `LoadEachRaw` 逐条解码，不增加启动时全量 map。
