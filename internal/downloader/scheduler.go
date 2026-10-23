@@ -49,6 +49,22 @@ type scheduler struct {
 	err            error
 	closeErr       error
 	shutdownOnce   sync.Once
+	statsCache     taskStatsCache
+	nameIndex      taskOrderIndex
+	sizeIndex      taskOrderIndex
+}
+
+type taskStatsCache struct {
+	generation uint64
+	total      int
+	counts     map[string]int
+	valid      bool
+}
+
+type taskOrderIndex struct {
+	ids        []int64
+	generation uint64
+	ready      bool
 }
 
 func newScheduler(d *Downloader) *scheduler {
@@ -132,6 +148,7 @@ func validJobStatus(status string) bool {
 	return false
 }
 func (q *scheduler) persist(job *queueJob) error {
+	q.owner.taskStatsGeneration.Add(1)
 	job.Error = errorSummary(job.Error)
 	job.Updated = time.Now()
 	if q.store == nil {
@@ -252,6 +269,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 			return err
 		}
 		q.jobs[f.FsID] = job
+		q.owner.taskCatalogGeneration.Add(1)
 		q.reflect(job)
 	}
 	q.eligible = eligible

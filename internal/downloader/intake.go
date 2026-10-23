@@ -212,6 +212,7 @@ func (d *Downloader) registerIntakeItem(r intakeRecord, item IntakeItem, destina
 		return err
 	}
 	q.jobs[destination.FsID] = job
+	d.taskCatalogGeneration.Add(1)
 	q.reflect(job)
 	return nil
 }

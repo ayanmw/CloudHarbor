@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
@@ -58,28 +59,30 @@ const (
 )
 
 type Downloader struct {
-	ctx           context.Context
-	cancel        context.CancelFunc
-	queue         *scheduler
-	cfg           *config.Config
-	client        *baiduapi.Client
-	clientMutex   sync.RWMutex
-	authManaged   bool
-	authReady     bool
-	authExpiry    time.Time
-	authEpoch     uint64
-	onRejected    func(string)
-	tasks         map[int64]*Task
-	taskMutex     sync.RWMutex
-	scanMutex     sync.Mutex
-	cloudMutex    sync.RWMutex
-	intakeMutex   sync.RWMutex
-	intakeBoot    string
-	intakeJournal intakeJournal
-	intakes       map[string]intakeRecord
-	inFlight      map[int64]bool
-	modeMutex     sync.RWMutex
-	downloadMode  DownloadMode
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	queue                 *scheduler
+	cfg                   *config.Config
+	client                *baiduapi.Client
+	clientMutex           sync.RWMutex
+	authManaged           bool
+	authReady             bool
+	authExpiry            time.Time
+	authEpoch             uint64
+	onRejected            func(string)
+	tasks                 map[int64]*Task
+	taskMutex             sync.RWMutex
+	scanMutex             sync.Mutex
+	cloudMutex            sync.RWMutex
+	intakeMutex           sync.RWMutex
+	intakeBoot            string
+	intakeJournal         intakeJournal
+	intakes               map[string]intakeRecord
+	inFlight              map[int64]bool
+	modeMutex             sync.RWMutex
+	downloadMode          DownloadMode
+	taskCatalogGeneration atomic.Uint64
+	taskStatsGeneration   atomic.Uint64
 }
 
 func NewDownloader(cfg *config.Config, client *baiduapi.Client) *Downloader {
@@ -155,13 +158,22 @@ func (d *Downloader) beginTask(info baiduapi.FileInfo, local string) {
 	d.taskMutex.Lock()
 	defer d.taskMutex.Unlock()
 	task := &Task{FileInfo: info, LocalPath: local, Status: "downloading", StartTime: time.Now(), LastProgressTime: time.Now(), ResumeSupported: true, MD5: info.MD5}
+	catalogChanged, statsChanged := true, true
 	if old := d.tasks[info.FsID]; old != nil {
+		catalogChanged = !old.Root || old.FileInfo != info
+		statsChanged = !old.Root && old.Status != task.Status
 		task.Attempts = old.Attempts
 		task.NextAttempt = old.NextAttempt
 		task.Root = old.Root
 		task.DownloadMode = old.DownloadMode
 	}
 	d.tasks[info.FsID] = task
+	if catalogChanged {
+		d.taskCatalogGeneration.Add(1)
+	}
+	if statsChanged {
+		d.taskStatsGeneration.Add(1)
+	}
 }
 func (d *Downloader) updateTaskStatus(id int64, status, message string) {
 	d.taskMutex.Lock()
@@ -171,6 +183,9 @@ func (d *Downloader) updateTaskStatus(id int64, status, message string) {
 		// processing. Local publication alone must not briefly display done.
 		if d.inFlight[id] {
 			return
+		}
+		if task.Status != status {
+			d.taskStatsGeneration.Add(1)
 		}
 		task.Status = status
 		task.Error = errorSummary(message)
@@ -416,23 +431,23 @@ func (d *Downloader) GetTaskPage(offset, limit int, sortBy string) TaskPage {
 	d.taskMutex.RLock()
 	defer d.taskMutex.RUnlock()
 
-	page := TaskPage{Offset: offset, Limit: limit, Counts: make(map[string]int)}
-	page.Total = len(q.jobs)
-	for _, job := range q.jobs {
-		page.Counts[job.Status]++
-	}
-	for id := range d.tasks {
-		if q.jobs[id] == nil {
-			page.Total++
-		}
-	}
-	for id, task := range d.tasks {
-		if q.jobs[id] == nil {
-			page.Counts[task.Status]++
-		}
-	}
+	total, counts := d.taskStatsLocked()
+	page := TaskPage{Offset: offset, Limit: limit, Total: total, Counts: counts}
 	page.HasMore = offset < page.Total && limit < page.Total-offset
 	if limit == 0 || offset >= page.Total || page.Total == 0 {
+		return page
+	}
+	if sortBy == "name" || sortBy == "size" {
+		ids := d.taskOrderIDsLocked(sortBy, page.Total)
+		end := len(ids)
+		if limit < end-offset {
+			end = offset + limit
+		}
+		page.Tasks = make([]*Task, 0, end-offset)
+		for _, id := range ids[offset:end] {
+			candidate := taskCandidate{job: q.jobs[id], live: d.tasks[id]}
+			page.Tasks = append(page.Tasks, d.taskWithActionsLocked(id, candidate.taskView(d)))
+		}
 		return page
 	}
 
@@ -481,6 +496,61 @@ func (d *Downloader) GetTaskPage(offset, limit int, sortBy string) TaskPage {
 		page.Tasks = append(page.Tasks, d.taskWithActionsLocked(candidate.info().FsID, candidate.taskView(d)))
 	}
 	return page
+}
+
+type taskOrderKey struct {
+	id   int64
+	name string
+	size int64
+}
+
+// taskOrderIDsLocked lazily sorts stable task fields and caches only FsIDs.
+// The caller holds queue.mu and taskMutex, so the IDs and their keys are a
+// coherent snapshot and page views can be read safely after the sort.
+func (d *Downloader) taskOrderIDsLocked(sortBy string, capacity int) []int64 {
+	q := d.queue
+	index := &q.nameIndex
+	if sortBy == "size" {
+		index = &q.sizeIndex
+	}
+	generation := d.taskCatalogGeneration.Load()
+	if index.ready && index.generation == generation {
+		return index.ids
+	}
+	keys := make([]taskOrderKey, 0, capacity)
+	appendKey := func(id int64, info *baiduapi.FileInfo) {
+		name := info.Path
+		if name == "" {
+			name = info.ServerFilename
+		}
+		keys = append(keys, taskOrderKey{id: id, name: strings.ToLower(name), size: info.Size})
+	}
+	for id, job := range q.jobs {
+		appendKey(id, &job.Info)
+	}
+	for id, task := range d.tasks {
+		if q.jobs[id] == nil {
+			appendKey(id, &task.FileInfo)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if sortBy == "size" && a.size != b.size {
+			return a.size > b.size
+		}
+		if sortBy == "name" && a.name != b.name {
+			return a.name < b.name
+		}
+		return a.id < b.id
+	})
+	ids := make([]int64, len(keys))
+	for i, key := range keys {
+		ids[i] = key.id
+	}
+	index.ids = ids
+	index.generation = generation
+	index.ready = true
+	return index.ids
 }
 
 type taskCandidate struct {
@@ -598,18 +668,33 @@ func (d *Downloader) GetTaskStats() (int, map[string]int) {
 	defer d.queue.mu.Unlock()
 	d.taskMutex.RLock()
 	defer d.taskMutex.RUnlock()
-	counts := make(map[string]int)
-	total := len(d.queue.jobs)
-	for _, job := range d.queue.jobs {
-		counts[job.Status]++
-	}
-	for id, task := range d.tasks {
-		if d.queue.jobs[id] == nil {
-			total++
-			counts[task.Status]++
+	return d.taskStatsLocked()
+}
+
+// taskStatsLocked caches the whole-queue status summary while the queue and
+// task locks are held in their established order. Return a copy so callers
+// cannot mutate the cached counts.
+func (d *Downloader) taskStatsLocked() (int, map[string]int) {
+	q := d.queue
+	generation := d.taskStatsGeneration.Load()
+	if !q.statsCache.valid || q.statsCache.generation != generation {
+		cache := taskStatsCache{generation: generation, total: len(q.jobs), counts: make(map[string]int), valid: true}
+		for _, job := range q.jobs {
+			cache.counts[job.Status]++
 		}
+		for id, task := range d.tasks {
+			if q.jobs[id] == nil {
+				cache.total++
+				cache.counts[task.Status]++
+			}
+		}
+		q.statsCache = cache
 	}
-	return total, counts
+	counts := make(map[string]int, len(q.statsCache.counts))
+	for status, count := range q.statsCache.counts {
+		counts[status] = count
+	}
+	return q.statsCache.total, counts
 }
 func (d *Downloader) GetTaskByFsID(id int64) *Task {
 	d.queue.mu.Lock()
