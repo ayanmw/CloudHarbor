@@ -4,6 +4,13 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## 百度业务错误恢复源码检查点（未打包）
+
+- 核对官方 SDK 后补 20016/20017/31045 的带指纹认证分类、31034 的现有有界重试；任务层验证 auth_wait 不耗预算、限流退避后恢复一次完成。
+- 区分业务 errno 与 OAuth error_code 的 111：业务运行状态不再误撤销凭证；Move 无 taskid 但出现运行迹象也按异步未知隔离，文件/目录均不登记、不重发、不人工放行。
+- 先 RED 后 GREEN，独立 review 发现的 Rename/Delete 单项命名空间遗漏已修并复核。两平台全模块 race/vet 通过；最后补项后两平台 baiduapi/downloader race、全模块 vet 再通过，Node 13 项和 diff 检查通过。
+- 细节与后续：[provider-error-recovery.md](provider-error-recovery.md)。下一步专门核查源 Rename/Delete 的严格完成响应和 POST 重放边界；本轮分类通过不等于该契约完成。无真实账号操作，未发新包，当前独立测试版仍为 v0.5.0-preview.1。
+
 ## v0.5.0-preview.1（油猴选中项衔接已交付本地测试包）
 
 - 源码 revision：`f5abf5500c6bdf2a7076113de09cff057fc0a70d`；ZIP 位于发布根目录 v0.5.0-preview.1.zip，9,982,087 字节，SHA256 `db5b7a164a41e60c4ea85964404e2d783f0d829024e2992c7cd8328f5ddeefaf`。

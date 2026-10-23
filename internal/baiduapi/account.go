@@ -19,8 +19,12 @@ func AuthenticationFingerprint(err error) (string, bool) {
 	if err == nil {
 		return "", false
 	}
-	if api, ok := err.(*APIError); ok && (api.Status == http.StatusUnauthorized || api.Code == 110 || api.Code == 111) {
-		return api.tokenFingerprint, true
+	if api, ok := err.(*APIError); ok {
+		// Token codes are declared by the current official SDK. Keep ambiguous
+		// access-denied (-6) separate: it can be an interface permission issue.
+		if api.Status == http.StatusUnauthorized || api.Code == 20016 || api.Code == 20017 || api.Code == 31045 || api.Code == 110 || (!api.businessErrno && api.Code == 111) {
+			return api.tokenFingerprint, true
+		}
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		for _, child := range joined.Unwrap() {
@@ -69,7 +73,7 @@ func (c *Client) UserID() (string, error) {
 		return "", fmt.Errorf("uinfo response missing errno")
 	}
 	if *result.Errno != 0 {
-		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "uinfo", Status: resp.StatusCode, Code: *result.Errno}
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "uinfo", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
 	}
 	id, err := result.UK.Int64()
 	if err != nil || id <= 0 {

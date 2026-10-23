@@ -61,6 +61,9 @@ type APIError struct {
 	Status           int
 	Code             int
 	tokenFingerprint string
+	// Preserve the JSON namespace: xpan errno=111 means async work is running,
+	// whereas OAuth error_code=111 means the access token has expired.
+	businessErrno bool
 }
 
 // Fingerprint identifies the credential used by a request without exposing it.
@@ -84,7 +87,7 @@ func IsRetryable(err error) bool {
 	}
 	var api *APIError
 	if errors.As(err, &api) {
-		return api.Status == 429 || api.Status >= 500
+		return api.Status == 429 || api.Status >= 500 || api.Code == 31034
 	}
 	var network net.Error
 	return errors.As(err, &network)
@@ -157,7 +160,7 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 			return nil, fmt.Errorf("目录响应缺失 errno")
 		}
 		if *result.Errno != 0 {
-			return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: *result.Errno}
+			return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
 		}
 		if len(result.List) == 0 || result.List[0] != '[' {
 			return nil, fmt.Errorf("目录响应缺失文件列表")
@@ -226,7 +229,7 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 	}
 
 	if result.Errno != 0 {
-		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.Errno}
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.Errno, businessErrno: true}
 	}
 
 	if len(result.List) == 0 || result.List[0].Dlink == "" {
@@ -396,11 +399,11 @@ func (c *Client) RenameFile(path, newName string) error {
 		return fmt.Errorf("重命名响应缺失 errno")
 	}
 	if *result.Errno != 0 {
-		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "rename", Status: resp.StatusCode, Code: *result.Errno}
+		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "rename", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
 	}
 	for _, item := range result.Info {
 		if item.Errno != 0 {
-			return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "rename", Status: resp.StatusCode, Code: item.Errno}
+			return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "rename", Status: resp.StatusCode, Code: item.Errno, businessErrno: true}
 		}
 	}
 
@@ -465,11 +468,11 @@ func (c *Client) DeleteFile(path string) error {
 		return fmt.Errorf("删除响应缺失 errno")
 	}
 	if *result.Errno != 0 {
-		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "delete", Status: resp.StatusCode, Code: *result.Errno}
+		return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "delete", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
 	}
 	for _, item := range result.Info {
 		if item.Errno != 0 {
-			return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "delete", Status: resp.StatusCode, Code: item.Errno}
+			return &APIError{tokenFingerprint: c.Fingerprint(), Operation: "delete", Status: resp.StatusCode, Code: item.Errno, businessErrno: true}
 		}
 	}
 

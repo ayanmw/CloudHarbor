@@ -72,6 +72,16 @@ func (c *Client) MoveFile(source, destination, name string) error {
 		}
 		return &AsyncMoveError{TaskID: id}
 	}
+	// As with taskid above, running work takes precedence over accompanying
+	// failure fields: we cannot prove that the mutation did not happen.
+	if result.Errno != nil && *result.Errno == 111 {
+		return &AsyncMoveError{}
+	}
+	for _, item := range result.Info {
+		if item.Errno != nil && *item.Errno == 111 {
+			return &AsyncMoveError{}
+		}
+	}
 	if result.ErrorCode != 0 {
 		return apiError(result.ErrorCode)
 	}
@@ -79,13 +89,13 @@ func (c *Client) MoveFile(source, destination, name string) error {
 		return ErrMoveUnconfirmed
 	}
 	if *result.Errno != 0 {
-		return apiError(*result.Errno)
+		return &APIError{Operation: "move", Status: resp.StatusCode, Code: *result.Errno, tokenFingerprint: c.Fingerprint(), businessErrno: true}
 	}
 	if len(result.Info) != 1 || result.Info[0].Errno == nil {
 		return ErrMoveUnconfirmed
 	}
 	if *result.Info[0].Errno != 0 {
-		return apiError(*result.Info[0].Errno)
+		return &APIError{Operation: "move", Status: resp.StatusCode, Code: *result.Info[0].Errno, tokenFingerprint: c.Fingerprint(), businessErrno: true}
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -66,6 +67,42 @@ func intakeFixture(t *testing.T) (*Downloader, *provider, *atomic.Int32, *atomic
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"errno":0,"info":[{"errno":0}]}`))}, nil
 	})
 	return d, p, calls, unavailable, loseReply
+}
+
+func TestRunningMoveWithoutTaskIDStaysQuarantinedAndDoesNotRejectToken(t *testing.T) {
+	for _, directory := range []int{0, 1} {
+		t.Run(fmt.Sprint(directory), func(t *testing.T) {
+			d, p, _, _, _ := intakeFixture(t)
+			p.lists["/source"][0].IsDir = directory
+			base := http.DefaultTransport
+			var requests int
+			http.DefaultTransport = transportFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Query().Get("opera") != "move" {
+					return base.RoundTrip(r)
+				}
+				requests++
+				// An async root can already be visible while the operation runs.
+				moved := p.lists["/source"][0]
+				moved.Path = "/queue/a.txt"
+				p.lists["/source"] = []baiduapi.FileInfo{}
+				p.lists["/queue"] = []baiduapi.FileInfo{moved}
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"errno":111}`))}, nil
+			})
+			preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, action := range []func(context.Context, string) (Intake, error){d.CommitIntake, d.CommitIntake, d.RecheckIntake} {
+				result, err := action(context.Background(), preview.ID)
+				if err != nil || result.Items[0].State != "unknown" || result.Items[0].Error != "async_move_unconfirmed" {
+					t.Fatalf("running move admitted: %+v %v", result, err)
+				}
+			}
+			if requests != 1 || len(d.GetTasks()) != 0 || !d.AuthenticationReady() {
+				t.Fatal("running work replayed, admitted, or rejected credential")
+			}
+		})
+	}
 }
 
 func TestIntakePreviewCommitIsSingleUseAndFreezesMode(t *testing.T) {
