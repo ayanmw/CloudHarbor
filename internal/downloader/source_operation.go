@@ -17,6 +17,8 @@ func validSourceRecord(job *queueJob) bool {
 		return job.Status != "source_unknown"
 	case "sending", "unknown":
 		return job.Status == "source_unknown"
+	case "changed":
+		return job.Status == "failed"
 	case "confirmed":
 		return job.Status == "done"
 	}
@@ -76,6 +78,10 @@ func (d *Downloader) finishSourceOperation(info baiduapi.FileInfo, operationErr 
 		return ErrTaskConflict
 	}
 	switch {
+	case errors.Is(operationErr, ErrSourceIdentityChanged):
+		job.SourceState = "changed"
+		job.Status = "failed"
+		job.Error = operationErr.Error()
 	case operationErr == nil:
 		job.SourceState = "confirmed"
 		job.Status = "done"

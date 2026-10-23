@@ -1,5 +1,11 @@
 # 持续优化进度
 
+## v0.7.8-preview.1（身份变化任务恢复，待打包）
+
+- 源项身份复核失败曾按普通 failed 保存；若下一次列表仍返回旧元数据，用户仍能重试旧任务，造成重复下载且必然再次拒绝源操作。
+- 现在持久化 `source_state=changed`：阻止旧身份的手动重试，不隔离源路径；下次扫描确认同一 fs_id 的新元数据后，才替换为新任务。重启后仍保留不可重试状态。结果未知的 `source_unknown` 策略未变化。
+- 新 RED/GREEN 覆盖旧列表状态下 Retry 返回冲突、进程重开后仍冲突，以及新目录元数据出现后自动重新入队并完成；Go 全模块测试/vet、Node 15 项通过，正在执行 WSL race 和独立打包。
+
 ## v0.7.7-preview.1（源项身份复核已交付）
 
 - 源码 revision：`f7b220b333ae98c6cf98140cf1b6b6aec0760a6d`；ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.7-preview.1.zip`；SHA256：`b918662e5cd783b0f90568af8ab936efe42b76d9112b1a263ca53ca4b4d98522`。

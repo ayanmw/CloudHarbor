@@ -109,6 +109,63 @@ func TestChangedSourceIdentityPreventsPostprocess(t *testing.T) {
 	}
 }
 
+func TestChangedSourceIdentityWaitsForFreshListingBeforeRetry(t *testing.T) {
+	base, p := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "abc") })
+	d, err := OpenDownloader(base.cfg, base.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, d)
+	d.SetDownloadMode(DownloadModeDelete)
+	original := file(74, "same.txt", 3)
+	changed := original
+	changed.Mtime++
+	p.lists["/queue"] = []baiduapi.FileInfo{changed} // The metadata check has observed a new version; listing still reports the old one.
+	job := &queueJob{Version: 1, Info: original, Mode: DownloadModeDelete, Status: "downloading", Created: time.Now()}
+	d.queue.mu.Lock()
+	d.queue.jobs[original.FsID] = job
+	d.queue.eligible[original.FsID] = original
+	if err = d.queue.persist(job); err != nil {
+		d.queue.mu.Unlock()
+		t.Fatal(err)
+	}
+	d.queue.mu.Unlock()
+	err = d.postprocess(context.Background(), original, DownloadModeDelete)
+	if !errors.Is(err, ErrSourceIdentityChanged) {
+		t.Fatalf("postprocess error=%v", err)
+	}
+	d.queue.complete(job, err)
+	if err = d.Retry(original.FsID); !errors.Is(err, ErrTaskConflict) {
+		t.Fatalf("retry after identity mismatch = %v, want conflict until a fresh listing updates the identity", err)
+	}
+	if d.queue.jobs[original.FsID].SourceState != "changed" {
+		t.Fatalf("identity mismatch state was not persisted: %+v", d.queue.jobs[original.FsID])
+	}
+	if len(p.actions) != 0 {
+		t.Fatalf("identity mismatch sent a source operation: %v", p.actions)
+	}
+	shutdown(t, d)
+	d, err = OpenDownloader(base.cfg, base.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, d)
+	if err = d.Retry(original.FsID); !errors.Is(err, ErrTaskConflict) {
+		t.Fatalf("restart allowed retry against stale identity: %v", err)
+	}
+
+	if err = d.ScanAndDownload(); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, d, original.FsID, "done")
+	if task := d.GetTaskByFsID(original.FsID); task == nil || task.FileInfo != changed {
+		t.Fatalf("fresh listing did not replace stale identity: %+v", task)
+	}
+	if len(p.actions) != 1 || !strings.Contains(p.actions[0], "/queue/same.txt") {
+		t.Fatalf("fresh identity did not receive exactly one postprocess: %v", p.actions)
+	}
+}
+
 func TestSourceJournalSaveFailureNeverSendsRequest(t *testing.T) {
 	original, _ := setup(t, func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected download") })
 	d, err := OpenDownloader(original.cfg, original.getClient())
