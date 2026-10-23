@@ -4,9 +4,16 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
-## v0.7.1-preview.1 准备交付
+## v0.7.1-preview.1（普通用户容器运行测试包已交付）
 
-将可选 RUN_AS、普通用户目录准备/迁移说明纳入独立包。程序行为沿用已验证的 v0.7.0，保留 HTTPS 来源、认证与未知隔离规则；旧包不改动。本轮进一步验证新包本身的 Docker/Compose 和原生启动。
+将可选 RUN_AS、普通用户目录准备/迁移说明纳入独立包。程序行为沿用已验证的 v0.7.0，保留 HTTPS 来源、认证与未知隔离规则；旧包不改动。
+
+- 源码 revision：`b5ed21a7050896e57c5647c5339fbfc2f7cbb48b`；发布根目录 `v0.7.1-preview.1.zip`，10,000,002 字节；SHA256 `8ceb6f5047fa597e5a13fdd6c6bc5556e637fcfea7d038840b50e2aae483c798`。
+- 干净提交打包，Node 14 项、Go 测试/vet、三平台构建通过；最终 ZIP 解压 11 项哈希、ARM64 ELF machine=183、Windows --version/revision 核对通过。本轮未修改 Go 程序，未重复全部 race 测试。
+- 实际包 Dockerfile 构建 AMD64 镜像，并用包内 Compose 加专用镜像/network none 测试 overlay 运行，未通过命令行覆盖 --user。RUN_AS=1000:1000、exec id、inspect、认证 health 证明身份/版本正确；无宿主端口映射，临时 ext4 状态目录 0700、manifest/锁 0600，owner=1000:1000。
+- 同一目录第二容器退出 1 且报告 already in use；正常 stop/start 后 health 恢复，两次 stop 均 exit 0。两个专用容器和专用镜像标签已精确清理，保留日志；没有 prune 或操作其他容器。
+- Windows verification 副本实际 Start.ps1 启动，health、首页、intake/status HTTP 200，匿名 401；无百度凭证，HTTPS 指向拒绝连接代理。Ctrl+C 后 Service stopped（外层 PTY exit 1），测试服务已停止。初次复制活动 verification 目录遇到 writer.lock 锁定，改用未运行的正式包副本构建，未带入活动状态。
+- 发布包保持不可变，验证明细在发布根目录 v0.7.1-preview.1-validation.md。真实百度/NAS ACL、ARM64 实机、多日与断电尚未验收；未知目录继续隔离，不提供人工放行。持续优化目标仍进行中，未推送或部署。
 
 ## 源码镜像实际构建与部署配置修复（源码检查点）
 
