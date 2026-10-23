@@ -1,6 +1,6 @@
 # 百度网盘 NAS 一键下载系统
 
-> 持续优化分支已提供可靠性预览版的构建与测试说明：[独立版本测试](release/TESTING.md)、[设计](docs/ai/reliability-design.md)、[进度](docs/ai/progress.md)。持久化队列、网页授权应用/保存/续期、管理认证和管理页入队已实现；油猴提供选中路径衔接，需真实页面适配验收。真实百度/NAS 验收仍待进行，以进度文档与当前代码为准。默认仅监听 `127.0.0.1`；管理员用户名为 `admin`，密码来自 `ADMIN_PASSWORD` 或下载目录 `.nas-downloader/queue/admin-key.json`。可不带 Token 启动，再按测试说明配置应用并网页授权。
+> 持续优化分支已提供可靠性预览版的构建与测试说明：[独立版本测试](release/TESTING.md)、[设计](docs/ai/reliability-design.md)、[进度](docs/ai/progress.md)。持久化队列、网页授权应用/保存/续期、管理认证和管理页入队已实现；油猴提供选中路径衔接，需真实页面适配验收。真实百度/NAS 验收仍待进行，以进度文档与当前代码为准。原生宿主程序默认仅监听 `127.0.0.1`；容器内监听 `0.0.0.0`，示例只将端口发布到宿主回环。管理员用户名为 `admin`，密码来自 `ADMIN_PASSWORD` 或下载目录 `.nas-downloader/queue/admin-key.json`。可不带 Token 启动，再按测试说明配置应用并网页授权。
 
 ## 项目简介
 
@@ -139,14 +139,16 @@ docker build \
 # 运行容器
 docker run -d \
   --name baidu-nas-downloader \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -e BAIDU_APP_ID=your_app_id \
   -e BAIDU_APP_KEY=your_app_key \
   -e BAIDU_SECRET_KEY=your_secret_key \
+  -e ADMIN_PASSWORD=replace_with_a_password_of_at_least_16_bytes \
   -v $(pwd)/downloads:/下载 \
-  -v $(pwd)/queue:/NAS_Download_Queue \
   baidu-nas-downloader
 ```
+
+容器内监听 `0.0.0.0:8080` 以接收 Docker 端口转发；示例只发布到宿主机回环地址。远程访问请使用 SSH 转发或按 HTTPS 反向代理章节配置，不要把未受保护的管理端口直接发布到公网。
 
 #### 使用 Docker Compose（推荐）
 项目提供了 `docker-compose.yml` 文件，可以更方便地部署：
