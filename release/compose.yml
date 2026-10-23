@@ -1,5 +1,6 @@
 services:
   downloader-preview:
+    user: "${RUN_AS:-0:0}"
     build:
       context: .
     ports:

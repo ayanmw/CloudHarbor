@@ -79,6 +79,16 @@ docker compose -f compose.yml logs -f
 
 只需要构建小型运行镜像，包内已有两种 Linux 架构的二进制。默认仅向 NAS 本机发布 18089 端口，可通过上述 SSH 转发访问。管理员随机密码同样位于宿主 downloads 下的 admin-key.json。Docker 构建需要联网拉取 Alpine 和证书包。
 
+### 可选普通用户运行（源码配置已支持，待后续测试包）
+
+新的 Compose 配置可在 .env 设置 `RUN_AS=UID:GID`，例如 `RUN_AS=1000:1000`；应使用实际部署账号的 `id -u` 和 `id -g`，不要假定 NAS 账号就是 1000。留空保留现有 0:0 行为，应用不会自行切换身份或修改已有目录权限。
+
+启用前先由部署账号创建空的 `downloads` 目录，确认该账号可读、写并遍历该目录，随后启动容器。bind mount 的实际 UID/GID、文件系统权限与 NAS ACL 仍决定是否可写；RUN_AS 只设置容器进程身份，不授予目录权限。不要用 `chmod 777` 或删除 `.nas-downloader` 绕过错误。
+
+已有目录可能含旧 root 创建的 0600 凭证/状态。切换身份前停止全部旧实例并备份，先用新目录测试；确需迁移旧目录时，由管理员核对路径与备份后调整该专用目录及状态文件的 owner/ACL。程序不会自动递归 chown/chmod，也不要为测试改变共享下载目录的权限。
+
+源码镜像的运行目录已由 `/root` 移到 `/app`，使指定普通 UID 可以访问程序；发布包镜像原已使用 `/app`。已在 WSL Docker/AMD64、临时 ext4 bind mount 验证普通 UID 启动、重启、状态权限、第二实例锁及不可写目录失败；不能替代厂商 NAS ACL、SMB/FUSE 或 ARM64 实机验收。v0.7.0-preview.1 原包尚无 RUN_AS 配置行，但可用 Compose 的独立 user 配置覆盖镜像用户；后续新包将直接提供该变量。
+
 ## HTTPS 反向代理（v0.7.0 起）
 
 在代理处终止 HTTPS、转发至 HTTP 后端时，设置 `PUBLIC_ORIGIN=https://nas.example:8443`，值为浏览器实际访问的 HTTPS 来源（域名及非默认端口，无路径前缀、query、fragment 或用户密码）。PowerShell 可在启动前设置 `$env:PUBLIC_ORIGIN` 或使用 `-PublicOrigin`；Linux 使用 `export PUBLIC_ORIGIN=...`，Compose 在 .env 填写。程序本身仍监听 HTTP，不管理 TLS 证书。

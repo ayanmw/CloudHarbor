@@ -22,7 +22,7 @@ FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/alpine:latest
 # 安装 ca-certificates 以支持 HTTPS 请求
 RUN apk --no-cache add ca-certificates
 # 创建工作目录
-WORKDIR /root/
+WORKDIR /app
 # 从构建阶段复制二进制文件
 COPY --from=builder /app/baidu-downloader .
 # 创建必要的目录
@@ -39,4 +39,4 @@ ENV SCAN_INTERVAL="30"
 ENV SERVER_PORT="8080"
 
 # 启动应用
-CMD ["./baidu-downloader"]
+CMD ["/app/baidu-downloader"]

@@ -4,6 +4,15 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
+## NAS 普通用户部署与实际容器验证（源码检查点，待后续包）
+
+- 源码镜像 runtime WORKDIR 从 /root 移至 /app，CMD 使用绝对路径；两份 Compose 增加可选 RUN_AS=UID:GID，默认 0:0 保留现有行为，env 示例与迁移说明已补充。不自动修改已有下载目录 owner/ACL。
+- 本轮现场发现 WSL 内 Docker client/server 29.7.2、Compose 5.5.0 可用（此前 Windows CLI 不可用的记录不代表 WSL）。从 v0.7.0 正式包副本使用原发布 Dockerfile 实际构建 AMD64 镜像，本地已有 Alpine 3.22；未安装宿主 Docker，apk 证书包仅在专用镜像构建中安装。
+- 专用测试容器 network none、无百度凭证，以 1000:1000 在临时 ext4 bind mount 启动，管理 health 正确；状态目录 0700、manifest/锁 0600，owner=1000:1000；第二实例 exit 1，停止/重启后健康恢复、正常停止 exit 0。
+- 只读挂载及普通 0500 目录分别报 read-only/permission denied、exit 1，目录未生成状态。实际 Compose run 未传 --user，inspect/exec id/health 证明 RUN_AS 被应用，使用专用测试 overlay 固定镜像与 network none，无发布端口；默认及非默认身份的两份 Compose config 均解析通过。
+- 证据位于发布目录 nas-permission-20261023；源码多阶段镜像未构建，不能扩大发布镜像证据。厂商 NAS ACL、SMB/FUSE、ARM64、真实百度及多日仍未验收。Go 程序与 v0.7.0 ZIP 未变，新的 RUN_AS 行将进入后续包。
+- 独立只读审查未发现确定重要问题，两份 Compose 空/指定身份均独立解析通过，差异检查通过。五个专用测试容器确认 exited 后精确清理，专用镜像标签已删除；未执行 prune 或操作其他容器，验证输出保留。
+
 ## v0.7.0-preview.1（HTTPS 终止代理支持测试包已交付）
 
 - 源码 revision：`eaf332c9cfe2ed77f79da6d3b02bbed499a72b81`；ZIP：发布根目录 v0.7.0-preview.1.zip，9,999,005 字节；SHA256 `19173bbc81dcfffd25d5e5950ee41bc05cca9d33c7c959969e3a2f78af3226c4`。
