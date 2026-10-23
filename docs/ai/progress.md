@@ -6,6 +6,9 @@
 - 新增并行读取与顺序回调回归；保留首个回调错误、记录大小、JSON 校验、symlink 拒绝及 `LoadEachRaw` 回调生命周期测试。基准筛选调整为仅在选中子基准时创建对应历史夹具，避免检查 10k 时意外构造 100k 条记录。
 - Windows 10k 原始记录读取单样本：串行约 2.61 s，4 worker 约 1.32 s；完整 `OpenDownloader` 样本约 1.41/1.64 s。WSL ext4 上 4 worker 的原始读取比串行慢约 20%，因此 Linux/其他平台保持串行；真实 NAS/SMB 效果未验证。
 - v0.8.15 Go 1.22.2 状态字符串优化仍保留；WSL 10k 启动约 59–62 ms，100k 三次约 610/617/634 ms。系统负载和文件系统会影响绝对值，测试数据不能替代真实 NAS。
+- 发布源码 revision `47b88bf564bd5961a8168c6bddbdce23c952c4c9`。独立 ZIP：10,078,700 字节，SHA256 `4EFBFACDC74F9522A7563A7336848B12DC620E7B9D8376B31643C415EE269465`；11 项 payload 哈希匹配。Linux AMD64 包内启动、认证 health、匿名 401、SIGTERM 正常退出及 ARM64 ELF 检查通过。
+- Node 17 项、Windows 全模块 Go test/vet、三平台构建、WSL Go 1.22.2 全模块 race/vet 通过。没有使用真实百度凭证或执行云端操作。
+- 验证明细：[v0.8.16-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.16-preview.1-validation.md)。
 
 ## v0.8.15-preview.1（减少大队列恢复后的枚举字符串常驻内存）
 

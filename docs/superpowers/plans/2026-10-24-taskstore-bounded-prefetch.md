@@ -49,5 +49,5 @@
 - [x] Run taskstore tests on Windows and WSL Go 1.22.2, including existing ordering, first callback error, malformed JSON, max-size, raw body lifetime, and symlink tests.
 - [x] Compare Windows 10k raw reads: about 2.61 s/op with one worker and 1.32 s/op with four; full Windows `OpenDownloader` samples 1.41/1.64 s. WSL ext4 raw reads were 32–35 ms serial and 39–41 ms with four; keep four only on Windows and leave Linux serial pending NAS measurements.
 - [x] Run full Windows tests/vet and WSL full race/vet; update D6 measurements with platform and fixture limitations.
-- [ ] Package and smoke-test an immutable preview only if the A/B gate passes.
+- [x] Package and smoke-test immutable v0.8.16-preview.1: 17 Node tests, Windows test/vet, three-platform builds, 11 payload hashes, package startup/auth/401/SIGTERM, and ARM64 ELF check pass.
 - [ ] Package and smoke-test an immutable preview only if the A/B gate passes.
