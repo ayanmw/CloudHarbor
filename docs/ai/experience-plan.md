@@ -84,6 +84,7 @@
 - [x] Windows 逐条恢复不再先按路径 `Lstat` 再 `Open`：使用 `FILE_FLAG_OPEN_REPARSE_POINT` 打开路径一次，再由已打开句柄核对符号链接，减少重复路径查找并消除检查后替换链接的窗口。Windows 5 组单文件 A/B 中位数约 522 μs → 191 μs；10,000 条 `OpenDownloader` 3 次约 2.73–2.76 s，先前单次基线 4.58 s；意外额外测得的 100,000 条 3 次为 36.0/45.8/36.8 s，先前单次基线 122.34 s。大队列提升对照受 Windows I/O 波动影响，只作本机趋势，不外推 NAS。Windows 本机无创建符号链接权限，直接 symlink 测试跳过；Linux 保持 `openat|O_NOFOLLOW`，WSL 安全测试继续运行。
 - [x] Windows `LoadEach` 使用最多 4 个固定 reader 并行读小记录，再按文件名顺序调用 visitor；每 worker 重用缓冲区，最多 4 条记录在途，不按队列长度创建 goroutine。10,000 条 taskstore 原始读取单样本约 2.61 s（1 worker）→ 1.32 s（4 workers）；同批 Windows `OpenDownloader` 样本约 1.41/1.64 s，提升小于原始读取且受 I/O 波动影响。WSL ext4 的 10,000 条原始读取约 32–35 ms（串行）与 39–41 ms（4 workers），故 Linux/其他平台默认串行，避免本地盘回退。WSL 串行 100,000 条 `OpenDownloader` 3 次为 610/617/634 ms；不代表 NAS/SMB，Linux NAS 并行收益仍须目标存储实测。
 - [x] 实验过按目录项数量预分配恢复期 `jobs` map；Windows 10k 对照未证明稳定提速，WSL 样本与 Windows I/O 测试有重叠，无法作有效跨平台 A/B。该原型已撤回，不为轻微临时分配差异增加存储接口；保留记录供后续 D6 基准设计参考。
+- [x] 按文件名排序改用 Go 1.22 `slices.SortFunc`，保持 `LoadEach` 文件名顺序契约。ext4 合成 100k DirEntry 的 sort-only 中位数约 18.3 ms 降至 13.0 ms，3 次分配降至 0；100k 原始记录串行读取基准中位数约 323.5 ms 降至 302.7 ms（约 6.4%，样本有明显波动）。Windows 文件打开成本占主导，单次 10k 四 reader 约 0.87 s，不能据此宣称 Windows 端到端收益。Linux 默认仍为单 reader。
 - [ ] 重启仍要打开并解码每条 JSON 记录，恢复后仍将全部根任务保存在 scheduler job 映射中；逐文件 I/O 是实测主要成本，后续是否改为分段/数据库存储需单独权衡兼容迁移和断电语义。
 - [ ] 目标 NAS 文件系统的大队列重启时间、峰值内存和存储行为待用户环境验证；合成包内启动不能替代真实存储设备。
 

@@ -11,7 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -239,7 +239,9 @@ func (s *Store) loadEachWithWorkers(visit func(int64, json.RawMessage) error, va
 	if err != nil {
 		return err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	slices.SortFunc(entries, func(a, b os.DirEntry) int {
+		return strings.Compare(a.Name(), b.Name())
+	})
 	return visitEntriesParallel(entries, workers, func(entry os.DirEntry, body *bytes.Buffer) (int64, bool, error) {
 		if strings.HasSuffix(entry.Name(), ".tmp") {
 			return 0, true, nil
