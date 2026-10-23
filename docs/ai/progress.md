@@ -1,10 +1,12 @@
 # 持续优化进度
 
-## D7 增量：空闲 worker 改为事件/截止时间唤醒（候选包待验证）
+## v0.8.3-preview.1（空闲 worker 事件驱动）
 
-- 源码基线测得：在 10,000/100,000 条全部完成的合成历史上，单次 idle `claim()` 扫描约 0.105/5.68 ms，且旧 worker 用 100ms ticker 固定重扫。现改为状态/队列信号唤醒所有配置 worker；无可运行项时等待事件或最近一个可运行 retry 的 `NextAttempt` 定时器，不再周期轮询。
+- 源码 revision：`9a4de892749e390f6a84840f6b719d850bbfcf06`。基线测得：在 10,000/100,000 条全部完成的合成历史上，单次 idle `claim()` 扫描约 0.105/5.68 ms，且旧 worker 用 100ms ticker 固定重扫。现改为状态/队列信号唤醒所有配置 worker；无可运行项时等待事件或最近一个可运行 retry 的 `NextAttempt` 定时器，不再周期轮询。
 - `claim` 仍对每次状态变化做 O(n) 一次扫描，未添加内存索引；持久化状态、最早创建任务优先、认证/扫描资格及重试预算语义不变。
-- RED/GREEN 覆盖配置 worker 扇出、最早 retry 截止时间认领、既有 1 秒退避、手动重试和最大并发。Windows 全模块测试/vet、WSL 全模块 race/vet、Node 17 项通过；候选包和包内验证待完成。真实 NAS 空闲 CPU/唤醒延迟未测。
+- RED/GREEN 覆盖配置 worker 扇出、最早 retry 截止时间认领、既有 1 秒退避、手动重试和最大并发。Windows Go 全模块测试/vet、WSL race/vet、Node 17 前端 17 项通过；三平台构建通过。
+- 独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.3-preview.1.zip`，9,826,145 字节，SHA256 `EFB04D10A805C3781A732427C97A5CF4122AD8CA22D807E00F92EED3C3AB8CC7`；ZIP 解压后 11 项 payload 哈希全通过，Linux AMD64/ARM64 ELF 架构和 AMD64 版本标识通过。
+- 包内 Windows 程序从隔离目录恢复 10,000 条合成完成任务；认证状态返回等待授权，认证分页为 10,000 总数/10,000 完成/10 项当前页，匿名状态接口 401；Ctrl+C 后服务停止。详细证据：[v0.8.3-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.3-preview.1-validation.md)。真实 NAS 空闲 CPU/唤醒延迟、百度账号和云端下载链路未测。
 
 ## v0.8.2-preview.1（按需生成非活动任务视图）
 
