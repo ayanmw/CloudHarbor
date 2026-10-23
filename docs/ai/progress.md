@@ -4,7 +4,16 @@
 
 按已给出的 A/B/C/D 优化路线持续推进，阶段性交付独立可测试版本。首版不是整个目标完成。设计见 [reliability-design.md](reliability-design.md)，当前计划见 [reliability-plan.md](reliability-plan.md)。
 
-## 百度业务错误恢复源码检查点（未打包）
+## 源后处理完成与重放保护（准备 v0.6.0-preview.1）
+
+- Rename/Delete 改为严格同步单项完成解析：顶层成功不足以证明完成，异步 taskid/业务 111、缺字段、多项、截断/读取失败、网络/5xx/重定向保持未知；禁止 POST 跟随重定向，原 307 反例重放 10 次已修。
+- 根任务发送前原子保存 source_state=sending/source_unknown；确认成功先保存 confirmed/done。回复或凭据保存丢失、崩溃重开保持 unknown，不自动/手动重发；发送前保存失败无请求。
+- 隔离覆盖扫描/claim、Cancel/Retry、管理入队预检/登记及浏览资格。独立审查发现的同 ID 换路径覆写已先 RED 后修，关闭重开仍保留旧路径；同路径换 ID 也不可绕过。
+- 根任务本地完成不再提前显示 done；网页状态与健康新增 source_unknown，显示禁止重发。旧无字段记录可读，旧二进制不能处理新不确定状态；升级前停旧实例并备份状态目录。
+- 两平台全模块 race/vet 和 Node 14 项通过；最后补项后受影响 baiduapi/downloader/intakeapi/main 两平台 race/vet 再通过，独立最后复核无新确定重要问题。设计/证据见 [source-operation-plan.md](source-operation-plan.md)。
+- 准备 v0.6.0-preview.1，将下述业务错误恢复一并纳入；无真实账号操作，真实百度/NAS 和异步完成查询仍未验收。
+
+## 百度业务错误恢复源码检查点（已合入待发布 v0.6）
 
 - 核对官方 SDK 后补 20016/20017/31045 的带指纹认证分类、31034 的现有有界重试；任务层验证 auth_wait 不耗预算、限流退避后恢复一次完成。
 - 区分业务 errno 与 OAuth error_code 的 111：业务运行状态不再误撤销凭证；Move 无 taskid 但出现运行迹象也按异步未知隔离，文件/目录均不登记、不重发、不人工放行。

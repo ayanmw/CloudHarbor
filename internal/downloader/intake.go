@@ -125,7 +125,7 @@ func (d *Downloader) previewIntakeItems(client *baiduapi.Client, paths []string)
 		}
 		ids[found.FsID] = true
 		d.queue.mu.Lock()
-		conflict := d.queue.blockedIntakes[target] || d.queue.jobs[found.FsID] != nil
+		conflict := d.queue.blockedIntakes[target] || d.queue.blockedSources[target] || d.queue.jobs[found.FsID] != nil
 		d.queue.mu.Unlock()
 		if conflict {
 			return nil, ErrIntakeConflict
@@ -193,6 +193,9 @@ func (d *Downloader) registerIntakeItem(r intakeRecord, item IntakeItem, destina
 	}
 	if q.err != nil {
 		return q.err
+	}
+	if q.blockedSources[destination.Path] {
+		return ErrIntakeConflict
 	}
 	if existing := q.jobs[destination.FsID]; existing != nil {
 		if existing.Info != destination || existing.Mode != r.Mode {

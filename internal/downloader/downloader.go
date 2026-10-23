@@ -157,6 +157,11 @@ func (d *Downloader) updateTaskStatus(id int64, status, message string) {
 	d.taskMutex.Lock()
 	defer d.taskMutex.Unlock()
 	if task := d.tasks[id]; task != nil {
+		// Root completion belongs to the durable scheduler, including source
+		// processing. Local publication alone must not briefly display done.
+		if d.inFlight[id] {
+			return
+		}
 		task.Status = status
 		task.Error = errorSummary(message)
 		if status == "done" || status == "failed" {
@@ -300,10 +305,29 @@ func (d *Downloader) postprocess(ctx context.Context, info baiduapi.FileInfo, mo
 	if err != nil {
 		return err
 	}
+	tracked, err := d.beginSourceOperation(ctx, info)
+	if err != nil {
+		return err
+	}
+	// Saving the journal can overlap cancellation or credential changes.
+	// Recheck before entering the HTTP client; no request has been sent yet.
+	client, err = d.sourceOperationClient(ctx, info)
+	if err != nil {
+		if tracked {
+			return d.finishSourceOperation(info, err)
+		}
+		return err
+	}
 	if mode == DownloadModeDelete {
 		err = client.DeleteFile(info.Path)
 	} else {
 		err = client.RenameFile(info.Path, path.Base(info.Path)+".可删除")
+	}
+	if tracked {
+		err = d.finishSourceOperation(info, err)
+	}
+	if errors.Is(err, ErrSourceOperationUnknown) || errors.Is(err, baiduapi.ErrSourceOperationUnconfirmed) {
+		return fmt.Errorf("%w: %w", ErrSourceOperationUnknown, err)
 	}
 	if err != nil {
 		return fmt.Errorf("本地已完成，网盘后处理待重试: %w", err)
@@ -325,7 +349,7 @@ func (d *Downloader) GetTasks() []*Task {
 		job := d.queue.jobs[copy.FileInfo.FsID]
 		if copy.Root && job != nil && !d.queue.stopping && d.queue.err == nil && d.ctx.Err() == nil {
 			copy.CanCancel = job.Status == "pending" || job.Status == "downloading" || job.Status == "retry_wait" || job.Status == "auth_wait"
-			copy.CanRetry = !d.queue.blockedIntakes[job.Info.Path] && (job.Status == "failed" || job.Status == "cancelled") && d.queue.active[job.Info.FsID] == nil && d.queue.eligible[job.Info.FsID] == job.Info && d.AuthenticationReady()
+			copy.CanRetry = job.SourceState == "" && !d.queue.blockedSources[job.Info.Path] && !d.queue.blockedIntakes[job.Info.Path] && (job.Status == "failed" || job.Status == "cancelled") && d.queue.active[job.Info.FsID] == nil && d.queue.eligible[job.Info.FsID] == job.Info && d.AuthenticationReady()
 		}
 		result = append(result, &copy)
 	}

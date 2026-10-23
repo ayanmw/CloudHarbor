@@ -21,6 +21,7 @@ type queueJob struct {
 	Info        baiduapi.FileInfo `json:"file"`
 	Mode        DownloadMode      `json:"mode"`
 	Status      string            `json:"status"`
+	SourceState string            `json:"source_state,omitempty"`
 	Attempts    int               `json:"attempts"`
 	Failures    int               `json:"failures"`
 	NextAttempt time.Time         `json:"next_attempt,omitempty"`
@@ -35,6 +36,7 @@ type scheduler struct {
 	jobs           map[int64]*queueJob
 	eligible       map[int64]baiduapi.FileInfo
 	blockedIntakes map[string]bool
+	blockedSources map[string]bool
 	active         map[int64]context.CancelFunc
 	wake           chan struct{}
 	done           chan struct{}
@@ -97,10 +99,14 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 	}
 	for id, body := range records {
 		var job queueJob
-		if err = json.Unmarshal(body, &job); err != nil || job.Version != 1 || job.Info.FsID != id || !validJobStatus(job.Status) || job.Attempts < 0 || job.Failures < 0 || (job.Mode != DownloadModeKeep && job.Mode != DownloadModeDelete) {
+		if err = json.Unmarshal(body, &job); err != nil || job.Version != 1 || job.Info.FsID != id || !validJobStatus(job.Status) || !validSourceRecord(&job) || job.Attempts < 0 || job.Failures < 0 || (job.Mode != DownloadModeKeep && job.Mode != DownloadModeDelete) {
 			store.Close()
 			d.cancel()
 			return nil, fmt.Errorf("invalid persisted job %d", id)
+		}
+		if job.SourceState == "sending" {
+			job.SourceState = "unknown"
+			job.Error = ErrSourceOperationUnknown.Error()
 		}
 		if job.Status == "downloading" {
 			job.Status = "pending"
@@ -109,6 +115,7 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		d.queue.jobs[id] = &job
 		d.queue.reflect(&job)
 	}
+	d.queue.rebuildSourceBlocks()
 	if err = d.loadIntakes(); err != nil {
 		store.Close()
 		d.cancel()
@@ -118,7 +125,7 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 }
 func validJobStatus(status string) bool {
 	switch status {
-	case "pending", "downloading", "retry_wait", "auth_wait", "failed", "done", "cancelled":
+	case "pending", "downloading", "retry_wait", "auth_wait", "failed", "done", "cancelled", "source_unknown":
 		return true
 	}
 	return false
@@ -199,7 +206,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 	}
 	eligible := make(map[int64]baiduapi.FileInfo)
 	for _, f := range files {
-		if q.blockedIntakes[f.Path] {
+		if q.blockedIntakes[f.Path] || q.blockedSources[f.Path] {
 			continue
 		}
 		if strings.HasSuffix(f.ServerFilename, ".可删除") {
@@ -210,6 +217,11 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 		}
 		eligible[f.FsID] = f
 		old := q.jobs[f.FsID]
+		// A provider may show the same ID under another name while its old
+		// mutation is unresolved. Preserve the journal and its original paths.
+		if old != nil && (old.SourceState == "sending" || old.SourceState == "unknown") {
+			continue
+		}
 		if old != nil && (old.Info == f || q.active[f.FsID] != nil) {
 			continue
 		}
@@ -224,7 +236,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 	q.eligible = eligible
 	for id, job := range q.jobs {
 		// A quarantined target was deliberately excluded above, not missing.
-		if q.blockedIntakes[job.Info.Path] {
+		if q.blockedIntakes[job.Info.Path] || q.blockedSources[job.Info.Path] {
 			continue
 		}
 		if job.Status == "auth_wait" && eligible[id] == job.Info && q.active[id] == nil {
@@ -274,7 +286,7 @@ func (q *scheduler) claim() (*queueJob, context.Context) {
 	}
 	var chosen *queueJob
 	for _, job := range q.jobs {
-		if q.blockedIntakes[job.Info.Path] || (job.Status != "pending" && job.Status != "retry_wait") || q.active[job.Info.FsID] != nil || q.eligible[job.Info.FsID] != job.Info || time.Now().Before(job.NextAttempt) {
+		if q.blockedIntakes[job.Info.Path] || q.blockedSources[job.Info.Path] || (job.Status != "pending" && job.Status != "retry_wait") || q.active[job.Info.FsID] != nil || q.eligible[job.Info.FsID] != job.Info || time.Now().Before(job.NextAttempt) {
 			continue
 		}
 		if chosen == nil || job.Created.Before(chosen.Created) || (job.Created.Equal(chosen.Created) && job.Info.FsID < chosen.Info.FsID) {
@@ -330,7 +342,15 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 	delete(q.owner.inFlight, id)
 	q.owner.taskMutex.Unlock()
 	job := q.jobs[id]
-	if job.Status != "cancelled" {
+	if job.SourceState == "sending" || job.SourceState == "unknown" {
+		job.SourceState = "unknown"
+		job.Status = "source_unknown"
+		job.Error = ErrSourceOperationUnknown.Error()
+		job.NextAttempt = time.Time{}
+	} else if job.SourceState == "confirmed" {
+		job.Status = "done"
+		job.Error = ""
+	} else if job.Status != "cancelled" {
 		job.Status = "done"
 		job.Error = ""
 		job.NextAttempt = time.Time{}
@@ -364,6 +384,10 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 	if saveErr := q.persist(job); saveErr != nil {
 		job.Status = "failed"
 		job.Error = q.err.Error()
+		if job.SourceState == "sending" || job.SourceState == "unknown" {
+			job.Status = "source_unknown"
+			job.Error = ErrSourceOperationUnknown.Error() + "; " + q.err.Error()
+		}
 	}
 	q.reflect(job)
 	q.signal()
@@ -383,7 +407,7 @@ func (d *Downloader) Cancel(id int64) error {
 	if job == nil {
 		return ErrTaskNotFound
 	}
-	if job.Status == "done" {
+	if job.Status == "done" || job.SourceState != "" {
 		return ErrTaskConflict
 	}
 	job.Status = "cancelled"
@@ -406,7 +430,7 @@ func (d *Downloader) Retry(id int64) error {
 	if job == nil {
 		return ErrTaskNotFound
 	}
-	if q.stopping || q.err != nil || q.blockedIntakes[job.Info.Path] || !d.AuthenticationReady() || q.active[id] != nil || (job.Status != "failed" && job.Status != "cancelled") || q.eligible[id] != job.Info {
+	if q.stopping || q.err != nil || job.SourceState != "" || q.blockedSources[job.Info.Path] || q.blockedIntakes[job.Info.Path] || !d.AuthenticationReady() || q.active[id] != nil || (job.Status != "failed" && job.Status != "cancelled") || q.eligible[id] != job.Info {
 		return ErrTaskConflict
 	}
 	job.Status = "pending"

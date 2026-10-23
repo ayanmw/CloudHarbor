@@ -61,7 +61,7 @@ func setup(t *testing.T, content http.HandlerFunc) (*Downloader, *provider) {
 			if fail {
 				errno = 1
 			}
-			result = map[string]any{"errno": errno}
+			result = map[string]any{"errno": errno, "info": []map[string]int{{"errno": 0}}}
 		default:
 			return nil, fmt.Errorf("unexpected API request: %s", r.URL.Path)
 		}

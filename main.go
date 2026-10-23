@@ -222,7 +222,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	downloadingCount := 0
 	doneCount := 0
 	failedCount := 0
-	pendingCount, retryCount, cancelledCount, authWaitCount := 0, 0, 0, 0
+	pendingCount, retryCount, cancelledCount, authWaitCount, sourceUnknownCount := 0, 0, 0, 0, 0
 
 	for _, t := range tasks {
 		switch t.Status {
@@ -240,11 +240,13 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 			cancelledCount++
 		case "auth_wait":
 			authWaitCount++
+		case "source_unknown":
+			sourceUnknownCount++
 		}
 	}
 
 	response := map[string]interface{}{
-		"authentication": auth.Status(), "auth_wait": authWaitCount,
+		"authentication": auth.Status(), "auth_wait": authWaitCount, "source_unknown": sourceUnknownCount,
 		"pending": pendingCount, "retry_wait": retryCount, "cancelled": cancelledCount, "max_parallel": cfg.MaxParallel,
 		"version":        version,
 		"revision":       revision,

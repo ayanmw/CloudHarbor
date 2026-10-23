@@ -92,6 +92,7 @@ function getStatusBadge(status) {
         'failed': '失败',
         'retry_wait': '等待重试',
         'auth_wait': '等待账号授权',
+        'source_unknown': '网盘后处理待核对（禁止重发）',
         'cancelled': '已取消'
     };
     return `<span class="status-badge ${escapeHTML(status)}">${escapeHTML(statusMap[status] || status)}</span>`;

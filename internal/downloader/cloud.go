@@ -55,7 +55,7 @@ func (d *Downloader) ListCloud(ctx context.Context, directory string, offset, li
 	for i := offset; i < end; i++ {
 		f := files[i]
 		target := intakeTarget(d.cfg.QueueDir, f.Path)
-		allowed := validateIntakePaths([]string{f.Path}, d.cfg.QueueDir) == nil && d.queue.jobs[f.FsID] == nil && !d.queue.blockedIntakes[target]
+		allowed := validateIntakePaths([]string{f.Path}, d.cfg.QueueDir) == nil && d.queue.jobs[f.FsID] == nil && !d.queue.blockedIntakes[target] && !d.queue.blockedSources[target]
 		result.Entries = append(result.Entries, CloudEntry{ID: fmt.Sprint(f.FsID), Path: f.Path, Name: f.ServerFilename, Directory: f.IsDir == 1, Size: f.Size, CanEnqueue: allowed})
 	}
 	if end < len(files) {

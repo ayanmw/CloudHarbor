@@ -145,3 +145,11 @@ test('handoff fails without importing if browser cannot clear the fragment',()=>
  assert.equal(p.get('intake-paths').value,undefined);
  assert.ok(p.get('intake-message').textContent.includes('无法清除'));
 });
+
+test('uncertain source operation is visible and has no root action controls',()=>{
+ const p=page('index_ws.html');
+ p.context.task={task_id:'123',is_root:true,status:'source_unknown',can_cancel:false,can_retry:false,download_mode:'keep'};
+ assert.ok(vm.runInContext("getStatusBadge('source_unknown')",p.context).includes('禁止重发'));
+ const controls=vm.runInContext('taskControls(task)',p.context);
+ assert.ok(!controls.includes('data-action='));
+});
