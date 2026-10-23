@@ -19,6 +19,8 @@ try {
     $sourceRevision = (git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read source revision.' }
     if (git status --porcelain) { throw 'Commit source before packaging so the revision identifies the exact source.' }
+    node --test scripts/webui.test.cjs scripts/userscript.test.cjs
+    if ($LASTEXITCODE -ne 0) { throw 'Browser script tests failed.' }
     $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
     go test ./...
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
@@ -38,6 +40,7 @@ try {
     foreach ($name in @('Start.ps1', 'start.sh', 'Dockerfile', 'compose.yml', 'preview.env.example', 'TESTING.md')) {
         Copy-Item -LiteralPath (Join-Path $repoRoot "release/$name") -Destination $releasePath
     }
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'tampermonkey_baidupan_nas_queue.user.js') -Destination $releasePath
     $buildInfo = "Version: $Version`nRevision: $sourceRevision`nToolchain: $(go version)`n"
     [IO.File]::WriteAllText((Join-Path $releasePath 'BUILD-INFO.txt'), $buildInfo, [Text.UTF8Encoding]::new($false))
     $checksums = Get-ChildItem -LiteralPath $releasePath -File -Recurse | Sort-Object FullName | ForEach-Object {

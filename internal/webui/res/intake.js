@@ -107,7 +107,32 @@ async function recheckIntake(id) {
     catch(error) { intakeMessage(error.message); }
     finally {setIntakeBusy(false);await refreshIntakeRecords(historyPage.offset || 0);}
 }
+function consumeIntakeHandoff() {
+    const prefix = '#nas-intake=';
+    if (!location.hash?.startsWith(prefix)) return;
+    const encoded = location.hash.slice(prefix.length);
+    // Consume before any API request. Fragments are not sent in HTTP requests;
+    // remove the input from this history entry as soon as the page can read it.
+    try { history.replaceState(null, '', location.pathname + location.search); }
+    catch (_) { intakeMessage('无法清除外部输入，请关闭此页并在管理页直接选择。'); return; }
+    try {
+        if (encoded.length > 60000) throw new Error('oversize');
+        const value = JSON.parse(decodeURIComponent(encoded));
+        if (!value || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'paths,version' || value.version !== 1 || !Array.isArray(value.paths) || !value.paths.length || value.paths.length > 20) throw new Error('shape');
+        for (const path of value.paths) {
+            // The manual-input parser trims lines. Reject instead of silently
+            // changing an external path ending in whitespace into another file.
+            if (typeof path !== 'string' || path.trim() !== path || path.length > 2048 || !path.startsWith('/') || path === '/' || /[\\\u0000-\u001f\u007f-\u009f]/u.test(path) || path.slice(1).split('/').some(part => !part || part === '.' || part === '..')) throw new Error('path');
+        }
+        if (new Set(value.paths).size !== value.paths.length) throw new Error('duplicate');
+        discardPreview();
+        document.getElementById('intake-paths').value = value.paths.join('\n');
+        intakeMessage('已接收外部页面提供的路径，尚未预检或移动。请核对本服务当前授权的百度账号及路径，再手动预检和确认。');
+    } catch (_) { intakeMessage('外部选择数据无效，未导入；请在本页直接选择项目。'); }
+}
+
 document.addEventListener('DOMContentLoaded',()=>{
+    consumeIntakeHandoff();
     document.getElementById('cloud-form').addEventListener('submit',event=>{event.preventDefault();loadCloud(document.getElementById('cloud-directory').value.trim(),0);});
     document.getElementById('cloud-up').addEventListener('click',()=>{const dir=cloudPage.directory;loadCloud(dir==='/'?'/':dir.slice(0,dir.lastIndexOf('/')) || '/',0);});
     document.getElementById('cloud-prev').addEventListener('click',()=>loadCloud(cloudPage.directory,Math.max(0,cloudPage.offset-100)));

@@ -113,3 +113,35 @@ test('intake commit requires fresh explicit confirmation and does not replay aft
  assert.equal(calls.filter(call=>call[0].endsWith('/commit')).length,1);
  assert.ok(p.get('intake-message').textContent.includes('未知'));
 });
+
+test('external selection fragment is removed and fills input without preview or move',()=>{
+ const p=page('index_intake.html');let calls=0;const removed=[];
+ p.context.fetch=()=>{calls++;throw Error('no automatic request');};
+ p.context.location.hash='#nas-intake='+encodeURIComponent(JSON.stringify({version:1,paths:['/中文 目录/a.zip','/b']}));
+ p.context.location.pathname='/intake';p.context.location.search='';
+ p.context.history={replaceState:(_state,_title,url)=>removed.push(url)};
+ vm.runInContext('consumeIntakeHandoff()',p.context);
+ assert.deepEqual(removed,['/intake']);assert.equal(p.get('intake-paths').value,'/中文 目录/a.zip\n/b');
+ assert.equal(calls,0);assert.ok(p.get('intake-message').textContent.includes('账号'));
+ assert.equal(p.get('intake-confirm-check').checked,false);assert.equal(p.get('intake-commit').disabled,true);
+});
+
+test('malformed, extra-field and noncanonical handoffs never become input or requests',()=>{
+ for(const value of ['%bad',encodeURIComponent(JSON.stringify({version:2,paths:['/a']})),encodeURIComponent(JSON.stringify({version:1,paths:['/a'],token:'secret'})),encodeURIComponent(JSON.stringify({version:1,paths:['/a/../b']})),encodeURIComponent(JSON.stringify({version:1,paths:['/a ']})),encodeURIComponent(JSON.stringify({version:1,paths:['/a','/a']})),'x'.repeat(60001)]) {
+  const p=page('index_intake.html');let cleared=0;
+  p.context.location.hash='#nas-intake='+value;p.context.location.pathname='/intake';p.context.location.search='';
+  p.context.history={replaceState:()=>cleared++};p.context.fetch=()=>{throw Error('no request');};
+  vm.runInContext('consumeIntakeHandoff()',p.context);
+  assert.equal(cleared,1);assert.equal(p.get('intake-paths').value,undefined);assert.ok(p.get('intake-message').textContent.includes('无效'));
+ }
+});
+
+test('handoff fails without importing if browser cannot clear the fragment',()=>{
+ const p=page('index_intake.html');
+ p.context.location.hash='#nas-intake='+encodeURIComponent(JSON.stringify({version:1,paths:['/a']}));
+ p.context.history={replaceState:()=>{throw Error('blocked');}};
+ p.context.fetch=()=>{throw Error('no request');};
+ vm.runInContext('consumeIntakeHandoff()',p.context);
+ assert.equal(p.get('intake-paths').value,undefined);
+ assert.ok(p.get('intake-message').textContent.includes('无法清除'));
+});
