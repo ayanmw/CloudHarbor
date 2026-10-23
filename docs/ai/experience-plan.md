@@ -81,6 +81,7 @@
 - [x] 恢复时将合法 mode/status 规范化到共享常量，避免 Go 1.22 `encoding/json` 为每条任务长期保留相同枚举字符串的独立副本；JSON v1 与查询值不变。WSL Go 1.22.2 100,000 条保留堆由 v0.8.14 的 323.4 B/任务（30.84 MiB）降至 307.3 B/任务（29.31 MiB），减少约 1.53 MiB/5.0%；当前三次 `OpenDownloader` 为 753.5/548.4/543.1 ms，运行波动明显，不据此宣称稳定提速；分配量基本不变。Go 1.27 默认 encoding/json 已共享重复字符串，不能替代最低版本验证。源状态原有合法性校验已足够，不额外规范化。
 - [x] Windows AMD64 单次合成基准：10,000 条 `OpenDownloader` 约 5.60 s、310.2 B/任务；100,000 条约 122.34 s、304.1 B/任务（保留堆 29.00 MiB）。100,000 条基准端到端耗时约 291 s，包含任务文件夹具创建；这暴露出 Windows 大队列恢复延迟，但不能外推 Linux/NAS，下一步需分离枚举、文件打开和 JSON 解码成本。
 - [x] Windows 逐条恢复不再先按路径 `Lstat` 再 `Open`：使用 `FILE_FLAG_OPEN_REPARSE_POINT` 打开路径一次，再由已打开句柄核对符号链接，减少重复路径查找并消除检查后替换链接的窗口。Windows 5 组单文件 A/B 中位数约 522 μs → 191 μs；10,000 条 `OpenDownloader` 3 次约 2.73–2.76 s，先前单次基线 4.58 s；意外额外测得的 100,000 条 3 次为 36.0/45.8/36.8 s，先前单次基线 122.34 s。大队列提升对照受 Windows I/O 波动影响，只作本机趋势，不外推 NAS。Windows 本机无创建符号链接权限，直接 symlink 测试跳过；Linux 保持 `openat|O_NOFOLLOW`，WSL 安全测试继续运行。
+- [x] Windows `LoadEach` 使用最多 4 个固定 reader 并行读小记录，再按文件名顺序调用 visitor；每 worker 重用缓冲区，最多 4 条记录在途，不按队列长度创建 goroutine。10,000 条 taskstore 原始读取单样本约 2.61 s（1 worker）→ 1.32 s（4 workers）；同批 Windows `OpenDownloader` 样本约 1.41/1.64 s，提升小于原始读取且受 I/O 波动影响。WSL ext4 的 10,000 条原始读取约 32–35 ms（串行）与 39–41 ms（4 workers），故 Linux/其他平台默认串行，避免本地盘回退。WSL 串行 100,000 条 `OpenDownloader` 3 次为 610/617/634 ms；不代表 NAS/SMB，Linux NAS 并行收益仍须目标存储实测。
 - [ ] 重启仍要打开并解码每条 JSON 记录，恢复后仍将全部根任务保存在 scheduler job 映射中；逐文件 I/O 是实测主要成本，后续是否改为分段/数据库存储需单独权衡兼容迁移和断电语义。
 - [ ] 目标 NAS 文件系统的大队列重启时间、峰值内存和存储行为待用户环境验证；合成包内启动不能替代真实存储设备。
 

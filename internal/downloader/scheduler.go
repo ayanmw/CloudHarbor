@@ -198,13 +198,6 @@ func retainFileInfo(info baiduapi.FileInfo) *baiduapi.FileInfo {
 	return &info
 }
 
-func validJobStatus(status string) bool {
-	switch status {
-	case "pending", "downloading", "retry_wait", "auth_wait", "failed", "done", "cancelled", "source_unknown":
-		return true
-	}
-	return false
-}
 func (q *scheduler) persist(job *queueJob) error {
 	q.owner.taskStatsGeneration.Add(1)
 	job.Error = errorSummary(job.Error)

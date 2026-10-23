@@ -21,8 +21,8 @@ import (
 func BenchmarkOpenDownloaderHistory(b *testing.B) {
 	for _, count := range []int{100, 1000, 10000, 100000} {
 		b.Run(fmt.Sprintf("tasks_%d", count), func(b *testing.B) {
-			root, queuePath := benchmarkHistoryFixture(b, count)
 			b.Run("store_load", func(b *testing.B) {
+				_, queuePath := benchmarkHistoryFixture(b, count)
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
@@ -39,6 +39,7 @@ func BenchmarkOpenDownloaderHistory(b *testing.B) {
 				}
 			})
 			b.Run("open_downloader", func(b *testing.B) {
+				root, _ := benchmarkHistoryFixture(b, count)
 				cfg := &config.Config{LocalDownDir: root, QueueDir: "/preview"}
 				b.ReportAllocs()
 				b.ResetTimer()

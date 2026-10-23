@@ -30,6 +30,8 @@ type manifest struct {
 	Scope   string `json:"scope"`
 }
 
+const maxParallelRecordReads = 4
+
 func safePath(name string) error {
 	st, err := os.Lstat(name)
 	if errors.Is(err, os.ErrNotExist) {
@@ -185,6 +187,10 @@ func (s *Store) LoadEachRaw(visit func(int64, json.RawMessage) error) error {
 }
 
 func (s *Store) loadEach(visit func(int64, json.RawMessage) error, validateJSON bool) error {
+	return s.loadEachWithWorkers(visit, validateJSON, defaultRecordReadWorkers)
+}
+
+func (s *Store) loadEachWithWorkers(visit func(int64, json.RawMessage) error, validateJSON bool, workers int) error {
 	if visit == nil {
 		return fmt.Errorf("nil job record visitor")
 	}
@@ -203,33 +209,139 @@ func (s *Store) loadEach(visit func(int64, json.RawMessage) error, validateJSON 
 		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	var body bytes.Buffer
-	for _, entry := range entries {
+	return visitEntriesParallel(entries, workers, func(entry os.DirEntry, body *bytes.Buffer) (int64, bool, error) {
 		if strings.HasSuffix(entry.Name(), ".tmp") {
-			continue
+			return 0, true, nil
 		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			return fmt.Errorf("unexpected state entry: %s", entry.Name())
+			return 0, false, fmt.Errorf("unexpected state entry: %s", entry.Name())
 		}
 		id, err := strconv.ParseInt(strings.TrimSuffix(entry.Name(), ".json"), 10, 64)
 		if err != nil || id <= 0 || strconv.FormatInt(id, 10)+".json" != entry.Name() {
-			return fmt.Errorf("invalid job filename: %s", entry.Name())
+			return 0, false, fmt.Errorf("invalid job filename: %s", entry.Name())
 		}
 		f, err := openJobFileAt(jobsDir, entry.Name())
 		if err != nil {
-			return err
+			return 0, false, err
 		}
 		body.Reset()
-		n, err := io.CopyN(&body, f, 1024*1024+1)
+		n, err := io.CopyN(body, f, 1024*1024+1)
 		f.Close()
 		if err != nil && !errors.Is(err, io.EOF) {
-			return err
+			return 0, false, err
 		}
-		if n > 1024*1024 || (validateJSON && !json.Valid(body.Bytes())) {
-			return fmt.Errorf("corrupt job %d", id)
+		if n > 1024*1024 {
+			return 0, false, fmt.Errorf("corrupt job %d", id)
 		}
-		if err := visit(id, body.Bytes()); err != nil {
-			return err
+		return id, false, nil
+	}, validateJSON, func(id int64, body []byte) error {
+		return visit(id, body)
+	})
+}
+
+type recordReadResult struct {
+	id   int64
+	body []byte
+	skip bool
+	err  error
+}
+
+type recordReadRequest struct {
+	index  int
+	result *recordReadResult
+	done   *sync.WaitGroup
+}
+
+// visitEntriesParallel bounds in-flight record bytes to the worker count while
+// preserving filename-order callbacks and each worker's buffer lifetime.
+func visitEntriesParallel(
+	entries []os.DirEntry,
+	workers int,
+	read func(os.DirEntry, *bytes.Buffer) (int64, bool, error),
+	validateJSON bool,
+	visit func(int64, []byte) error,
+) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > maxParallelRecordReads {
+		workers = maxParallelRecordReads
+	}
+	if workers > len(entries) {
+		workers = len(entries)
+	}
+	if workers == 1 {
+		var body bytes.Buffer
+		for _, entry := range entries {
+			id, skip, err := read(entry, &body)
+			if err != nil {
+				return err
+			}
+			if skip {
+				continue
+			}
+			if validateJSON && !json.Valid(body.Bytes()) {
+				return fmt.Errorf("corrupt job %d", id)
+			}
+			if err := visit(id, body.Bytes()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	jobs := make([]chan recordReadRequest, workers)
+	var workerWG sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		jobs[worker] = make(chan recordReadRequest)
+		workerWG.Add(1)
+		go func(jobChannel <-chan recordReadRequest) {
+			defer workerWG.Done()
+			var body bytes.Buffer
+			for request := range jobChannel {
+				body.Reset()
+				id, skip, err := read(entries[request.index], &body)
+				if err == nil && !skip && validateJSON && !json.Valid(body.Bytes()) {
+					err = fmt.Errorf("corrupt job %d", id)
+				}
+				*request.result = recordReadResult{id: id, body: body.Bytes(), skip: skip, err: err}
+				request.done.Done()
+			}
+		}(jobs[worker])
+	}
+	defer func() {
+		for _, jobChannel := range jobs {
+			close(jobChannel)
+		}
+		workerWG.Wait()
+	}()
+
+	var batchWG sync.WaitGroup
+	var results [maxParallelRecordReads]recordReadResult
+	for start := 0; start < len(entries); start += workers {
+		count := workers
+		if remaining := len(entries) - start; remaining < count {
+			count = remaining
+		}
+		for offset := 0; offset < count; offset++ {
+			results[offset] = recordReadResult{}
+			batchWG.Add(1)
+			jobs[offset] <- recordReadRequest{index: start + offset, result: &results[offset], done: &batchWG}
+		}
+		batchWG.Wait()
+		for offset := 0; offset < count; offset++ {
+			result := results[offset]
+			if result.err != nil {
+				return result.err
+			}
+			if !result.skip {
+				if err := visit(result.id, result.body); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil

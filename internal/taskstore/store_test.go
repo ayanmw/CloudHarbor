@@ -1,13 +1,18 @@
 package taskstore
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -127,6 +132,88 @@ func TestLoadEachVisitsRecordsInFilenameOrderWithoutBuildingResultMap(t *testing
 	}
 }
 
+func TestLoadEachConcurrentReadsKeepFilenameCallbackOrder(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	s, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []int64{1, 2, 3} {
+		if err := s.Save(id, []byte(`{"id":`+strconv.FormatInt(id, 10)+`}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobsDir, err := openJobDirectory(filepath.Join(dir, "jobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jobsDir.Close()
+	entries, err := jobsDir.ReadDir(-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+
+	firstReadStarted := make(chan struct{})
+	secondReadStarted := make(chan struct{})
+	firstReadFinished := make(chan struct{})
+	var active, peak atomic.Int32
+	read := func(entry os.DirEntry, body *bytes.Buffer) (int64, bool, error) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			old := peak.Load()
+			if current <= old || peak.CompareAndSwap(old, current) {
+				break
+			}
+		}
+		id, err := strconv.ParseInt(strings.TrimSuffix(entry.Name(), ".json"), 10, 64)
+		if err != nil {
+			return 0, false, err
+		}
+		if id == 1 {
+			close(firstReadStarted)
+			select {
+			case <-secondReadStarted:
+			case <-time.After(time.Second):
+				return 0, false, errors.New("later record read did not overlap the first read")
+			}
+			close(firstReadFinished)
+		} else if id == 2 {
+			select {
+			case <-firstReadStarted:
+			case <-time.After(time.Second):
+				return 0, false, errors.New("first record read did not start")
+			}
+			close(secondReadStarted)
+			<-firstReadFinished
+		}
+		_, err = fmt.Fprintf(body, `{"id":%d}`, id)
+		return id, false, err
+	}
+	var visited []int64
+	err = visitEntriesParallel(entries, 2, read, true, func(id int64, body []byte) error {
+		var record struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal(body, &record); err != nil || record.ID != id {
+			return fmt.Errorf("record %d body %q err=%v", id, body, err)
+		}
+		visited = append(visited, id)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peak.Load() < 2 {
+		t.Fatalf("record reads did not overlap: peak=%d", peak.Load())
+	}
+	if !reflect.DeepEqual(visited, []int64{1, 2, 3}) {
+		t.Fatalf("callback order=%v, want [1 2 3]", visited)
+	}
+}
+
 func TestLoadEachStopsAndReturnsCallbackError(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "queue")
 	s, err := Open(dir, "/preview")
@@ -174,7 +261,7 @@ func TestLoadEachRawLeavesJSONValidationToVisitor(t *testing.T) {
 	}
 }
 
-func TestLoadEachRawReusesRecordBufferAfterVisitorReturns(t *testing.T) {
+func TestLoadEachRawKeepsEachRecordValidDuringCallback(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "queue")
 	s, err := Open(dir, "/preview")
 	if err != nil {
@@ -186,19 +273,13 @@ func TestLoadEachRawReusesRecordBufferAfterVisitorReturns(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var previous *byte
 	visits := 0
 	err = s.LoadEachRaw(func(_ int64, body json.RawMessage) error {
 		if string(body) != `{"value":"same-size-record"}` {
 			t.Fatalf("visitor received corrupt/reused bytes: %q", body)
 		}
-		if len(body) == 0 {
-			t.Fatal("visitor received empty record")
-		}
-		if previous != nil && previous != &body[0] {
-			t.Fatal("record storage was not reused after the prior visitor returned")
-		}
-		previous = &body[0]
+		// The public contract limits body to this callback; its backing buffer
+		// address is intentionally unspecified because records may be prefetched.
 		visits++
 		return nil
 	})
