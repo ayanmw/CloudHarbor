@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.10-preview.1（Linux 队列恢复使用目录相对打开）
+
+- Linux taskstore 恢复时打开 jobs 目录一次，以目录文件描述符读取排序后的条目，并用 `openat` + `O_NOFOLLOW` 打开每个已校验文件名；jobs 目录本身也使用 `O_NOFOLLOW|O_DIRECTORY`。非 Linux 延续既有符号链接检查和路径打开。
+- WSL ext4 三次/样本对照：100,000 条 `OpenDownloader` 约 900 ms → 606 ms；10,000 条 `LoadEachRaw` 约 33.3 ms → 28.5 ms。目标 NAS、SMB 与其他文件系统尚未实测，不能把该加速比例外推。
+- 源码 revision `71f9c5f116fb4114fc8f6fcb0820ae21fc57c102`。独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.10-preview.1.zip`，9,849,908 字节，SHA256 `3834BE2FE5E96838B1A5205756E5B566C1DE58A041CD146867C89479B91CED43`；11 个 payload 哈希通过。
+- 打包门禁 Node 17 项、Windows Go 全模块 test/vet、Windows AMD64/Linux AMD64/Linux ARM64 构建通过；WSL 全模块 race/vet 通过。Linux AMD64 包内恢复 10,000 条合成完成任务，认证 health/name 分页、匿名 401、SIGINT 停止通过。
+- 验证明细：[v0.8.10-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.10-preview.1-validation.md)。未使用真实百度凭证或云端操作；目标 NAS 实测仍待用户环境。
+
 ## v0.8.9-preview.1（压缩云端扫描资格索引）
 
 - `scheduler.eligible` 从 `map[int64]FileInfo` 改为指针索引：同一云端身份指向任务的持久化元数据，只有活动任务或源操作结果未知且扫描身份变化时才持有独立快照；所有入队、重试、认证续期和源操作仍对 `FileInfo` 做逐字段精确比较。
