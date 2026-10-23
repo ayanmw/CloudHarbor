@@ -12,6 +12,12 @@
 - Windows Start.ps1 与 WSL Linux 原生 start.sh 均用正式包副本实际启动；认证健康/页面 API、匿名 401、版本与 revision 验证通过，服务停止后端口释放。全程无真实百度凭证或云端写操作。
 - 真实 NAS/设备缓存、物理掉电、ARM64 实机、多日与真实百度验签仍未验收；未知结果目录继续隔离且无人工放行。验证详见发布目录 `v0.7.3-preview.1-validation.md`；未 push/deploy，主工作区保持干净。
 
+## 源码 Docker 镜像版本元数据（源码检查点，待后续独立包）
+
+- 源码 revision：`7357d7de61641136d79d27048ae382323be12476`。源码 Dockerfile 支持 `BUILD_VERSION`/`BUILD_REVISION` linker 参数，Compose 与 `.env.example` 接线；README 给出从 Git 取得并传入版本及 revision 的构建方式，开发构建默认仍为 `dev/unknown`。
+- `docker compose config` 验证显式参数可传给 build args；Go 本机 linker 输出验证通过。使用现有 WSL Docker 真实构建源码镜像，并在专用容器验证 `/api/health` 精确返回版本与完整 revision、匿名返回 401；验后移除本轮专用容器与镜像。
+- 独立发布包使用 `release/Dockerfile` 启动已注入版本的预构建二进制，此变更针对源码仓库多阶段 Dockerfile，未改变当前 v0.7.3-preview.1 包或其文件；后续预览包与其他产品改进合并交付。真实 NAS 不在本地 Docker 验证范围内。
+
 ## v0.7.2-preview.1（下载 Token 查询参数修复测试包已交付）
 
 - 源码 revision：`855ab0a8b4cf427e4c417f314db69e5f5b3de59a`；包 `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.7.2-preview.1.zip`，10,000,484 字节；SHA256 `e3dd0e74c6e8af62d0f9e03ae2a20c93eb69cff8dbf30d9a4762234a3a19e9a3`。
