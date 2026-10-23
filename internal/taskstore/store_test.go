@@ -145,6 +145,66 @@ func TestLoadEachRawLeavesJSONValidationToVisitor(t *testing.T) {
 	}
 }
 
+func TestLoadEachRawReusesRecordBufferAfterVisitorReturns(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	s, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []int64{1, 2} {
+		if err := s.Save(id, []byte(`{"value":"same-size-record"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var previous *byte
+	visits := 0
+	err = s.LoadEachRaw(func(_ int64, body json.RawMessage) error {
+		if string(body) != `{"value":"same-size-record"}` {
+			t.Fatalf("visitor received corrupt/reused bytes: %q", body)
+		}
+		if len(body) == 0 {
+			t.Fatal("visitor received empty record")
+		}
+		if previous != nil && previous != &body[0] {
+			t.Fatal("record storage was not reused after the prior visitor returned")
+		}
+		previous = &body[0]
+		visits++
+		return nil
+	})
+	if err != nil || visits != 2 {
+		t.Fatalf("visits=%d err=%v", visits, err)
+	}
+}
+
+func TestLoadEachRawPreservesRecordSizeLimit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	s, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const maxRecordSize = 1024 * 1024
+	if err := os.WriteFile(filepath.Join(dir, "jobs", "1.json"), make([]byte, maxRecordSize), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "jobs", "2.json"), make([]byte, maxRecordSize+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	visited := 0
+	err = s.LoadEachRaw(func(id int64, body json.RawMessage) error {
+		if id != 1 || len(body) != maxRecordSize {
+			t.Fatalf("unexpected boundary record: id=%d size=%d", id, len(body))
+		}
+		visited++
+		return nil
+	})
+	if err == nil || visited != 1 {
+		t.Fatalf("oversized record was not rejected: visited=%d err=%v", visited, err)
+	}
+}
+
 func TestStoreRejectsCorruptRecordAndSecondWriter(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "queue")
 	s, err := Open(dir, "/preview")

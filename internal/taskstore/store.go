@@ -4,6 +4,7 @@
 package taskstore
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -175,7 +176,8 @@ func (s *Store) LoadEach(visit func(int64, json.RawMessage) error) error {
 }
 
 // LoadEachRaw visits bounded record bytes without parsing their JSON. The
-// visitor must validate or decode each body before trusting it.
+// visitor must validate or decode each body before trusting it, and may only
+// use the body until it returns.
 func (s *Store) LoadEachRaw(visit func(int64, json.RawMessage) error) error {
 	return s.loadEach(visit, false)
 }
@@ -199,6 +201,7 @@ func (s *Store) loadEach(visit func(int64, json.RawMessage) error, validateJSON 
 		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	var body bytes.Buffer
 	for _, entry := range entries {
 		if strings.HasSuffix(entry.Name(), ".tmp") {
 			continue
@@ -214,15 +217,16 @@ func (s *Store) loadEach(visit func(int64, json.RawMessage) error, validateJSON 
 		if err != nil {
 			return err
 		}
-		body, err := io.ReadAll(io.LimitReader(f, 1024*1024+1))
+		body.Reset()
+		n, err := io.CopyN(&body, f, 1024*1024+1)
 		f.Close()
-		if err != nil {
+		if err != nil && !errors.Is(err, io.EOF) {
 			return err
 		}
-		if len(body) > 1024*1024 || (validateJSON && !json.Valid(body)) {
+		if n > 1024*1024 || (validateJSON && !json.Valid(body.Bytes())) {
 			return fmt.Errorf("corrupt job %d", id)
 		}
-		if err := visit(id, body); err != nil {
+		if err := visit(id, body.Bytes()); err != nil {
 			return err
 		}
 	}
