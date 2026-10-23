@@ -79,11 +79,15 @@ func checkedListing(client *baiduapi.Client, dir string) ([]baiduapi.FileInfo, e
 		return nil, err
 	}
 	for _, f := range files {
-		if f.FsID <= 0 || f.Size < 0 || !validName(f.ServerFilename) || f.Path != path.Join(dir, f.ServerFilename) || (f.IsDir != 0 && f.IsDir != 1) {
+		if !validListingFile(dir, f) {
 			return nil, ErrIntakeConflict
 		}
 	}
 	return files, nil
+}
+
+func validListingFile(dir string, f baiduapi.FileInfo) bool {
+	return f.FsID > 0 && f.Size >= 0 && validName(f.ServerFilename) && f.Path == path.Join(dir, f.ServerFilename) && (f.IsDir == 0 || f.IsDir == 1)
 }
 func (d *Downloader) previewIntakeItems(client *baiduapi.Client, paths []string) ([]IntakeItem, error) {
 	if err := validateIntakePaths(paths, d.cfg.QueueDir); err != nil {

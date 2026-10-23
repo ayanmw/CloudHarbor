@@ -43,6 +43,29 @@ func TestListDirReadsAllPages(t *testing.T) {
 	}
 }
 
+func TestListDirPageRequestsOnlyRequestedWindow(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	calls := 0
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Query().Get("dir") != "/queue" || r.URL.Query().Get("start") != "50" || r.URL.Query().Get("limit") != "3" {
+			t.Fatalf("unexpected listing query: %s", r.URL.RawQuery)
+		}
+		files := []FileInfo{
+			{FsID: 51, Path: "/queue/a", ServerFilename: "a"},
+			{FsID: 52, Path: "/queue/b", ServerFilename: "b"},
+			{FsID: 53, Path: "/queue/c", ServerFilename: "c"},
+		}
+		b, _ := json.Marshal(ListResponse{List: files})
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(b))), Request: r}, nil
+	})
+	files, hasMore, err := NewClient("test", "test").ListDirPage("/queue", 50, 2)
+	if err != nil || len(files) != 2 || !hasMore || calls != 1 || files[0].FsID != 51 || files[1].FsID != 52 {
+		t.Fatalf("files=%+v hasMore=%v calls=%d err=%v", files, hasMore, calls, err)
+	}
+}
+
 func TestDownloadRequestCanBeCancelled(t *testing.T) {
 	started := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(started); <-r.Context().Done() }))

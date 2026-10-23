@@ -79,7 +79,9 @@ async function loadCloud(directory='/', offset=0) {
         const selected=new Set(inputPaths());
         document.getElementById('cloud-entries').innerHTML=listing.entries.length?listing.entries.map(entry=>`<div class="cloud-entry"><input type="checkbox" data-source="${escapeHTML(entry.path)}" data-allowed="${entry.can_enqueue===true}" ${selected.has(entry.path)?'checked':''} ${intakeBusy || !entry.can_enqueue?'disabled':''} aria-label="选择 ${escapeHTML(entry.name)}"><div class="cloud-name">${entry.directory?`<button type="button" data-directory="${escapeHTML(entry.path)}">📁 ${escapeHTML(entry.name)}</button>`:escapeHTML(entry.name)}</div><span class="muted">${entry.directory?'目录':formatBytes(entry.size)}</span></div>`).join(''):'<p class="muted">此目录暂无项目。</p>';
         const range=listing.entries.length?`当前 ${listing.offset+1}–${listing.offset+listing.entries.length}`:'当前页为空';
-        document.getElementById('cloud-summary').textContent=`${listing.directory} · 共 ${listing.total} 项，${range}。固定队列：${listing.queue_dir}；不可选项可能已在队列、历史或隔离范围内。`;
+        const total=Number.isInteger(listing.total)?`共 ${listing.total} 项，`:'总数未知，';
+        const more=listing.next_offset==null?'':' 仍有下一页。';
+        document.getElementById('cloud-summary').textContent=`${listing.directory} · ${total}${range}。${more}固定队列：${listing.queue_dir}；不可选项可能已在队列、历史或隔离范围内。`;
         document.getElementById('cloud-prev').disabled=listing.offset===0;
         document.getElementById('cloud-next').disabled=listing.next_offset==null;
     } catch(error) { if(generation===cloudGeneration){document.getElementById('cloud-summary').textContent=error.message;document.getElementById('cloud-entries').textContent='目录读取失败。';} }

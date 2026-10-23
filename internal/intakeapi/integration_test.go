@@ -3,11 +3,13 @@ package intakeapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,14 +30,33 @@ func TestHTTPIntakePersistsOnceAndSurvivesRestart(t *testing.T) {
 	var mu sync.Mutex
 	moves := 0
 	file := baiduapi.FileInfo{FsID: 3400000000000000123, Path: "/source/a.txt", ServerFilename: "a.txt", Size: 3, Mtime: 42}
-	lists := map[string][]baiduapi.FileInfo{"/source": {file}, "/queue": {}}
+	lists := map[string][]baiduapi.FileInfo{"/source": {file}, "/queue": {}, "/large": {}}
+	for i := 0; i < 250; i++ {
+		name := fmt.Sprintf("file-%03d.txt", i)
+		lists["/large"] = append(lists["/large"], baiduapi.FileInfo{FsID: int64(1000 + i), Path: path.Join("/large", name), ServerFilename: name, Size: 3})
+	}
+	var listQueries []string
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Query().Get("method") == "list":
-			json.NewEncoder(w).Encode(map[string]any{"errno": 0, "list": lists[r.URL.Query().Get("dir")]})
+			dir := r.URL.Query().Get("dir")
+			start, _ := strconv.Atoi(r.URL.Query().Get("start"))
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			listQueries = append(listQueries, fmt.Sprintf("%s:%d:%d", dir, start, limit))
+			items := lists[dir]
+			if start > len(items) {
+				items = []baiduapi.FileInfo{}
+			} else {
+				end := start + limit
+				if end > len(items) {
+					end = len(items)
+				}
+				items = items[start:end]
+			}
+			json.NewEncoder(w).Encode(map[string]any{"errno": 0, "list": items})
 		case r.URL.Query().Get("opera") == "move":
 			r.ParseForm()
 			var items []struct{ Path, Dest, Newname string }
@@ -113,6 +134,15 @@ func TestHTTPIntakePersistsOnceAndSurvivesRestart(t *testing.T) {
 	status, body := request("GET", "/api/cloud?dir=/source", "", true)
 	if status != 200 || !strings.Contains(string(body), `"id":"3400000000000000123"`) {
 		t.Fatalf("listing failed: %d %s", status, body)
+	}
+	queryCount := len(listQueries)
+	status, body = request("GET", "/api/cloud?dir=/large&offset=100&limit=100", "", true)
+	var page downloader.CloudListing
+	if status != 200 || json.Unmarshal(body, &page) != nil || len(page.Entries) != 100 || page.Total != nil || page.NextOffset == nil || *page.NextOffset != 200 || page.Entries[0].ID != "1100" {
+		t.Fatalf("paged listing failed: status=%d page=%+v body=%s", status, page, body)
+	}
+	if len(listQueries) != queryCount+1 || listQueries[queryCount] != "/large:100:101" {
+		t.Fatalf("cloud page fetched the wrong provider window: %v", listQueries[queryCount:])
 	}
 	status, body = request("POST", "/api/intakes/preview", `{"paths":["/source/a.txt"]}`, true)
 	var preview downloader.Intake

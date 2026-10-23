@@ -100,6 +100,27 @@ test('intake UI renders unknown directories without a manual release action and 
  assert.ok(!html.includes('data-release') && !html.includes('人工确认按钮'));
 });
 
+test('cloud browser displays provider-page results without inventing a total',async()=>{
+ const p=page('index_intake.html');const cloudRequests=[];
+ p.context.fetch=async url=>{
+  if(url.startsWith('/api/cloud')){
+   cloudRequests.push(url);
+   const offset=Number(new URL(url,'http://localhost').searchParams.get('offset'));
+   return{ok:true,json:async()=>({directory:'/large',queue_dir:'/queue',entries:[{id:String(offset+1),path:`/large/f${offset}`,name:`f${offset}`,can_enqueue:true}],total:null,offset,next_offset:offset+100})};
+  }
+  if(url==='/api/intakes')return{ok:true,json:async()=>({records:[],offset:0,next_offset:null})};
+  return{ok:true,json:async()=>({state:'ready',ready:true})};
+ };
+ p.get('intake-paths').value='';
+ p.listeners.get('DOMContentLoaded')();await vm.runInContext("loadCloud('/large',0)",p.context);
+ assert.ok(p.get('cloud-summary').textContent.includes('总数未知'),p.get('cloud-summary').textContent);
+ assert.ok(p.get('cloud-summary').textContent.includes('仍有下一页'));
+ assert.equal(p.get('cloud-next').disabled,false);
+ p.listeners.get('cloud-next:click')();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(cloudRequests.length,3);
+ assert.ok(cloudRequests[2].includes('offset=100'));
+});
+
 test('intake commit requires fresh explicit confirmation and does not replay after unknown result',async()=>{
  const p=page('index_intake.html');
  const calls=[];

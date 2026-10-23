@@ -121,55 +121,11 @@ func NewClient(accessToken, appKey string) *Client {
 // dir: 网盘路径，如 /NAS_Download_Queue
 func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 	const limit = 1000
-	const responseLimit = 16 * 1024 * 1024
 	files := make([]FileInfo, 0)
 	seen := make(map[int64]bool)
 	for start := 0; ; start += limit {
-		params := url.Values{}
-		params.Set("method", "list")
-		params.Set("access_token", c.AccessToken)
-		params.Set("dir", dir)
-		params.Set("order", "name")
-		params.Set("desc", "0")
-		params.Set("start", fmt.Sprint(start))
-		params.Set("limit", fmt.Sprint(limit))
-		resp, err := c.get("https://pan.baidu.com/rest/2.0/xpan/file?" + params.Encode())
+		page, err := c.listDirPage(dir, start, limit)
 		if err != nil {
-			return nil, fmt.Errorf("列目录请求失败: %w", requestError(err))
-		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
-		resp.Body.Close()
-		if readErr != nil {
-			return nil, readErr
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode}
-		}
-		if len(body) > responseLimit {
-			return nil, fmt.Errorf("目录响应超过大小限制")
-		}
-		var result struct {
-			Errno     *int            `json:"errno"`
-			ErrorCode int             `json:"error_code"`
-			List      json.RawMessage `json:"list"`
-		}
-		if err = json.Unmarshal(body, &result); err != nil {
-			return nil, fmt.Errorf("解析目录响应失败: %w", err)
-		}
-		if result.ErrorCode != 0 {
-			return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: result.ErrorCode}
-		}
-		if result.Errno == nil {
-			return nil, fmt.Errorf("目录响应缺失 errno")
-		}
-		if *result.Errno != 0 {
-			return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
-		}
-		if len(result.List) == 0 || result.List[0] != '[' {
-			return nil, fmt.Errorf("目录响应缺失文件列表")
-		}
-		var page []FileInfo
-		if err = json.Unmarshal(result.List, &page); err != nil {
 			return nil, err
 		}
 		for _, file := range page {
@@ -183,6 +139,81 @@ func (c *Client) ListDir(dir string) ([]FileInfo, error) {
 			return files, nil
 		}
 	}
+}
+
+// ListDirPage returns one bounded page and whether another item exists.
+func (c *Client) ListDirPage(dir string, start, limit int) ([]FileInfo, bool, error) {
+	if start < 0 || start > 1000000 || limit < 1 || limit >= 1000 {
+		return nil, false, fmt.Errorf("invalid directory page")
+	}
+	page, err := c.listDirPage(dir, start, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	seen := make(map[int64]bool, len(page))
+	for _, file := range page {
+		if seen[file.FsID] {
+			return nil, false, fmt.Errorf("分页目录发生重复，等待下一次扫描: fs_id=%d", file.FsID)
+		}
+		seen[file.FsID] = true
+	}
+	hasMore := len(page) > limit
+	if hasMore {
+		page = page[:limit]
+	}
+	return page, hasMore, nil
+}
+
+func (c *Client) listDirPage(dir string, start, limit int) ([]FileInfo, error) {
+	const responseLimit = 16 * 1024 * 1024
+	params := url.Values{}
+	params.Set("method", "list")
+	params.Set("access_token", c.AccessToken)
+	params.Set("dir", dir)
+	params.Set("order", "name")
+	params.Set("desc", "0")
+	params.Set("start", fmt.Sprint(start))
+	params.Set("limit", fmt.Sprint(limit))
+	resp, err := c.get("https://pan.baidu.com/rest/2.0/xpan/file?" + params.Encode())
+	if err != nil {
+		return nil, fmt.Errorf("列目录请求失败: %w", requestError(err))
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode}
+	}
+	if len(body) > responseLimit {
+		return nil, fmt.Errorf("目录响应超过大小限制")
+	}
+	var result struct {
+		Errno     *int            `json:"errno"`
+		ErrorCode int             `json:"error_code"`
+		List      json.RawMessage `json:"list"`
+	}
+	if err = json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("解析目录响应失败: %w", err)
+	}
+	if result.ErrorCode != 0 {
+		return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: result.ErrorCode}
+	}
+	if result.Errno == nil {
+		return nil, fmt.Errorf("目录响应缺失 errno")
+	}
+	if *result.Errno != 0 {
+		return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
+	}
+	if len(result.List) == 0 || result.List[0] != '[' {
+		return nil, fmt.Errorf("目录响应缺失文件列表")
+	}
+	var page []FileInfo
+	if err = json.Unmarshal(result.List, &page); err != nil {
+		return nil, err
+	}
+	return page, nil
 }
 
 // GetDownloadLink 获取文件下载链接

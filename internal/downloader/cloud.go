@@ -17,7 +17,7 @@ type CloudListing struct {
 	Directory  string       `json:"directory"`
 	QueueDir   string       `json:"queue_dir"`
 	Entries    []CloudEntry `json:"entries"`
-	Total      int          `json:"total"`
+	Total      *int         `json:"total"`
 	Offset     int          `json:"offset"`
 	NextOffset *int         `json:"next_offset,omitempty"`
 }
@@ -37,29 +37,30 @@ func (d *Downloader) ListCloud(ctx context.Context, directory string, offset, li
 	if err != nil {
 		return CloudListing{}, err
 	}
-	files, err := checkedListing(client, directory)
+	files, hasMore, err := client.ListDirPage(directory, offset, limit)
 	if err != nil {
 		d.reportAuthenticationFailure(err)
 		return CloudListing{}, err
 	}
+	for _, f := range files {
+		if !validListingFile(directory, f) {
+			return CloudListing{}, ErrIntakeConflict
+		}
+	}
 	if _, err = d.intakeClient(ctx, epoch); err != nil {
 		return CloudListing{}, err
 	}
-	result := CloudListing{Directory: directory, QueueDir: d.cfg.QueueDir, Entries: []CloudEntry{}, Total: len(files), Offset: offset}
-	end := offset + limit
-	if end > len(files) {
-		end = len(files)
+	result := CloudListing{Directory: directory, QueueDir: d.cfg.QueueDir, Entries: []CloudEntry{}, Offset: offset}
+	if hasMore {
+		next := offset + len(files)
+		result.NextOffset = &next
 	}
 	d.queue.mu.Lock()
 	defer d.queue.mu.Unlock()
-	for i := offset; i < end; i++ {
-		f := files[i]
+	for _, f := range files {
 		target := intakeTarget(d.cfg.QueueDir, f.Path)
 		allowed := validateIntakePaths([]string{f.Path}, d.cfg.QueueDir) == nil && d.queue.jobs[f.FsID] == nil && !d.queue.blockedIntakes[target] && !d.queue.blockedSources[target]
 		result.Entries = append(result.Entries, CloudEntry{ID: fmt.Sprint(f.FsID), Path: f.Path, Name: f.ServerFilename, Directory: f.IsDir == 1, Size: f.Size, CanEnqueue: allowed})
-	}
-	if end < len(files) {
-		result.NextOffset = &end
 	}
 	return result, nil
 }
