@@ -81,7 +81,7 @@ docker compose -f compose.yml up -d --build
 docker compose -f compose.yml logs -f
 ```
 
-只需要构建小型运行镜像，包内已有两种 Linux 架构的二进制。默认仅向 NAS 本机发布 18089 端口，可通过上述 SSH 转发访问。管理员随机密码同样位于宿主 downloads 下的 admin-key.json。Docker 构建需要联网拉取 Alpine 和证书包。
+只需要构建小型运行镜像，包内已有两种 Linux 架构的二进制。默认仅向 NAS 本机发布 18089 端口，可通过上述 SSH 转发访问。在 `.env` 修改 `HOST_PORT` 可更换宿主端口，设置 `SCAN_INTERVAL` 可调整扫描间隔；端口发布仍限制在宿主机回环地址。管理员随机密码同样位于宿主 downloads 下的 admin-key.json。Docker 构建需要联网拉取 Alpine 和证书包。
 
 ### 可选普通用户运行（v0.7.1 起）
 
