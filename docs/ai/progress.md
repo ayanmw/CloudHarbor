@@ -1,5 +1,12 @@
 # 持续优化进度
 
+## v0.8.21-preview.1（加速大队列启动时目录项排序）
+
+- taskstore 恢复记录前仍按文件名排序，以维持稳定回调顺序；将反射式 `sort.Slice` 改为 Go 1.22 泛型 `slices.SortFunc`，排序语义不变。ext4 合成 100k DirEntry 的 sort-only 中位数约从 18.3 ms 降到 13.0 ms，3 次分配降为 0。100k 原始记录串行加载的中位数约从 323.5 ms 降到 302.7 ms（约 6.4%，各组有明显波动）；Windows 10k 并行读仍由逐文件 I/O 主导，未观察到稳定的整体增益。
+- Windows 全模块 Go test/vet、WSL Go 1.22.2 全模块 race/vet、Node 17 项和三平台构建通过。ZIP 解压后 11 个 payload 哈希匹配；Linux AMD64 包内版本/revision、ARM64 ELF 架构、认证 health=`waiting_authorization`、匿名 401、SIGTERM 后正常退出通过。
+- 源码 revision `56b9ede8b161cd0e45c947f112e7f7fb0013540a`。独立 ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.21-preview.1.zip`，10,119,693 字节，SHA256 `18DE3EC7EDCDC0DB0F590CA3D5F612CF5471415F9053445DB653451DB5AA4E48`；验证记录：[v0.8.21-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.21-preview.1-validation.md)。
+- 未使用真实百度凭证或执行云端操作。真实 NAS/SMB、大队列目标设备启动时间、Docker/ARM64 实机及长期运行尚未验收。
+
 ## v0.8.20-preview.1（全局预算约束目录文件 worker）
 
 - 复现并修复 v0.8.19 多根目录时每个目录都创建 `MaxParallel` 子 worker 的放大问题：4 个目录各 4 个文件、全局上限 4 时，旧实现让 16 个文件都进入 downloading，实际只允许 4 个传输。现在目录必须先预留 Downloader 级传输槽位再创建 worker；没有可用槽位的目录调用方顺序等待，不创建多余的文件 goroutine。活动传输和并发文件 worker 均受全局 `MaxParallel` 约束。
