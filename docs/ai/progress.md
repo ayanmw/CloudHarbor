@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.8-preview.1（减少队列元数据重复驻留）
+
+- 恢复和扫描时让 `ServerFilename` 在确为路径 basename 时复用 `Path` 的底层字符串；已持久化任务与新扫描元数据完全相同时，`eligible` 索引复用原任务的不可变元数据。不同名称/路径和变更元数据仍独立保留，队列 JSON v1 与源项隔离/操作前身份核对语义不变。
+- WSL 单次 100,000 任务扫描后保留堆：v0.8.7 基线约 51.19 MiB（536.8 B/任务），当前约 47.40 MiB（497.0 B/任务），下降约 7.4%。单次合成进程堆样本，不代表 NAS 的绝对 RSS；分配量和扫描用时没有显示同等比例下降，启动逐文件读取以及完整任务映射仍在。
+- 源码 revision `c7a07c85cd222bd5672235ea23fdda86d46262ed`。独立 ZIP `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.8-preview.1.zip`，9,848,923 字节，SHA256 `65F8D3F5A390688697C2F45924C0ED498A2DBCA83EA3DED376ED98143BADF0E3`；清单 11 个 payload 全部匹配。
+- 打包门禁 Node 17 项、Windows 全模块 Go 测试/vet，Windows AMD64/Linux AMD64/Linux ARM64 构建通过；WSL 全模块 race/vet 通过。包内 Linux AMD64 恢复 10,000 条合成完成任务，认证 health 和 name 分页准确、匿名 401、SIGINT 停止通过。
+- 验证明细：[v0.8.8-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.8-preview.1-validation.md)。未使用真实百度凭证或对云端执行读写；NAS 文件系统、真实浏览器及长时间运行仍待用户测试。
+
 ## v0.8.7-preview.1（缓存稳定排序的任务分页）
 
 - 名称和大小排序的任务页首次按需构建 FsID 顺序索引；后续分页按 offset/limit 读取窗口。任务集合或元数据变化时索引失效并重建。进度排序仍使用实时进度和原有扫描堆算法。
