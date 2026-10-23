@@ -115,6 +115,7 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		if decodeErr := json.Unmarshal(body, &job); decodeErr != nil || job.Version != 1 || job.Info.FsID != id || !validJobStatus(job.Status) || !validSourceRecord(&job) || job.Attempts < 0 || job.Failures < 0 || (job.Mode != DownloadModeKeep && job.Mode != DownloadModeDelete) {
 			return fmt.Errorf("invalid persisted job %d", id)
 		}
+		job.Info = shareFileInfoStrings(job.Info)
 		if job.SourceState == "sending" {
 			job.SourceState = "unknown"
 			job.Error = ErrSourceOperationUnknown.Error()
@@ -140,6 +141,16 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 	}
 	return d, nil
 }
+
+// shareFileInfoStrings reuses the path bytes for ServerFilename when it is
+// exactly the path basename. FileInfo values are immutable after registration.
+func shareFileInfoStrings(info baiduapi.FileInfo) baiduapi.FileInfo {
+	if info.Path != "" && info.ServerFilename != "" && path.Base(info.Path) == info.ServerFilename {
+		info.ServerFilename = info.Path[len(info.Path)-len(info.ServerFilename):]
+	}
+	return info
+}
+
 func validJobStatus(status string) bool {
 	switch status {
 	case "pending", "downloading", "retry_wait", "auth_wait", "failed", "done", "cancelled", "source_unknown":
@@ -244,6 +255,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 	}
 	eligible := make(map[int64]baiduapi.FileInfo)
 	for _, f := range files {
+		f = shareFileInfoStrings(f)
 		if q.blockedIntakes[f.Path] || q.blockedSources[f.Path] {
 			continue
 		}
@@ -255,12 +267,16 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 		}
 		eligible[f.FsID] = f
 		old := q.jobs[f.FsID]
+		if old != nil && old.Info == f {
+			eligible[f.FsID] = old.Info
+			continue
+		}
 		// A provider may show the same ID under another name while its old
 		// mutation is unresolved. Preserve the journal and its original paths.
 		if old != nil && (old.SourceState == "sending" || old.SourceState == "unknown") {
 			continue
 		}
-		if old != nil && (old.Info == f || q.active[f.FsID] != nil) {
+		if old != nil && q.active[f.FsID] != nil {
 			continue
 		}
 		job := &queueJob{Version: 1, Info: f, Mode: q.owner.GetDownloadMode(), Status: "pending", Created: time.Now()}

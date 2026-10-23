@@ -155,6 +155,7 @@ func (d *Downloader) ScanAndDownload() error {
 }
 
 func (d *Downloader) beginTask(info baiduapi.FileInfo, local string) {
+	info = shareFileInfoStrings(info)
 	d.taskMutex.Lock()
 	defer d.taskMutex.Unlock()
 	task := &Task{FileInfo: info, LocalPath: local, Status: "downloading", StartTime: time.Now(), LastProgressTime: time.Now(), ResumeSupported: true, MD5: info.MD5}

@@ -189,6 +189,7 @@ func (d *Downloader) findIntake(id string) (intakeRecord, error) {
 	return cloneIntake(r), nil
 }
 func (d *Downloader) registerIntakeItem(r intakeRecord, item IntakeItem, destination baiduapi.FileInfo) error {
+	destination = shareFileInfoStrings(destination)
 	q := d.queue
 	q.mu.Lock()
 	defer q.mu.Unlock()

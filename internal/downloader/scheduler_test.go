@@ -15,10 +15,70 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/config"
 	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
+
+func TestReconcileSharesIdenticalPersistedFileInfoStorage(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	info := baiduapi.FileInfo{
+		FsID: 71, Path: strings.Clone("/queue/a-large-file.bin"),
+		ServerFilename: strings.Clone("a-large-file.bin"), Size: 1024, Mtime: 123,
+		MD5: strings.Clone("0123456789abcdef0123456789abcdef"),
+	}
+	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeKeep, Status: "done"}
+	d.queue.jobs[info.FsID] = job
+	d.queue.started = true // Keep this reconciliation fixture from launching workers.
+
+	scanned := info
+	scanned.Path = strings.Clone(info.Path)
+	scanned.ServerFilename = strings.Clone(info.ServerFilename)
+	scanned.MD5 = strings.Clone(info.MD5)
+	if unsafe.StringData(scanned.Path) == unsafe.StringData(info.Path) {
+		t.Fatal("fixture path unexpectedly shares storage")
+	}
+	if err := d.queue.reconcile([]baiduapi.FileInfo{scanned}, 0); err != nil {
+		t.Fatal(err)
+	}
+	eligible := d.queue.eligible[info.FsID]
+	if eligible != job.Info {
+		t.Fatalf("eligible identity changed: got %+v want %+v", eligible, job.Info)
+	}
+	if unsafe.StringData(eligible.Path) != unsafe.StringData(job.Info.Path) ||
+		unsafe.StringData(eligible.ServerFilename) != unsafe.StringData(job.Info.ServerFilename) ||
+		unsafe.StringData(eligible.MD5) != unsafe.StringData(job.Info.MD5) {
+		t.Fatal("identical persisted metadata retained duplicate string storage")
+	}
+}
+
+func TestFileInfoFilenameSharesPathStorageWhenItIsTheBasename(t *testing.T) {
+	info := baiduapi.FileInfo{Path: strings.Clone("/queue/a-large-file.bin"), ServerFilename: strings.Clone("a-large-file.bin")}
+	if unsafe.StringData(info.Path) == unsafe.StringData(info.ServerFilename) {
+		t.Fatal("fixture path and filename unexpectedly share storage")
+	}
+	compacted := shareFileInfoStrings(info)
+	if compacted != info {
+		t.Fatalf("file metadata changed: got %+v want %+v", compacted, info)
+	}
+	pathBasename := compacted.Path[len(compacted.Path)-len(compacted.ServerFilename):]
+	if unsafe.StringData(pathBasename) != unsafe.StringData(compacted.ServerFilename) {
+		t.Fatal("basename filename did not reuse path storage")
+	}
+}
+
+func TestFileInfoFilenameStorageIsNotSharedWhenItIsNotTheBasename(t *testing.T) {
+	info := baiduapi.FileInfo{Path: strings.Clone("/queue/a-large-file.bin"), ServerFilename: strings.Clone("renamed.bin")}
+	compacted := shareFileInfoStrings(info)
+	if compacted != info {
+		t.Fatalf("mismatched file metadata changed: got %+v want %+v", compacted, info)
+	}
+	if unsafe.StringData(compacted.Path) != unsafe.StringData(info.Path) ||
+		unsafe.StringData(compacted.ServerFilename) != unsafe.StringData(info.ServerFilename) {
+		t.Fatal("non-basename filename was replaced with a path substring")
+	}
+}
 
 func waitForStatus(t *testing.T, d *Downloader, id int64, status string) {
 	t.Helper()
