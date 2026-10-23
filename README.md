@@ -89,25 +89,26 @@
    BAIDU_APP_KEY=your_app_key
    BAIDU_SECRET_KEY=your_secret_key
    QUEUE_DIR=/NAS_Download_Queue
-   LOCAL_DOWN_DIR=/下载
-   SCAN_INTERVAL=30
+   LOCAL_DOWNLOAD_DIR=./downloads
+   SCAN_INTERVAL=300
    SERVER_PORT=8080
    ```
+   原生启动时需在当前 shell 设置这些变量；程序不会自动读取 `.env`，Docker Compose 会读取 `.env`。没有 Access Token 时也可以启动管理页；如需网页设备授权，必须提供 App Key 和 Secret Key。宿主程序默认只监听 `127.0.0.1`，管理员密码可通过 `ADMIN_PASSWORD` 设置，否则首次启动会生成随机密码并写入下载目录的私有状态文件。
 
 ### Access Token 获取方式
 
 #### 方式一：通过网页 OAuth（推荐）
 1. 启动服务后访问 `http://localhost:8080/oauth`
-2. 点击"获取授权码"
-3. 扫描二维码或点击链接进行授权
-4. 授权完成后点击"获取 Token"
-5. 系统会自动使用获取的 Token
+2. 使用管理员账号登录，点击“获取授权码”
+3. 在百度授权页面输入用户码，或扫描二维码并授权
+4. 返回管理页，点击“已完成百度授权，开始验证”
+5. 验证成功后凭证会安全保存并应用于后台任务；页面不显示完整 Token
 
 #### 方式二：命令行工具
 项目提供了一个便捷的命令行工具用于获取百度网盘的 Access Token：
 
 ```bash
-# 进入 get_token 目录
+# 进入命令行工具目录
 cd cmd/get_token
 
 # 设置必要的环境变量
@@ -115,13 +116,13 @@ export BAIDU_APP_KEY=your_app_key
 export BAIDU_SECRET_KEY=your_secret_key
 
 # 编译工具
-go build -o get_token main.go
+go build -o get_token .
 
 # 运行工具获取 Token
 ./get_token
 ```
 
-运行后，工具会显示授权链接和二维码，您需要：
+命令行工具会显示授权链接和二维码，并在完成后输出 Token。命令行输出不会自动保存到服务端凭证文件；需谨慎保管，生产使用优先选择网页授权。授权步骤：
 1. 在浏览器中打开链接或扫描二维码
 2. 登录百度账号并授权
 3. 工具会自动获取并显示 Access Token 和 Refresh Token
@@ -154,103 +155,31 @@ docker run -d \
 项目提供了 `docker-compose.yml` 文件，可以更方便地部署：
 
 ```bash
-# 设置环境变量
-export BAIDU_APP_KEY=your_app_key
-export BAIDU_SECRET_KEY=your_secret_key
-# Optional image metadata; Compose passes these values to the source build.
+# 复制并编辑 Compose 配置；QUEUE_DIR 是百度网盘远端目录，HOST_PORT 是宿主机端口。
+cp .env.example .env
+# 源码构建时写入版本和 revision；不设置时显示 dev/unknown。
 export BUILD_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
 export BUILD_REVISION=$(git rev-parse HEAD)
 
 # 构建时将版本与源码 revision 写入镜像；以后启动不需要重新构建
-docker-compose build
+docker compose build
 
 # 启动服务
-docker-compose up -d
+docker compose up -d
 ```
 
 ### Kubernetes 部署
 
-#### 创建 Deployment 和 Service
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: baidu-nas-downloader
-  labels:
-    app: baidu-nas-downloader
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: baidu-nas-downloader
-  template:
-    metadata:
-      labels:
-        app: baidu-nas-downloader
-    spec:
-      containers:
-      - name: baidu-nas-downloader
-        image: your-registry/baidu-nas-downloader:latest
-        ports:
-        - containerPort: 8080
-        env:
-        - name: BAIDU_APP_KEY
-          valueFrom:
-            secretKeyRef:
-              name: baidu-secrets
-              key: app-key
-        - name: BAIDU_SECRET_KEY
-          valueFrom:
-            secretKeyRef:
-              name: baidu-secrets
-              key: secret-key
-        volumeMounts:
-        - name: downloads-volume
-          mountPath: /下载
-        - name: queue-volume
-          mountPath: /NAS_Download_Queue
-      volumes:
-      - name: downloads-volume
-        persistentVolumeClaim:
-          claimName: downloads-pvc
-      - name: queue-volume
-        persistentVolumeClaim:
-          claimName: queue-pvc
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: baidu-nas-downloader
-spec:
-  selector:
-    app: baidu-nas-downloader
-  ports:
-    - protocol: TCP
-      port: 8080
-      targetPort: 8080
-  type: LoadBalancer
-```
-
-#### 创建 Secrets
-```bash
-kubectl create secret generic baidu-secrets \
-  --from-literal=app-key=your_app_key \
-  --from-literal=secret-key=your_secret_key
-```
-
-#### 应用配置
-```bash
-kubectl apply -f deployment.yaml
-```
+项目目前没有维护 Kubernetes manifest、持久卷权限迁移或集群网络验证。旧版示例使用公网 `LoadBalancer`，还把百度网盘远端队列路径误当成本地容器卷，不应继续照此部署。当前经过验证的容器方式见上方 Docker Compose；Kubernetes 部署需要按集群自行配置持久化下载目录、单实例写入和仅内网/受控代理访问。
 
 ## 使用流程
 
-1. 在百度网盘网页端安装油猴脚本
-2. 选中需要下载的文件/文件夹
-3. 点击油猴脚本按钮，核对目标管理地址后打开管理页；确认授权账号和路径，预检并明确确认后，服务端才会移动项目到队列
-4. 如果尚未配置 Access Token，通过网页 OAuth 或命令行工具获取
-5. Go 服务端自动检测并开始下载
-6. 通过 Web 界面实时监控下载进度
+1. 在百度网盘网页端安装油猴脚本并明确选中文件或文件夹
+2. 从脚本打开管理页，登录管理员账号；也可直接在管理页浏览选择云端项目
+3. 核对百度授权账号、源路径、固定队列目标和下载后处理策略；需要授权时先完成网页设备授权
+4. 预检并明确确认后，服务端才会把项目移动到下载队列
+5. 后台扫描并下载；默认 keep 会在完成后将队列顶层项目改名为 `.可删除`，delete 模式会删除顶层项目
+6. 通过管理页面查看进度、失败和需要人工核对的状态
 
 ## 项目结构
 

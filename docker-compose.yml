@@ -10,7 +10,7 @@ services:
     container_name: baidu-nas-downloader
     user: "${RUN_AS:-0:0}"
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${HOST_PORT:-8080}:8080"
     environment:
       - BAIDU_ACCESS_TOKEN=${BAIDU_ACCESS_TOKEN}
       - BAIDU_REFRESH_TOKEN=${BAIDU_REFRESH_TOKEN:-}
@@ -18,9 +18,9 @@ services:
       - BAIDU_APP_KEY=${BAIDU_APP_KEY}
       - BAIDU_SECRET_KEY=${BAIDU_SECRET_KEY}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
-      - QUEUE_DIR=/NAS_Download_Queue
+      - QUEUE_DIR=${QUEUE_DIR:-/NAS_Download_Queue}
       - LOCAL_DOWNLOAD_DIR=/下载
-      - SCAN_INTERVAL=30
+      - SCAN_INTERVAL=${SCAN_INTERVAL:-30}
       - MAX_PARALLEL=${MAX_PARALLEL:-2}
       - MAX_RETRIES=${MAX_RETRIES:-3}
       - RETRY_BACKOFF_SECONDS=${RETRY_BACKOFF_SECONDS:-5}
