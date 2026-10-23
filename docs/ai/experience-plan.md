@@ -116,6 +116,8 @@
 
 源项改名/删除在已启用持久化操作日志时会在请求前重新读取 `fs_id` 元数据并核对身份；该检查和云端操作之间仍存在远端竞态窗口。结果未知且缺少同步完成凭据的目录继续隔离，不提供人工放行入口。
 
+2026-10-24 复核百度公开文件管理契约：官方 [Go SDK `file_manager.go`](https://github.com/baidu-netdisk/baidu-drive-sdk-go/blob/main/baidudriver/api/file_manager.go)的 `RenameItem` 公开字段为 `path`/`newname`，该文件管理模型未提供按 `fs_id` 条件改名/删除的参数；官方 [MCP 文件管理说明](https://github.com/baidu-netdisk/mcp)对 rename、move、delete 同样列出 path 为操作对象。由此只能确认当前公开 SDK/MCP 契约没有暴露条件式 `fs_id` 操作，不能据此断言底层接口绝不存在；在取得适用于本 OAuth 应用的官方契约前，继续采用请求前身份复核，并保留剩余竞态说明。
+
 ## D10：并发目录下的文件 worker 预算
 
 - [x] 复现 v0.8.19 的多根目录放大：4 个目录各有 4 个文件、全局并发 4 时，16 个子文件任务都进入 downloading 状态，但只有 4 个实际传输。
