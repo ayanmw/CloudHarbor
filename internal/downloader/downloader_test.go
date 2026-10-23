@@ -1,17 +1,21 @@
 package downloader
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,7 +35,7 @@ type provider struct {
 	mu         sync.Mutex
 }
 
-func setup(t *testing.T, content http.HandlerFunc) (*Downloader, *provider) {
+func setup(t testing.TB, content http.HandlerFunc) (*Downloader, *provider) {
 	t.Helper()
 	srv := httptest.NewServer(content)
 	t.Cleanup(srv.Close)
@@ -89,6 +93,41 @@ func setup(t *testing.T, content http.HandlerFunc) (*Downloader, *provider) {
 	t.Cleanup(func() { shutdown(t, d) })
 	return d, p
 }
+
+func BenchmarkFolderDownloadsWithLatency(b *testing.B) {
+	for _, parallel := range []int{1, 4} {
+		b.Run(fmt.Sprintf("MaxParallel%d", parallel), func(b *testing.B) {
+			d, p := setup(b, func(w http.ResponseWriter, r *http.Request) {
+				time.Sleep(10 * time.Millisecond)
+				_, _ = io.WriteString(w, "abc")
+			})
+			d.cfg.MaxParallel = parallel
+			d.transferSlots = make(chan struct{}, parallel)
+			root := file(100, "benchmark-folder", 0)
+			root.IsDir = 1
+			for i := int64(1); i <= 8; i++ {
+				child := file(100+i, fmt.Sprintf("file-%d.bin", i), 3)
+				child.Path = path.Join(root.Path, child.ServerFilename)
+				p.lists[root.Path] = append(p.lists[root.Path], child)
+			}
+			local, err := d.localPath(root.ServerFilename)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := d.downloadLocalFolder(d.ctx, root, root.ServerFilename); err != nil {
+					b.Fatal(err)
+				}
+				b.StopTimer()
+				if err := os.RemoveAll(local); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+			}
+		})
+	}
+}
 func file(id int64, name string, size int64) baiduapi.FileInfo {
 	return baiduapi.FileInfo{FsID: id, Path: "/queue/" + name, ServerFilename: name, Size: size, Mtime: 123}
 }
@@ -135,6 +174,207 @@ func TestFolderFailureDoesNotMarkParent(t *testing.T) {
 	assertStatus(t, d, 10, "failed")
 	if len(p.actions) != 0 {
 		t.Fatalf("marked incomplete directory: %v", p.actions)
+	}
+}
+
+func TestFolderDownloadsSiblingFilesConcurrently(t *testing.T) {
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	var active, peak atomic.Int32
+	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		for old := peak.Load(); current > old && !peak.CompareAndSwap(old, current); old = peak.Load() {
+		}
+		defer active.Add(-1)
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-time.After(2 * time.Second):
+			http.Error(w, "timed out waiting for test release", http.StatusGatewayTimeout)
+			return
+		}
+		_, _ = io.WriteString(w, "abc")
+	})
+	defer releaseOnce.Do(func() { close(release) })
+	d.cfg.MaxParallel = 2
+
+	root := file(10, "folder", 0)
+	root.IsDir = 1
+	p.lists[root.Path] = []baiduapi.FileInfo{file(11, "one.bin", 3), file(12, "two.bin", 3)}
+	for i := range p.lists[root.Path] {
+		p.lists[root.Path][i].Path = path.Join(root.Path, p.lists[root.Path][i].ServerFilename)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- d.downloadLocalFolder(d.ctx, root, root.ServerFilename) }()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(300 * time.Millisecond):
+			releaseOnce.Do(func() { close(release) })
+			<-finished
+			t.Fatalf("only %d sibling file transfer(s) started concurrently", i+1)
+		}
+	}
+	releaseOnce.Do(func() { close(release) })
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if peak.Load() < 2 {
+		t.Fatalf("peak sibling transfers = %d, want at least 2", peak.Load())
+	}
+}
+
+func TestConcurrentFolderDownloadsShareMaxParallelTransferCap(t *testing.T) {
+	var active, peak atomic.Int32
+	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		for old := peak.Load(); current > old && !peak.CompareAndSwap(old, current); old = peak.Load() {
+		}
+		defer active.Add(-1)
+		time.Sleep(30 * time.Millisecond)
+		_, _ = io.WriteString(w, "abc")
+	})
+	d.cfg.MaxParallel = 2
+	var roots []baiduapi.FileInfo
+	for rootID := int64(10); rootID <= 20; rootID += 10 {
+		root := file(rootID, fmt.Sprintf("folder-%d", rootID), 0)
+		root.IsDir = 1
+		roots = append(roots, root)
+		for i := int64(1); i <= 2; i++ {
+			child := file(rootID+i, fmt.Sprintf("file-%d.bin", rootID+i), 3)
+			child.Path = path.Join(root.Path, child.ServerFilename)
+			p.lists[root.Path] = append(p.lists[root.Path], child)
+		}
+	}
+	var wg sync.WaitGroup
+	for _, root := range roots {
+		wg.Add(1)
+		go func(root baiduapi.FileInfo) {
+			defer wg.Done()
+			if err := d.downloadLocalFolder(d.ctx, root, root.ServerFilename); err != nil {
+				t.Errorf("download %s: %v", root.Path, err)
+			}
+		}(root)
+	}
+	wg.Wait()
+	if got := peak.Load(); got != 2 {
+		t.Fatalf("peak transfers across concurrent roots = %d, want exactly configured limit 2", got)
+	}
+}
+
+func TestFolderDownloadsRemainSequentialWhenMaxParallelIsOne(t *testing.T) {
+	var active, peak atomic.Int32
+	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		for old := peak.Load(); current > old && !peak.CompareAndSwap(old, current); old = peak.Load() {
+		}
+		defer active.Add(-1)
+		time.Sleep(10 * time.Millisecond)
+		_, _ = io.WriteString(w, "abc")
+	})
+	d.cfg.MaxParallel = 1
+	d.transferSlots = make(chan struct{}, 1)
+	root := file(10, "folder", 0)
+	root.IsDir = 1
+	for i := int64(1); i <= 2; i++ {
+		child := file(10+i, fmt.Sprintf("file-%d.bin", i), 3)
+		child.Path = path.Join(root.Path, child.ServerFilename)
+		p.lists[root.Path] = append(p.lists[root.Path], child)
+	}
+	if err := d.downloadLocalFolder(d.ctx, root, root.ServerFilename); err != nil {
+		t.Fatal(err)
+	}
+	if got := peak.Load(); got != 1 {
+		t.Fatalf("peak transfers = %d, want 1", got)
+	}
+}
+
+func TestFolderFailureStillDownloadsSiblingFiles(t *testing.T) {
+	var successful atomic.Int32
+	var requests atomic.Int32
+	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			http.Error(w, "fixture failure", http.StatusInternalServerError)
+			return
+		}
+		successful.Add(1)
+		_, _ = io.WriteString(w, "abc")
+	})
+	d.cfg.MaxParallel = 2
+	root := file(10, "folder", 0)
+	root.IsDir = 1
+	for i, name := range []string{"fail.bin", "ok.bin"} {
+		child := file(int64(11+i), name, 3)
+		child.Path = path.Join(root.Path, name)
+		p.lists[root.Path] = append(p.lists[root.Path], child)
+	}
+	err := d.downloadLocalFolder(d.ctx, root, root.ServerFilename)
+	if err == nil || !strings.Contains(err.Error(), "目录有 1 个失败项目") {
+		t.Fatalf("folder error = %v, want one aggregated failure", err)
+	}
+	if got := successful.Load(); got != 1 {
+		t.Fatalf("successful sibling transfers = %d, want 1", got)
+	}
+}
+
+func TestFolderCancellationStopsQueuedSiblingTransfers(t *testing.T) {
+	started := make(chan struct{}, 4)
+	var requestCount atomic.Int32
+	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		started <- struct{}{}
+		<-r.Context().Done()
+	})
+	d.cfg.MaxParallel = 2
+	d.transferSlots = make(chan struct{}, 2)
+	root := file(10, "folder", 0)
+	root.IsDir = 1
+	for i := int64(1); i <= 4; i++ {
+		child := file(10+i, fmt.Sprintf("file-%d.bin", i), 3)
+		child.Path = path.Join(root.Path, child.ServerFilename)
+		p.lists[root.Path] = append(p.lists[root.Path], child)
+	}
+	ctx, cancel := context.WithCancel(d.ctx)
+	finished := make(chan error, 1)
+	go func() { finished <- d.downloadLocalFolder(ctx, root, root.ServerFilename) }()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			cancel()
+			t.Fatal("timed out waiting for active sibling transfers")
+		}
+	}
+	cancel()
+	if err := <-finished; !errors.Is(err, context.Canceled) {
+		t.Fatalf("folder error = %v, want context canceled", err)
+	}
+	if got := requestCount.Load(); got != 2 {
+		t.Fatalf("started transfers after cancellation = %d, want exactly 2", got)
+	}
+}
+
+func TestFolderAuthenticationFailureStopsEnqueueingSiblings(t *testing.T) {
+	var requestCount atomic.Int32
+	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		http.Error(w, "expired", http.StatusUnauthorized)
+	})
+	d.cfg.MaxParallel = 2
+	root := file(10, "folder", 0)
+	root.IsDir = 1
+	for i := int64(1); i <= 5; i++ {
+		child := file(10+i, fmt.Sprintf("file-%d.bin", i), 3)
+		child.Path = path.Join(root.Path, child.ServerFilename)
+		p.lists[root.Path] = append(p.lists[root.Path], child)
+	}
+	err := d.downloadLocalFolder(d.ctx, root, root.ServerFilename)
+	if err == nil || !baiduapi.IsAuthenticationError(err) {
+		t.Fatalf("folder error = %v, want authentication error", err)
+	}
+	if got := requestCount.Load(); got < 1 || got > 2 {
+		t.Fatalf("content requests = %d, want between 1 and configured concurrency 2", got)
 	}
 }
 

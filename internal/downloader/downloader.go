@@ -79,6 +79,7 @@ type Downloader struct {
 	intakeJournal         intakeJournal
 	intakes               map[string]intakeRecord
 	inFlight              map[int64]bool
+	transferSlots         chan struct{}
 	modeMutex             sync.RWMutex
 	downloadMode          DownloadMode
 	taskCatalogGeneration atomic.Uint64
@@ -87,7 +88,11 @@ type Downloader struct {
 
 func NewDownloader(cfg *config.Config, client *baiduapi.Client) *Downloader {
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &Downloader{cfg: cfg, client: client, tasks: make(map[int64]*Task), inFlight: make(map[int64]bool), ctx: ctx, cancel: cancel, intakes: make(map[string]intakeRecord)}
+	parallel := cfg.MaxParallel
+	if parallel < 1 {
+		parallel = 2
+	}
+	d := &Downloader{cfg: cfg, client: client, tasks: make(map[int64]*Task), inFlight: make(map[int64]bool), transferSlots: make(chan struct{}, parallel), ctx: ctx, cancel: cancel, intakes: make(map[string]intakeRecord)}
 	d.queue = newScheduler(d)
 	return d
 }
@@ -273,6 +278,8 @@ func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.File
 		return err
 	}
 	var failures []error
+	files := make([]baiduapi.FileInfo, 0, len(children))
+	directories := make([]baiduapi.FileInfo, 0)
 	for _, child := range children {
 		if err := ctx.Err(); err != nil {
 			d.finish(info.FsID, err)
@@ -284,19 +291,83 @@ func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.File
 			continue
 		}
 		if !validName(child.ServerFilename) {
-			err = fmt.Errorf("invalid cloud filename %q", child.ServerFilename)
-		} else if child.Path != path.Join(info.Path, child.ServerFilename) {
-			err = fmt.Errorf("cloud child path does not match directory: %s", child.Path)
+			failures = append(failures, fmt.Errorf("%s: invalid cloud filename %q", child.Path, child.ServerFilename))
+			continue
+		}
+		if child.Path != path.Join(info.Path, child.ServerFilename) {
+			failures = append(failures, fmt.Errorf("%s: cloud child path does not match directory", child.Path))
+			continue
+		}
+		if child.IsDir == 1 {
+			directories = append(directories, child)
 		} else {
-			childRelative := filepath.Join(relative, child.ServerFilename)
-			if child.IsDir == 1 {
-				err = d.downloadLocalFolder(ctx, child, childRelative)
-			} else {
-				err = d.downloadLocalFile(ctx, child, childRelative)
+			files = append(files, child)
+		}
+	}
+	// Direct files use bounded workers. The shared transfer semaphore also
+	// covers files from other roots, so the configured limit is downloader-wide.
+	workers := cap(d.transferSlots)
+	if workers > len(files) {
+		workers = len(files)
+	}
+	if workers > 0 {
+		childCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		type fileJob struct {
+			index int
+			info  baiduapi.FileInfo
+		}
+		jobs := make(chan fileJob)
+		results := make([]error, len(files))
+		var authErr error
+		var authOnce sync.Once
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for job := range jobs {
+					if childCtx.Err() != nil {
+						continue
+					}
+					childRelative := filepath.Join(relative, job.info.ServerFilename)
+					err := d.downloadLocalFile(childCtx, job.info, childRelative)
+					if errors.Is(err, ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(err) {
+						authOnce.Do(func() { authErr = err; cancel() })
+						continue
+					}
+					results[job.index] = err
+				}
+			}()
+		}
+	feed:
+		for i, child := range files {
+			select {
+			case jobs <- fileJob{index: i, info: child}:
+			case <-childCtx.Done():
+				break feed
 			}
 		}
-		if err != nil {
+		close(jobs)
+		wg.Wait()
+		if authErr != nil {
+			d.finish(info.FsID, authErr)
+			return authErr
+		}
+		if err := ctx.Err(); err != nil {
+			d.finish(info.FsID, err)
+			return err
+		}
+		for i, err := range results {
+			if err != nil {
+				failures = append(failures, fmt.Errorf("%s: %w", files[i].Path, err))
+			}
+		}
+	}
+	for _, child := range directories {
+		if err = d.downloadLocalFolder(ctx, child, filepath.Join(relative, child.ServerFilename)); err != nil {
 			if errors.Is(err, ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(err) {
+				d.finish(info.FsID, err)
 				return err
 			}
 			failures = append(failures, fmt.Errorf("%s: %w", child.Path, err))
@@ -315,7 +386,15 @@ func (d *Downloader) downloadLocalFile(ctx context.Context, info baiduapi.FileIn
 	local, err := d.localPath(relative)
 	d.beginTask(info, local)
 	if err == nil {
-		err = d.transfer(ctx, info, relative, local)
+		select {
+		case d.transferSlots <- struct{}{}:
+			defer func() { <-d.transferSlots }()
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+		if err == nil {
+			err = d.transfer(ctx, info, relative, local)
+		}
 	}
 	d.finish(info.FsID, err)
 	return err

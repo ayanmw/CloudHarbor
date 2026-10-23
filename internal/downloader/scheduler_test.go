@@ -152,7 +152,7 @@ func waitForStatus(t *testing.T, d *Downloader, id int64, status string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
-func shutdown(t *testing.T, d *Downloader) {
+func shutdown(t testing.TB, d *Downloader) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

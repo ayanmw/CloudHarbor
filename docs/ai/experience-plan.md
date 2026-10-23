@@ -102,3 +102,13 @@
 - [x] WSL Go 1.22.2 ext4 合成 10,000 个新任务 reconcile：原逐条 Sync/目录 Sync 17.94 s；最终三次 3.90–4.78 s，约快 3.8–4.6 倍。Windows 10,000 条 taskstore 对照逐项 Save 34.38 s、批量 SaveBatch 26.89 s，约快 22%；Windows 目录同步按当前实现为空操作，因此该对照主要反映有界并行文件写入。合成样本不代表 NAS/SMB。
 - [x] v0.8.18-preview.1 三平台构建、全模块测试/race/vet、Node 测试、11 个 payload 哈希和 Linux AMD64 包内 smoke 通过，详见 [v0.8.18-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.18-preview.1-validation.md)。
 - [ ] 厂商 NAS/SMB 文件系统耐久语义和 10k+ 新任务扫描时延仍待目标环境验收。
+
+## D9：目录内文件传输并行度
+
+- [x] 单目录直接文件使用固定 worker 并行；所有根目录及嵌套目录共用 Downloader 级文件传输槽位，始终受 `MaxParallel` 限制。子目录仍逐层遍历，父目录仅在所有后代文件完成后结束并执行既有根项后处理。
+- [x] 保留文件失败聚合、认证失败停止排队、取消后等待活动传输退出；`MaxParallel=1` 行为仍为顺序文件传输。
+- [x] 固定延迟 8 文件夹基准（每个小文件 HTTP 响应延迟 10 ms），Windows 单样本 `MaxParallel=1` 为 172 ms、`MaxParallel=4` 为 56 ms，约 3.1 倍；这是并行度对照，不代表真实百度/NAS 吞吐。
+- [ ] 三平台独立 preview 包及包内 Linux 冒烟仍待完成。
+- [ ] 真实百度限流、NAS 写入吞吐和长时间运行下的最佳并发值仍需用户环境验收；`MaxParallel` 仍由使用者配置。
+
+源项改名/删除在已启用持久化操作日志时会在请求前重新读取 `fs_id` 元数据并核对身份；该检查和云端操作之间仍存在远端竞态窗口。结果未知且缺少同步完成凭据的目录继续隔离，不提供人工放行入口。
