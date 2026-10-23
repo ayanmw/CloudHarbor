@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.20-preview.1（全局预算约束目录文件 worker）
+
+- 复现并修复 v0.8.19 多根目录时每个目录都创建 `MaxParallel` 子 worker 的放大问题：4 个目录各 4 个文件、全局上限 4 时，旧实现让 16 个文件都进入 downloading，实际只允许 4 个传输。现在目录必须先预留 Downloader 级传输槽位再创建 worker；没有可用槽位的目录调用方顺序等待，不创建多余的文件 goroutine。活动传输和并发文件 worker 均受全局 `MaxParallel` 约束。
+- RED/GREEN 回归覆盖多目录等待 worker 数、同目录传输并发、跨根峰值上限、MaxParallel=1、普通失败聚合、认证失败停止排队、取消停止新任务并等待活动请求。固定延迟 8 小文件（每个本机 HTTP 响应 10 ms）对照单样本为串行 164.817 ms/op、MaxParallel=4 52.056 ms/op；约 3.2 倍，非真实百度/NAS 吞吐数据。
+- Windows 全模块 Go 测试/vet、WSL Go 1.22.2 全模块 race/vet、Node 17 项通过；Windows AMD64、Linux AMD64、Linux ARM64 构建通过。ZIP 解压后 11 个 payload 哈希匹配。Linux AMD64 包内版本/revision、AArch64 ELF 架构、认证 health=`waiting_authorization`、匿名 401、SIGTERM 后 `Service stopped` 和退出码 0 通过。
+- 源码 revision `fa52963771eb206ad61a9caf7707c60cdf3d39e6`。独立 ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.20-preview.1.zip`，10,119,925 字节，SHA256 `F4964E5BE526B7B27DCFFBE8DE8AF1A37CDD9BBBD624A80998B848717753ED18`；验证记录：[v0.8.20-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.20-preview.1-validation.md)。
+- 未使用真实百度凭证或执行云端操作。真实百度限流、NAS/SMB、Docker/ARM64 实机和长期运行仍未验收；unknown 目录仍持续隔离且无人工放行。
+
 ## v0.8.19-preview.1（目录内文件有界并行下载）
 
 - 单个目录内的直接文件可按 `MaxParallel` 使用固定 worker 并行传输；所有根任务和嵌套目录共用同一 Downloader 级传输槽位，不突破全局并发上限。目录递归仍逐层进行，父目录只在所有文件成功后完成并进入原有源项后处理。

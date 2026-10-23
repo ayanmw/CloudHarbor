@@ -118,4 +118,4 @@
 - [x] 复现 v0.8.19 的多根目录放大：4 个目录各有 4 个文件、全局并发 4 时，16 个子文件任务都进入 downloading 状态，但只有 4 个实际传输。
 - [x] 目录创建文件 worker 前先预留全局传输槽位；无可用槽位时由目录调用方按序等待，不再额外创建等待中的每文件 goroutine。活动传输与保留 worker 槽位统一受 `MaxParallel` 限制。
 - [x] 保留 sibling 并发、跨根全局传输上限、失败聚合、认证失败停止排队、取消排空和 `MaxParallel=1` 回归。
-- [ ] v0.8.20-preview.1 包与运行验证。
+- [x] v0.8.20-preview.1 完整测试/race/vet、Node、三平台构建、归档 payload 哈希与 Linux AMD64 启动验证通过。
