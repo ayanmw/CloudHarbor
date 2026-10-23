@@ -156,6 +156,12 @@ func (q *scheduler) reflect(job *queueJob) {
 	d.taskMutex.Lock()
 	defer d.taskMutex.Unlock()
 	task := d.tasks[job.Info.FsID]
+	if job.Status != "downloading" {
+		// queueJob is the durable source for inactive task views; retain Task only
+		// while it carries live transfer progress that queueJob cannot represent.
+		delete(d.tasks, job.Info.FsID)
+		return
+	}
 	if task == nil || task.FileInfo != job.Info {
 		task = &Task{FileInfo: job.Info}
 		d.tasks[job.Info.FsID] = task

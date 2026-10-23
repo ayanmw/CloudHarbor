@@ -59,6 +59,55 @@ func TestDefaultModeSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestRestoreKeepsTaskViewsWithoutMaterializingEveryTask(t *testing.T) {
+	base, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	stored, err := OpenDownloader(base.cfg, base.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdown(t, base)
+	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	job := queueJob{
+		Version: 1,
+		Info:    baiduapi.FileInfo{FsID: 31, Path: "/queue/restored.bin", ServerFilename: "restored.bin", Size: 4096},
+		Mode:    DownloadModeKeep, Status: "done", Attempts: 2, Created: created, Updated: created.Add(time.Minute),
+	}
+	body, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stored.queue.store.Save(job.Info.FsID, body); err != nil {
+		t.Fatal(err)
+	}
+	shutdown(t, stored)
+
+	restored, err := OpenDownloader(base.cfg, base.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { shutdown(t, restored) })
+	if len(restored.tasks) != 0 {
+		t.Fatalf("restored %d derived task objects at startup; want lazy task views", len(restored.tasks))
+	}
+
+	byID := restored.GetTaskByFsID(31)
+	if byID == nil || byID.Status != "done" || byID.Progress != 4096 || byID.Attempts != 2 || byID.StartTime != created || byID.FinishTime != created.Add(time.Minute) {
+		t.Fatalf("restored task lookup = %+v", byID)
+	}
+	tasks := restored.GetTasks()
+	if len(tasks) != 1 || tasks[0].FileInfo.FsID != 31 || tasks[0].TaskID != "31" {
+		t.Fatalf("restored task list = %+v", tasks)
+	}
+	page := restored.GetTaskPage(0, 10, "name")
+	if page.Total != 1 || page.Counts["done"] != 1 || len(page.Tasks) != 1 || page.Tasks[0].FileInfo.FsID != 31 {
+		t.Fatalf("restored task page = %+v", page)
+	}
+	total, counts := restored.GetTaskStats()
+	if total != 1 || counts["done"] != 1 {
+		t.Fatalf("restored task stats = total %d counts %+v", total, counts)
+	}
+}
+
 func TestOpenDownloaderClosesStoreWhenStreamingRestoreRejectsRecord(t *testing.T) {
 	base, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	d, err := OpenDownloader(base.cfg, base.getClient())
