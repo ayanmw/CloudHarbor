@@ -451,6 +451,44 @@ func (d *Downloader) GetTaskPage(offset, limit int, sortBy string) TaskPage {
 		}
 		return page
 	}
+	if sortBy == "progress" {
+		index := d.progressOrderIDsLocked(page.Total)
+		active := make([]taskCandidate, 0, len(index.activeIDs))
+		for _, id := range index.activeIDs {
+			active = append(active, d.taskCandidateLocked(id))
+		}
+		sort.Slice(active, func(i, j int) bool {
+			return taskCandidateComesBefore(active[i], active[j], "progress")
+		})
+		wanted := page.Total
+		if limit <= page.Total-offset {
+			wanted = offset + limit
+		}
+		selected := make([]taskCandidate, 0, wanted)
+		stableIndex, activeIndex := 0, 0
+		for len(selected) < wanted && (stableIndex < len(index.ids) || activeIndex < len(active)) {
+			if activeIndex < len(active) && (stableIndex == len(index.ids) || taskCandidateComesBefore(active[activeIndex], d.taskCandidateLocked(index.ids[stableIndex]), "progress")) {
+				selected = append(selected, active[activeIndex])
+				activeIndex++
+			} else {
+				selected = append(selected, d.taskCandidateLocked(index.ids[stableIndex]))
+				stableIndex++
+			}
+		}
+		start := offset
+		if start > len(selected) {
+			start = len(selected)
+		}
+		end := len(selected)
+		if limit < len(selected)-start {
+			end = start + limit
+		}
+		page.Tasks = make([]*Task, 0, end-start)
+		for _, candidate := range selected[start:end] {
+			page.Tasks = append(page.Tasks, d.taskWithActionsLocked(candidate.info().FsID, candidate.taskView(d)))
+		}
+		return page
+	}
 
 	wanted := page.Total
 	if offset < page.Total && limit <= page.Total-offset {
@@ -552,6 +590,64 @@ func (d *Downloader) taskOrderIDsLocked(sortBy string, capacity int) []int64 {
 	index.generation = generation
 	index.ready = true
 	return index.ids
+}
+
+// progressOrderIDsLocked caches only tasks whose progress cannot change until
+// taskStatsGeneration advances. Live downloads are merged separately per page.
+func (d *Downloader) progressOrderIDsLocked(capacity int) *progressTaskIndex {
+	index := &d.queue.progressIndex
+	generation := d.taskStatsGeneration.Load()
+	if index.ready && index.generation == generation {
+		return index
+	}
+	type progressEntry struct {
+		id    int64
+		fsid  int64
+		ratio float64
+	}
+	entries := make([]progressEntry, 0, capacity)
+	activeIDs := make([]int64, 0, len(d.tasks))
+	for id := range d.queue.jobs {
+		if task := d.tasks[id]; task != nil && task.Status == "downloading" {
+			activeIDs = append(activeIDs, id)
+			continue
+		}
+		candidate := d.taskCandidateLocked(id)
+		entries = append(entries, progressEntry{id: id, fsid: candidate.info().FsID, ratio: candidate.progressRatio(candidate.info())})
+	}
+	for id, task := range d.tasks {
+		if d.queue.jobs[id] != nil {
+			continue
+		}
+		if task.Status == "downloading" {
+			activeIDs = append(activeIDs, id)
+		} else {
+			candidate := taskCandidate{live: task}
+			entries = append(entries, progressEntry{id: id, fsid: candidate.info().FsID, ratio: candidate.progressRatio(candidate.info())})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].ratio != entries[j].ratio {
+			return entries[i].ratio > entries[j].ratio
+		}
+		return entries[i].fsid < entries[j].fsid
+	})
+	ids := make([]int64, len(entries))
+	for i := range entries {
+		ids[i] = entries[i].id
+	}
+	index.ids = ids
+	index.activeIDs = activeIDs
+	index.generation = generation
+	index.ready = true
+	return index
+}
+
+func (d *Downloader) taskCandidateLocked(id int64) taskCandidate {
+	if job := d.queue.jobs[id]; job != nil {
+		return taskCandidate{job: job, live: d.tasks[id]}
+	}
+	return taskCandidate{live: d.tasks[id]}
 }
 
 type taskCandidate struct {

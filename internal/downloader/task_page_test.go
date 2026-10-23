@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"testing"
 
@@ -238,6 +239,91 @@ func TestGetTaskPageProgressSortUsesLatestProgressAfterStableIndexBuild(t *testi
 	}
 }
 
+func TestProgressPageReusesStableIndexAcrossLiveProgressTicks(t *testing.T) {
+	d := NewDownloader(&config.Config{}, baiduapi.NewClient("", ""))
+	defer d.cancel()
+	d.queue.jobs[1] = &queueJob{Info: baiduapi.FileInfo{FsID: 1, Path: "/queue/done-dir", Size: 100, IsDir: 1}, Status: "done"}
+	d.queue.jobs[2] = &queueJob{Info: baiduapi.FileInfo{FsID: 2, Path: "/queue/live", Size: 100}, Status: "downloading"}
+	d.queue.jobs[3] = &queueJob{Info: baiduapi.FileInfo{FsID: 3, Path: "/queue/failed", Size: 100}, Status: "failed"}
+	d.tasks[2] = &Task{FileInfo: d.queue.jobs[2].Info, Status: "downloading"}
+
+	page := d.GetTaskPage(0, 1, "progress")
+	if len(page.Tasks) != 1 || page.Tasks[0].FileInfo.FsID != 1 {
+		t.Fatalf("initial progress page = %+v, want completed task 1", page.Tasks)
+	}
+	generation, stableIDs, activeIDs := progressIndexSnapshot(t, d.queue)
+	if !reflect.DeepEqual(stableIDs, []int64{1, 3}) {
+		t.Fatalf("stable progress IDs = %v, want [1 3]", stableIDs)
+	}
+	if !reflect.DeepEqual(activeIDs, []int64{2}) {
+		t.Fatalf("active progress IDs = %v, want [2]", activeIDs)
+	}
+
+	d.updateProgress(2, 75)
+	page = d.GetTaskPage(0, 1, "progress")
+	if len(page.Tasks) != 1 || page.Tasks[0].FileInfo.FsID != 2 {
+		t.Fatalf("updated progress page = %+v, want active task 2", page.Tasks)
+	}
+	gotGeneration, gotStableIDs, gotActiveIDs := progressIndexSnapshot(t, d.queue)
+	if gotGeneration != generation || !reflect.DeepEqual(gotStableIDs, stableIDs) || !reflect.DeepEqual(gotActiveIDs, activeIDs) {
+		t.Fatalf("live progress rebuilt index: generation %d->%d stable %v->%v active %v->%v", generation, gotGeneration, stableIDs, gotStableIDs, activeIDs, gotActiveIDs)
+	}
+}
+
+func TestProgressIndexInvalidatesWhenInactiveJobStatusChanges(t *testing.T) {
+	d := NewDownloader(&config.Config{}, baiduapi.NewClient("", ""))
+	defer d.cancel()
+	d.queue.jobs[1] = &queueJob{Info: baiduapi.FileInfo{FsID: 1, Path: "/queue/failed", Size: 100}, Status: "failed"}
+	d.queue.jobs[2] = &queueJob{Info: baiduapi.FileInfo{FsID: 2, Path: "/queue/done", Size: 100}, Status: "done"}
+
+	page := d.GetTaskPage(0, 1, "progress")
+	if len(page.Tasks) != 1 || page.Tasks[0].FileInfo.FsID != 2 {
+		t.Fatalf("initial progress page = %+v, want done task 2", page.Tasks)
+	}
+	generation, ids, activeIDs := progressIndexSnapshot(t, d.queue)
+	if !reflect.DeepEqual(ids, []int64{2, 1}) {
+		t.Fatalf("initial stable progress IDs = %v, want [2 1]", ids)
+	}
+	if len(activeIDs) != 0 {
+		t.Fatalf("initial active progress IDs = %v, want none", activeIDs)
+	}
+
+	d.queue.jobs[2].Status = "failed"
+	if err := d.queue.persist(d.queue.jobs[2]); err != nil {
+		t.Fatal(err)
+	}
+	page = d.GetTaskPage(0, 1, "progress")
+	if len(page.Tasks) != 1 || page.Tasks[0].FileInfo.FsID != 1 {
+		t.Fatalf("updated progress page = %+v, want lowest FsID among failed tasks", page.Tasks)
+	}
+	gotGeneration, gotIDs, gotActiveIDs := progressIndexSnapshot(t, d.queue)
+	if gotGeneration == generation || !reflect.DeepEqual(gotIDs, []int64{1, 2}) {
+		t.Fatalf("status change left stale progress index: generation %d->%d ids=%v", generation, gotGeneration, gotIDs)
+	}
+	if len(gotActiveIDs) != 0 {
+		t.Fatalf("updated active progress IDs = %v, want none", gotActiveIDs)
+	}
+}
+
+func progressIndexSnapshot(t *testing.T, q *scheduler) (uint64, []int64, []int64) {
+	t.Helper()
+	index := reflect.ValueOf(q).Elem().FieldByName("progressIndex")
+	if !index.IsValid() || !index.FieldByName("ready").Bool() {
+		t.Fatal("stable progress index is not ready")
+	}
+	idsField := index.FieldByName("ids")
+	ids := make([]int64, idsField.Len())
+	for i := range ids {
+		ids[i] = idsField.Index(i).Int()
+	}
+	activeField := index.FieldByName("activeIDs")
+	activeIDs := make([]int64, activeField.Len())
+	for i := range activeIDs {
+		activeIDs[i] = activeField.Index(i).Int()
+	}
+	return index.FieldByName("generation").Uint(), ids, activeIDs
+}
+
 func BenchmarkTaskSnapshotsWithLargeHistory(b *testing.B) {
 	d := NewDownloader(&config.Config{}, baiduapi.NewClient("", ""))
 	defer d.cancel()
@@ -297,6 +383,14 @@ func BenchmarkTaskPageIndexes(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
+					_ = d.GetTaskPage(0, 100, "progress")
+				}
+			})
+			b.Run("progress_cold", func(b *testing.B) {
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					d.taskStatsGeneration.Add(1)
 					_ = d.GetTaskPage(0, 100, "progress")
 				}
 			})

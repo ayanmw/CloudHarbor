@@ -31,12 +31,12 @@ type queueJob struct {
 	candidate   *candidateEntry
 }
 type scheduler struct {
-	mu             sync.Mutex
-	owner          *Downloader
-	store          *taskstore.Store
-	jobs           map[int64]*queueJob
-	ready          candidateHeap
-	delayed        candidateHeap
+	mu      sync.Mutex
+	owner   *Downloader
+	store   *taskstore.Store
+	jobs    map[int64]*queueJob
+	ready   candidateHeap
+	delayed candidateHeap
 	// eligible points into jobs when scan metadata matches, and owns a separate
 	// snapshot only while a changed identity conflicts with an active/unknown job.
 	eligible       map[int64]*baiduapi.FileInfo
@@ -54,6 +54,7 @@ type scheduler struct {
 	statsCache     taskStatsCache
 	nameIndex      taskOrderIndex
 	sizeIndex      taskOrderIndex
+	progressIndex  progressTaskIndex
 }
 
 type taskStatsCache struct {
@@ -65,6 +66,13 @@ type taskStatsCache struct {
 
 type taskOrderIndex struct {
 	ids        []int64
+	generation uint64
+	ready      bool
+}
+
+type progressTaskIndex struct {
+	ids        []int64
+	activeIDs  []int64
 	generation uint64
 	ready      bool
 }
