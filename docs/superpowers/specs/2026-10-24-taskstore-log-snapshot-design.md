@@ -1,5 +1,7 @@
 # Task history journal and snapshot design
 
+中文版本：[任务历史日志与快照设计](2026-10-24-taskstore-log-snapshot-design.zh-CN.md)。
+
 ## Intent
 
 Reduce restart cost on NAS filesystems by replacing one-file-per-root-task history with sequential journal replay plus periodic snapshots. Existing v1 queues must migrate without dropping task history or weakening the source-operation uncertainty rules. The downloader will continue to keep the current in-memory job map after startup; this change targets startup file operations and future persistence cost, not resident memory.
