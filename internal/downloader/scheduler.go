@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path"
@@ -724,6 +725,9 @@ func downloadErrorClass(err error) string {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "deadline_exceeded"
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return "incomplete_stream"
 	}
 	var pathErr *os.PathError
 	if errors.As(err, &pathErr) {

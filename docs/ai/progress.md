@@ -1,5 +1,11 @@
 # 持续优化进度
 
+## v0.8.30-preview.6（事件中区分下载短流）
+
+- `io.ErrUnexpectedEOF` 事件新增 `error_class=incomplete_stream`，与普通网络错误、网络超时、文件系统错误及提供方 API 错误区分；不写原始错误文本，不改既有重试策略。
+- RED/GREEN 回归先观察到短流只记为 `other_error`，修复后验证类别准确，且事件没有写入 `unexpected EOF` 原文。
+- 独立包及验证记录：`v0.8.30-preview.6-validation.md`。真实百度、NAS/SMB、实机浏览器和 race detector 仍待验证。
+
 ## v0.8.30-preview.5（重试时清理已发布文件的残留硬链接）
 
 - 如果最终文件和完成凭据已经发布，但临时 `content.part` 硬链接删除暂时失败，后续重试在重新验证最终文件、目录同步成功后，仅删除经 `os.SameFile` 确认为同一文件的残留名称；cleanup 失败不影响已验证的最终文件，其他部分文件不删除。

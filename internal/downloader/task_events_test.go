@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -245,6 +246,24 @@ func TestDownloadAttemptEventDistinguishesNetworkTimeoutWithoutLeakingURL(t *tes
 	}
 	if strings.Contains(string(event.Evidence), "private.example") || strings.Contains(string(event.Evidence), "token=secret") {
 		t.Fatalf("sensitive URL leaked into event evidence: %s", event.Evidence)
+	}
+}
+
+func TestDownloadAttemptEventClassifiesIncompleteStream(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	job := &queueJob{Version: 1, Info: file(1, "one.bin", 1), Mode: DownloadModeKeep, Status: "downloading", Attempts: 1}
+	store := seedEventJob(t, d, job)
+	d.queue.complete(job, io.ErrUnexpectedEOF)
+	event, err := latestTaskEvent(t, store, 1, "download_attempt_finished")
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := decodeEventEvidence(t, event)
+	if evidence["error_class"] != "incomplete_stream" {
+		t.Fatalf("incomplete stream evidence class = %#v", evidence["error_class"])
+	}
+	if string(event.Evidence) == "" || strings.Contains(string(event.Evidence), "unexpected EOF") {
+		t.Fatalf("raw incomplete-stream error leaked into evidence: %s", event.Evidence)
 	}
 }
 
