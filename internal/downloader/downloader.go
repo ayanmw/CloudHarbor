@@ -466,8 +466,12 @@ func (d *Downloader) postprocess(ctx context.Context, info baiduapi.FileInfo, mo
 	}
 	if tracked {
 		current, verifyErr := client.GetFileInfo(info.FsID)
-		if errors.Is(verifyErr, baiduapi.ErrFileMetadataMissing) || (verifyErr == nil && current != info) {
-			verifyErr = ErrSourceIdentityChanged
+		verifyObservedAt := time.Now().UTC()
+		if errors.Is(verifyErr, baiduapi.ErrFileMetadataMissing) {
+			verifyErr = &sourceIdentityChangedError{observedAt: verifyObservedAt, missing: true}
+		} else if verifyErr == nil && current != info {
+			observed := current
+			verifyErr = &sourceIdentityChangedError{observed: &observed, observedAt: verifyObservedAt}
 		}
 		if verifyErr != nil {
 			return d.finishSourceOperation(info, verifyErr)

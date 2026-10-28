@@ -203,6 +203,49 @@ func TestChangedSourceIdentityPreventsPostprocess(t *testing.T) {
 	}
 }
 
+func TestMissingSourceIdentityRecordsMetadataResponseEvidence(t *testing.T) {
+	base, p := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "abc") })
+	d, err := OpenDownloader(base.cfg, base.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, d)
+	info := file(75, "vanished.txt", 3)
+	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeDelete, Status: "downloading", Created: time.Now()}
+	d.queue.mu.Lock()
+	d.queue.jobs[info.FsID] = job
+	if err = d.queue.persist(job); err != nil {
+		d.queue.mu.Unlock()
+		t.Fatal(err)
+	}
+	d.queue.mu.Unlock()
+	err = d.postprocess(context.Background(), info, DownloadModeDelete)
+	if !errors.Is(err, ErrSourceIdentityChanged) {
+		t.Fatalf("postprocess error=%v, want missing source identity conflict", err)
+	}
+	event, err := latestTaskEvent(t, d.queue.store, info.FsID, "source_identity_changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.ResponseObservedAtUTC == nil || event.CloudObservedAtUTC != nil || event.OccurredAtUTC != nil {
+		t.Fatalf("missing metadata response time was not classified separately: %+v", event)
+	}
+	var evidence struct {
+		Expected baiduapi.FileInfo  `json:"expected"`
+		Observed *baiduapi.FileInfo `json:"observed"`
+		Missing  bool               `json:"missing"`
+	}
+	if err = json.Unmarshal(event.Evidence, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Expected != info || evidence.Observed != nil || !evidence.Missing {
+		t.Fatalf("missing source evidence is incomplete: %+v", evidence)
+	}
+	if len(p.actions) != 0 {
+		t.Fatalf("missing source unexpectedly caused cloud postprocessing: %v", p.actions)
+	}
+}
+
 func TestChangedSourceIdentityWaitsForFreshListingBeforeRetry(t *testing.T) {
 	base, p := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "abc") })
 	d, err := OpenDownloader(base.cfg, base.client)
@@ -230,6 +273,24 @@ func TestChangedSourceIdentityWaitsForFreshListingBeforeRetry(t *testing.T) {
 	}
 	if err.Error() != ErrSourceIdentityChanged.Error() {
 		t.Fatalf("identity conflict was described as retryable: %v", err)
+	}
+	event, eventErr := latestTaskEvent(t, d.queue.store, original.FsID, "source_identity_changed")
+	if eventErr != nil {
+		t.Fatal(eventErr)
+	}
+	if event.ResponseObservedAtUTC == nil || event.CloudObservedAtUTC != nil || event.OccurredAtUTC != nil {
+		t.Fatalf("metadata response time was not kept distinct from scan/occurrence time: %+v", event)
+	}
+	var identityEvidence struct {
+		Expected baiduapi.FileInfo  `json:"expected"`
+		Observed *baiduapi.FileInfo `json:"observed"`
+		Missing  bool               `json:"missing"`
+	}
+	if eventErr = json.Unmarshal(event.Evidence, &identityEvidence); eventErr != nil {
+		t.Fatal(eventErr)
+	}
+	if identityEvidence.Expected != original || identityEvidence.Observed == nil || *identityEvidence.Observed != changed || identityEvidence.Missing {
+		t.Fatalf("identity mismatch evidence did not preserve expected and observed cloud metadata: %+v", identityEvidence)
 	}
 	d.queue.complete(job, err)
 	if err = d.Retry(original.FsID); !errors.Is(err, ErrTaskConflict) {

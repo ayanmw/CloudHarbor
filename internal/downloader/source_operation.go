@@ -15,6 +15,15 @@ import (
 var ErrSourceOperationUnknown = errors.New("网盘后处理结果未知，保持隔离，禁止重发")
 var ErrSourceIdentityChanged = errors.New("网盘源项身份已变化，未执行改名或删除")
 
+type sourceIdentityChangedError struct {
+	observed   *baiduapi.FileInfo
+	observedAt time.Time
+	missing    bool
+}
+
+func (e *sourceIdentityChangedError) Error() string { return ErrSourceIdentityChanged.Error() }
+func (e *sourceIdentityChangedError) Unwrap() error { return ErrSourceIdentityChanged }
+
 func validSourceRecord(job *queueJob) bool {
 	if job.AttemptID != "" {
 		decoded, err := hex.DecodeString(job.AttemptID)
@@ -170,8 +179,12 @@ func (d *Downloader) finishSourceOperation(info baiduapi.FileInfo, operationErr 
 		job.SourceOperationID = ""
 		job.SourceAttemptID = ""
 		event.Kind = "source_identity_changed"
-		event.EvidenceType = "local_identity_conflict"
-		event.CloudObservedAtUTC = &responseObservedAt
+		event.EvidenceType = "baidu_file_metadata_recheck"
+		var identityErr *sourceIdentityChangedError
+		if errors.As(operationErr, &identityErr) {
+			event.ResponseObservedAtUTC = &identityErr.observedAt
+			event.Evidence = sourceIdentityChangedEvidence(info, identityErr)
+		}
 	case operationErr == nil:
 		job.SourceState = "confirmed"
 		job.Status = "done"
@@ -196,7 +209,9 @@ func (d *Downloader) finishSourceOperation(info baiduapi.FileInfo, operationErr 
 		event.Kind = "source_operation_retryable_failure"
 		event.EvidenceType = "explicit_retryable_failure"
 	}
-	event.Evidence = sourceOperationResultEvidence(info, job.SourceState, operationErr)
+	if len(event.Evidence) == 0 {
+		event.Evidence = sourceOperationResultEvidence(info, job.SourceState, operationErr)
+	}
 	if err := q.persistWithEvent(job, event); err != nil {
 		// The old durable sending record must remain authoritative if saving a
 		// receipt fails. Never let the in-memory state release the quarantine.
@@ -212,4 +227,13 @@ func (d *Downloader) finishSourceOperation(info baiduapi.FileInfo, operationErr 
 	q.rebuildSourceBlocks()
 	q.reflect(job)
 	return operationErr
+}
+
+func sourceIdentityChangedEvidence(expected baiduapi.FileInfo, change *sourceIdentityChangedError) json.RawMessage {
+	body, _ := json.Marshal(struct {
+		Expected baiduapi.FileInfo  `json:"expected"`
+		Observed *baiduapi.FileInfo `json:"observed,omitempty"`
+		Missing  bool               `json:"missing"`
+	}{expected, change.observed, change.missing})
+	return body
 }

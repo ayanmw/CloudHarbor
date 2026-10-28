@@ -1,5 +1,11 @@
 # 持续优化进度
 
+## v0.8.30-preview.20（记录源身份复核的实际云端元数据）
+
+- 改名或删除前的 `filemetas` 复核若发现同一 `fs_id` 元数据已变化，`source_identity_changed` 事件现在并列保存任务预期元数据与本次响应观察到的实际元数据；若云端已无此 `fs_id`，明确记录 `missing=true`。
+- 元数据复核结果写入 `response_observed_at_utc`，不再误记为目录扫描时间或事件发生时间。不会保存访问令牌、原始错误文本，也不改变身份复核和源项隔离行为。
+- 回归覆盖同 ID 内容变化、ID 缺失及不执行源操作；本机模拟 provider 证明事件证据和时间类别，不代表真实百度接口语义或消除核对到操作之间的竞态。
+
 ## v0.8.30-preview.19（迁移数据库无覆盖写通发布）
 
 - 新增 `durablefs.PublishNoReplace`，统一 Windows 最终下载文件和 v1 迁移 SQLite 数据库发布路径。Windows 使用不带 `REPLACE_EXISTING` 的 `MoveFileExW(MOVEFILE_WRITE_THROUGH)`；Linux 保持 `renameat2(RENAME_NOREPLACE)`；其他平台继续失败关闭。
