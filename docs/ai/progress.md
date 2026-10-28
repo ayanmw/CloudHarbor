@@ -1,5 +1,15 @@
 # 持续优化进度
 
+## v0.8.26-preview.1（管理页核查 SQLite 任务事件）
+
+- 新增管理员认证保护的只读 `GET /api/tasks/{id}/events`，按任务读取最新事件，默认 20 条、最多 50 条，使用 exclusive `before_sequence` keyset 游标；事件按 sequence 正序展示。空历史返回空数组，不存在的任务返回 404。
+- WebSocket 与轮询任务列表的根任务行新增“查看事件”，首次展开才读取；支持刷新和读取更早事件。时间字段分别标明本机记录、提供方发生、云端扫描观察、HTTP 响应观察及未来重试计划，并原样保留 UTC；结构化 evidence 转义为文本。没有事件修改/删除、跨任务全库 API 或隔离放行功能。
+- SQLite 回归验证重开数据库、连续翻页、查询期间新事件追加后旧游标稳定、空历史、任务隔离和参数边界；HTTP 回归覆盖管理员认证、匿名 401、无效参数 400、未知任务 404、非 GET 405 和下一页 cursor；WebUI/油猴共 19 项通过。
+- 打包门禁：Windows 全模块 Go 测试、`go vet`、WebUI 16 项和油猴 3 项通过；Windows AMD64/Linux AMD64/Linux ARM64 无 CGO 构建通过。将 Node 两文件测试拆为独立进程，避开当前 Windows 受限环境下 `node --test` 多文件 runner 的 `spawn EPERM`。
+- 包内 Windows 程序版本为 `v0.8.26-preview.1`，revision `56aac264d9eb1e7214c5634a7e0f36246b55fb9e`；无百度凭证启动冒烟显示 `waiting_authorization`，匿名 health 401、未知 task events 404、打包事件 UI 资源 200。ZIP 含 12 项，11 个 payload 与校验清单/归档内容一致；SHA256 `BD1ECD5FE613735A4EA4A28DA2C9568AB030F5AE6DD0AB22C9FB80A05A575BE6`。
+- 独立包：[v0.8.26-preview.1.zip](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.26-preview.1.zip)；证据：[v0.8.26-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.26-preview.1-validation.md)。
+- 没有真实百度账号或 NAS/SMB 环境验证；真实云端链路、目标文件系统锁/刷盘与掉电耐久、实机浏览器和长期运行仍需目标环境验收。全量 Go race 未在本预览包流程中执行。
+
 ## v0.8.25-preview.1（补齐 SQLite 关键任务事件证据）
 
 - 新增取消、手动重试、成功扫描后的鉴权恢复/源项不再具备资格事件；下载尝试事件增加稳定结果分类、可用的 HTTP/提供方错误码、HTTP 响应观察时间和 UTC 未来重试计划。任务投影与事件仍同事务提交，不改 schema、状态机、重试策略或管理页接口。

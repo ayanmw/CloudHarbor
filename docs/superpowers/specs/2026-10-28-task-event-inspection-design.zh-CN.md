@@ -33,4 +33,4 @@
 - `Store.EventPage` 使用 `(job_id, sequence)` 索引及 exclusive `before_sequence` 游标，每页最多 50 条，选取最新窗口后按 sequence 正序返回。Downloader 提供任务级转接，HTTP 端点为 `GET /api/tasks/{id}/events`，默认 20 条，匿名请求沿用管理门禁返回 401。
 - WebSocket 与轮询任务列表都增加“查看事件”展开项；默认只取最新一页，支持刷新和读取更早记录。UTC 时间字段分开显示，证据 JSON 转义显示。接口与页面不提供任何事件修改或隔离放行操作。
 - Store 测试覆盖重开数据库后的连续翻页、追加事件期间旧游标稳定、任务隔离、空历史和非法参数；HTTP 测试覆盖 401/400/404/405 及 cursor；Node 测试覆盖按需查询、页面接线、时间缺失和证据转义。
-- 全模块 Go 测试、`go vet`、WebUI 16 项和油猴 3 项通过。发布包构建、哈希与包内 HTTP 冒烟结果待加入发布验证记录。
+- 全模块 Go 测试、`go vet`、WebUI 16 项和油猴 3 项通过。v0.8.26-preview.1 三平台无 CGO 包构建成功；ZIP 中 11 个 payload 哈希一致；包内 Windows 进程无百度凭证运行后，health 为 `waiting_authorization`、匿名请求 401、未知 task event 404、嵌入式事件 UI 资源 200。完整证据见发布目录验证记录。
