@@ -24,4 +24,6 @@
 
 ## 后续核查
 
-源码审计发现 Rename/Delete 尚未像 Move 一样严格检查 taskid、info 单项完整性及禁止 POST 重定向重放。本轮的分类测试不证明其完整完成契约。下一步先复现这些响应/重放边界，再设计源后处理不确定结果的恢复方式；需要避免异步受理误报完成，也不能盲目重复操作。异步完成查询仍没有可靠的公开契约证据，不使用网页 Cookie 接口替代，不开放人工覆盖隔离。
+**已于 2026-10-29 对照当前源码关闭 Rename/Delete 响应边界项。**原先“下一步先复现”的描述已过时：`internal/baiduapi/source_operation.go` 现在禁止重定向重放，要求恰好一个带 errno 的单项结果，并将非零 taskid、业务 errno=111、缺失/不完整响应和非 401 的 HTTP/网络不确定结果视为未确认；`internal/baiduapi/source_operation_test.go` 覆盖不完整回执与 307 单次请求，`internal/downloader/source_operation_test.go` 覆盖不确定结果隔离及重启不重发。对应持久化状态、后处理和页面行为见 `source-operation-plan.md`。
+
+**仍未关闭的外部事项：**可靠异步完成查询没有适用于当前 OAuth 文件管理 Move 的已核实契约，真实百度账号及 NAS/SMB 链路也未验收。因此 taskid/运行中响应仍保持 `source_unknown` 隔离；不使用网页 Cookie 接口，不按路径可见性推断完成，也不开放人工覆盖隔离。
