@@ -8,6 +8,7 @@
 - 本机 100,000 个最小合成任务与 100,000 条通用状态事件占用 36,716,544 字节（约 35.02 MiB），`integrity_check=ok`；每项平均约 367 字节。完整云端文件信息与操作证据会增加事件体积，此数据只是容量基线。迁移后 v1 文件仍保留，旧格式副本暂未清理。
 - 对 100,000 条真实结构形状的合成 v1 JSON 做完整迁移：创建文件 45.73 s，迁移/完整重开等价校验 34.17 s；源 JSON 逻辑长度 23,766,685 字节，SQLite 41,881,600 字节，切换后源目录仍有 100,000 个文件，两者合计约 65.65 MB。SQLite 完整性及任务/事件计数为 `ok`、100,000/100,000。此为单次 Windows 本机测量；目标 NAS/SMB 迁移耗时和实际分配量未测。
 - 解压后的 Windows 包从独立目录启动并创建 SQLite 状态库；匿名 health=401，Basic 认证 health=200，状态显示 `waiting_authorization` 和包内版本/revision。Ctrl+C 后服务日志报告 `Service stopped`，18090 端口不再监听；PowerShell 外层 PTY因 Ctrl+C 返回 1，因此不宣称外层 shell exit 0。未提供真实百度凭证，也未进行云端操作。
+- 本机 10,000 条 SQLite 写入基准显示逐条各自提交约 52.83 秒，单次 `SaveBatch` 事务约 212 毫秒；10k/4,096/1,024 记录分批的一次性样本约 274/279/329 毫秒（第二组使用最小 payload，不与前组作严格 A/B）。因此入队批量路径继续合并事务，下载和线上副作用状态仍逐项先提交，避免异步攒批造成证据缺口。
 - 11 个 payload SHA256 与清单匹配；ZIP 与发布目录 12 个文件一致；Linux AMD64/ARM64 ELF64 machine 分别为 62/183；Windows `-version` 输出的版本/revision 与清单一致。
 - 源码 revision `37aa64a7b13d4f314942aaa3842a0c7d9c06c45c`。独立 ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.23-preview.1.zip`，15,132,493 字节，SHA256 `68DF6B28D423EBABD959DBABCE469F5E3EB72FC3E70C80EC277F74777187C14A`。详细验证：[v0.8.23-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.23-preview.1-validation.md)。
 - 真实 NAS/SMB 的锁、刷盘与断电恢复、真实百度异步完成查询契约、浏览器/油猴实机兼容及长时间运行仍未验收；本包不等同这些环境的认证。
