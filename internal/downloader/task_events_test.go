@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,18 +202,22 @@ func TestDownloadAttemptEventStoresClassAndFutureRetryTime(t *testing.T) {
 	}
 }
 
-func TestDownloadAttemptEventStoresBoundedFailureReason(t *testing.T) {
+func TestDownloadAttemptEventStoresSafeFailureClassWithoutRawError(t *testing.T) {
 	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	job := &queueJob{Version: 1, Info: file(1, "one.bin", 1), Mode: DownloadModeKeep, Status: "downloading", Attempts: 1}
 	store := seedEventJob(t, d, job)
-	d.queue.complete(job, errors.New("local disk write failed"))
-	event, err := latestTaskEvent(t, store, 1, "download_attempt_finished")
-	if err != nil {
-		t.Fatal(err)
+	failure := &os.PathError{Op: "write", Path: `C:\private\secret.bin`, Err: errors.New("disk write failed")}
+	d.queue.complete(job, failure)
+	event, lookupErr := latestTaskEvent(t, store, 1, "download_attempt_finished")
+	if lookupErr != nil {
+		t.Fatal(lookupErr)
 	}
 	evidence := decodeEventEvidence(t, event)
-	if evidence["error_summary"] != "local disk write failed" {
-		t.Fatalf("attempt evidence missing failure reason: %#v", evidence)
+	if evidence["error_class"] != "filesystem_error" {
+		t.Fatalf("attempt evidence missing safe failure class: %#v", evidence)
+	}
+	if strings.Contains(string(event.Evidence), "secret.bin") || strings.Contains(string(event.Evidence), "disk write failed") {
+		t.Fatalf("raw error leaked into event evidence: %s", event.Evidence)
 	}
 }
 

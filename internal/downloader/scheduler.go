@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -659,8 +661,8 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 		ProviderOperation  string     `json:"provider_operation,omitempty"`
 		ProviderHTTPStatus int        `json:"provider_http_status,omitempty"`
 		ProviderErrorCode  int        `json:"provider_error_code,omitempty"`
-		ErrorSummary       string     `json:"error_summary,omitempty"`
-	}{job.Status, downloadOutcomeClass(job, err, q.stopping), job.Attempts, job.Failures, job.SourceState, nextAttempt, providerOperation, providerHTTPStatus, providerErrorCode, errorSummary(job.Error)})
+		ErrorClass         string     `json:"error_class,omitempty"`
+	}{job.Status, downloadOutcomeClass(job, err, q.stopping), job.Attempts, job.Failures, job.SourceState, nextAttempt, providerOperation, providerHTTPStatus, providerErrorCode, downloadErrorClass(err)})
 	if saveErr := q.persistWithEvent(job, taskstore.Event{Kind: "download_attempt_finished", AttemptID: executed.AttemptID, ResponseObservedAtUTC: responseObservedAt, EvidenceType: "local_attempt_result", Evidence: resultEvidence}); saveErr != nil {
 		job.Status = "failed"
 		job.Error = q.err.Error()
@@ -708,6 +710,30 @@ func apiError(err error) *baiduapi.APIError {
 		return apiErr
 	}
 	return nil
+}
+
+func downloadErrorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	if apiError(err) != nil {
+		return "provider_api_error"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded"
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return "filesystem_error"
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		return "network_error"
+	}
+	return "other_error"
 }
 
 var ErrTaskNotFound = errors.New("task not found")
