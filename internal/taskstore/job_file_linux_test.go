@@ -73,29 +73,30 @@ func TestOpenJobFileReadsRegularRecord(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsSymlinkJobRecord(t *testing.T) {
+func TestOpenRejectsSymlinkDatabase(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "queue")
 	store, err := Open(dir, "/preview")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.Save(1, []byte(`{"status":"done"}`)); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	job := filepath.Join(dir, "jobs", "1.json")
-	if err := os.Remove(job); err != nil {
+	database := filepath.Join(dir, "queue.sqlite")
+	if err := os.Remove(database); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(t.TempDir(), "outside.json")
-	if err := os.WriteFile(target, []byte(`{"status":"done"}`), 0600); err != nil {
+	target := filepath.Join(t.TempDir(), "outside.sqlite")
+	if err := os.WriteFile(target, []byte("not a database"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, job); err != nil {
+	if err := os.Symlink(target, database); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	if _, err := store.Load(); err == nil {
-		t.Fatal("loaded a symlinked job record")
+	if reopened, err := Open(dir, "/preview"); err == nil {
+		reopened.Close()
+		t.Fatal("opened a symlinked database")
 	}
 }
 

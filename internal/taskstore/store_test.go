@@ -1,18 +1,14 @@
 package taskstore
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -105,8 +101,9 @@ func TestSaveBatchRoundTripsRecordsAndRejectsInvalidBatchWithoutPublishing(t *te
 	if err == nil {
 		t.Fatal("invalid JSON batch was accepted")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "jobs", "11.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("valid prefix of rejected batch was published: %v", err)
+	var count int
+	if err := s.db.QueryRow(`SELECT count(*) FROM jobs WHERE id=11`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("valid prefix of rejected batch was published: count=%d err=%v", count, err)
 	}
 }
 
@@ -166,88 +163,6 @@ func TestLoadEachVisitsRecordsInFilenameOrderWithoutBuildingResultMap(t *testing
 	}
 }
 
-func TestLoadEachConcurrentReadsKeepFilenameCallbackOrder(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "queue")
-	s, err := Open(dir, "/preview")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	for _, id := range []int64{1, 2, 3} {
-		if err := s.Save(id, []byte(`{"id":`+strconv.FormatInt(id, 10)+`}`)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	jobsDir, err := openJobDirectory(filepath.Join(dir, "jobs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer jobsDir.Close()
-	entries, err := jobsDir.ReadDir(-1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-
-	firstReadStarted := make(chan struct{})
-	secondReadStarted := make(chan struct{})
-	firstReadFinished := make(chan struct{})
-	var active, peak atomic.Int32
-	read := func(entry os.DirEntry, body *bytes.Buffer) (int64, bool, error) {
-		current := active.Add(1)
-		defer active.Add(-1)
-		for {
-			old := peak.Load()
-			if current <= old || peak.CompareAndSwap(old, current) {
-				break
-			}
-		}
-		id, err := strconv.ParseInt(strings.TrimSuffix(entry.Name(), ".json"), 10, 64)
-		if err != nil {
-			return 0, false, err
-		}
-		if id == 1 {
-			close(firstReadStarted)
-			select {
-			case <-secondReadStarted:
-			case <-time.After(time.Second):
-				return 0, false, errors.New("later record read did not overlap the first read")
-			}
-			close(firstReadFinished)
-		} else if id == 2 {
-			select {
-			case <-firstReadStarted:
-			case <-time.After(time.Second):
-				return 0, false, errors.New("first record read did not start")
-			}
-			close(secondReadStarted)
-			<-firstReadFinished
-		}
-		_, err = fmt.Fprintf(body, `{"id":%d}`, id)
-		return id, false, err
-	}
-	var visited []int64
-	err = visitEntriesParallel(entries, 2, read, true, func(id int64, body []byte) error {
-		var record struct {
-			ID int64 `json:"id"`
-		}
-		if err := json.Unmarshal(body, &record); err != nil || record.ID != id {
-			return fmt.Errorf("record %d body %q err=%v", id, body, err)
-		}
-		visited = append(visited, id)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if peak.Load() < 2 {
-		t.Fatalf("record reads did not overlap: peak=%d", peak.Load())
-	}
-	if !reflect.DeepEqual(visited, []int64{1, 2, 3}) {
-		t.Fatalf("callback order=%v, want [1 2 3]", visited)
-	}
-}
-
 func TestLoadEachStopsAndReturnsCallbackError(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "queue")
 	s, err := Open(dir, "/preview")
@@ -278,7 +193,10 @@ func TestLoadEachRawLeavesJSONValidationToVisitor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := os.WriteFile(filepath.Join(dir, "jobs", "7.json"), []byte(`{broken`), 0600); err != nil {
+	if err := s.Save(7, []byte(`{"status":"pending"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE jobs SET payload_json=? WHERE id=7`, []byte(`{broken`)); err != nil {
 		t.Fatal(err)
 	}
 	wantErr := errors.New("visitor rejected malformed JSON")
@@ -330,10 +248,10 @@ func TestLoadEachRawPreservesRecordSizeLimit(t *testing.T) {
 	}
 	defer s.Close()
 	const maxRecordSize = 1024 * 1024
-	if err := os.WriteFile(filepath.Join(dir, "jobs", "1.json"), make([]byte, maxRecordSize), 0600); err != nil {
+	if err := s.Save(1, []byte(`{}`+strings.Repeat(" ", maxRecordSize-2))); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "jobs", "2.json"), make([]byte, maxRecordSize+1), 0600); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO jobs(id,payload_json,status,updated_at_utc) VALUES(2,?,'pending',0)`, []byte(`{}`+strings.Repeat(" ", maxRecordSize-1))); err != nil {
 		t.Fatal(err)
 	}
 	visited := 0
@@ -363,7 +281,7 @@ func TestStoreRejectsCorruptRecordAndSecondWriter(t *testing.T) {
 	if err = s.Save(1, []byte(`{broken`)); err == nil {
 		t.Fatal("accepted invalid JSON")
 	}
-	if err = os.WriteFile(filepath.Join(dir, "jobs", "1.json"), []byte(`{broken`), 0600); err != nil {
+	if _, err = s.db.Exec(`INSERT INTO jobs(id,payload_json,status,updated_at_utc) VALUES(1,?,'pending',0)`, []byte(`{broken`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.Load(); err == nil {

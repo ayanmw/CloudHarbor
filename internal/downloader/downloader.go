@@ -156,7 +156,8 @@ func (d *Downloader) ScanAndDownload() error {
 		d.reportAuthenticationFailure(err)
 		return fmt.Errorf("列目录失败: %w", err)
 	}
-	return d.queue.reconcile(files, epoch)
+	observedAt := time.Now().UTC()
+	return d.queue.reconcileObserved(files, epoch, observedAt)
 }
 
 func (d *Downloader) beginTask(info baiduapi.FileInfo, local string) {

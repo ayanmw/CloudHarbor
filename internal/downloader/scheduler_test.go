@@ -3,11 +3,13 @@ package downloader
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	_ "modernc.org/sqlite"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -65,7 +67,7 @@ func TestReconcileDoesNotPublishJobsWhenBatchPersistenceFails(t *testing.T) {
 	d.queue.store = store
 	d.queue.started = true
 	d.SetAuthentication(baiduapi.NewClient("token", "app"), true, time.Now().Add(time.Hour))
-	if err := os.Mkdir(filepath.Join(root, stateDirectory, "queue", "jobs", "2.json"), 0700); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,15 +78,79 @@ func TestReconcileDoesNotPublishJobsWhenBatchPersistenceFails(t *testing.T) {
 	if len(d.queue.jobs) != 0 || len(d.queue.eligible) != 0 || !d.queue.started || d.ctx.Err() == nil {
 		t.Fatalf("failed batch was published: jobs=%d eligible=%d started=%v cancelled=%v", len(d.queue.jobs), len(d.queue.eligible), d.queue.started, d.ctx.Err())
 	}
-	if err := os.Remove(filepath.Join(root, stateDirectory, "queue", "jobs", "2.json")); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := store.Load()
+	check, err := taskstore.Open(filepath.Join(root, stateDirectory, "queue"), "/queue")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 1 || len(d.queue.jobs) != 0 {
-		t.Fatalf("partial on-disk recovery state = %d records; in-memory jobs=%d", len(loaded), len(d.queue.jobs))
+	defer check.Close()
+	loaded, err := check.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 0 || len(d.queue.jobs) != 0 {
+		t.Fatalf("failed SQLite batch was not atomic: disk records=%d in-memory jobs=%d", len(loaded), len(d.queue.jobs))
+	}
+}
+
+func TestCloudScanEvidenceSeparatesObservationFromProviderMtime(t *testing.T) {
+	root := t.TempDir()
+	d := NewDownloader(&config.Config{LocalDownDir: root, QueueDir: "/queue"}, baiduapi.NewClient("token", "app"))
+	defer d.cancel()
+	store, err := taskstore.Open(filepath.Join(root, stateDirectory, "queue"), "/queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	d.queue.store = store
+	d.queue.started = true
+	d.SetAuthentication(baiduapi.NewClient("token", "app"), true, time.Now().Add(time.Hour))
+	observed := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+	info := file(81, "observed.bin", 12)
+	info.Mtime = 1_800_000_000
+	if err = d.queue.reconcileObserved([]baiduapi.FileInfo{info}, d.authEpoch, observed); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.Events(info.FsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Kind != "cloud_file_observed" || events[0].EvidenceType != "baidu_file_list" || events[0].CloudObservedAtUTC == nil || !events[0].CloudObservedAtUTC.Equal(observed) || events[0].OccurredAtUTC != nil || !events[0].RecordedAtUTC.After(observed) {
+		t.Fatalf("cloud/local times were conflated or missing: %+v", events)
+	}
+	var evidence baiduapi.FileInfo
+	if err = json.Unmarshal(events[0].Evidence, &evidence); err != nil || evidence.Mtime != info.Mtime {
+		t.Fatalf("provider mtime missing from cloud evidence: %+v err=%v", evidence, err)
+	}
+}
+
+func TestDownloadAttemptHasLinkedStartAndFinishEvidence(t *testing.T) {
+	base, provider := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "abc") })
+	provider.lists["/queue"] = []baiduapi.FileInfo{file(91, "attempt.bin", 3)}
+	d, err := OpenDownloader(base.cfg, base.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, d)
+	if err = d.ScanAndDownload(); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, d, 91, "done")
+	events, err := d.queue.store.Events(91)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var startedID string
+	foundFinish := false
+	for _, event := range events {
+		switch event.Kind {
+		case "download_attempt_started":
+			startedID = event.AttemptID
+		case "download_attempt_finished":
+			foundFinish = event.AttemptID != "" && event.AttemptID == startedID
+		}
+	}
+	if startedID == "" || !foundFinish {
+		t.Fatalf("download attempt was not linked across its durable lifecycle: %+v", events)
 	}
 }
 
@@ -396,12 +462,25 @@ func TestOpenDownloaderRejectsMalformedJSONFromRawRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	validBody, err := json.Marshal(queueJob{Version: 1, Info: file(1, "a.txt", 1), Mode: DownloadModeKeep, Status: "pending"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Save(1, validBody); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(queuePath, "jobs", "1.json"), []byte(`{broken`), 0600); err != nil {
+	db, err := sql.Open("sqlite", filepath.Join(queuePath, "queue.sqlite"))
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`UPDATE jobs SET payload_json=? WHERE id=1`, []byte(`{broken`)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
 	if restored, err := OpenDownloader(base.cfg, base.getClient()); err == nil {
 		shutdown(t, restored)
 		t.Fatal("accepted malformed persisted JSON")
@@ -735,7 +814,15 @@ func TestInterruptedAttemptsDoNotConsumeFailureRetryBudget(t *testing.T) {
 	}
 	shutdown(t, d)
 	record := `{"version":1,"file":{"fs_id":1,"path":"/queue/a.txt","server_filename":"a.txt","size":3,"server_mtime":123},"mode":"keep","status":"pending","attempts":4,"failures":0,"created":"2026-10-21T00:00:00Z"}`
-	if err = os.WriteFile(filepath.Join(original.cfg.LocalDownDir, stateDirectory, "queue", "jobs", "1.json"), []byte(record), 0600); err != nil {
+	store, err := taskstore.Open(filepath.Join(original.cfg.LocalDownDir, stateDirectory, "queue"), original.cfg.QueueDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Save(1, []byte(record)); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err = store.Close(); err != nil {
 		t.Fatal(err)
 	}
 	d, err = OpenDownloader(original.cfg, original.getClient())

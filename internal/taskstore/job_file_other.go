@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 )
 
-const defaultRecordReadWorkers = 1
-
 func openJobDirectory(name string) (*os.File, error) {
 	if err := safePath(name); err != nil {
 		return nil, err

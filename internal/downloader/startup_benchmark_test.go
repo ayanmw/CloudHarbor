@@ -1,14 +1,11 @@
 package downloader
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -229,69 +226,24 @@ func benchmarkHistoryFixture(tb testing.TB, count int) (string, string) {
 	if err != nil {
 		tb.Fatal(err)
 	}
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for start := 1; start <= count; start += 1024 {
+		end := min(start+1024, count+1)
+		records := make([]taskstore.Record, 0, end-start)
+		for id := start; id < end; id++ {
+			job := queueJob{Version: 1, Info: baiduapi.FileInfo{FsID: int64(id), Path: fmt.Sprintf("/preview/file-%d.bin", id), ServerFilename: fmt.Sprintf("file-%d.bin", id), Size: 1024}, Mode: DownloadModeKeep, Status: "done", Created: created, Updated: created}
+			body, marshalErr := json.Marshal(job)
+			if marshalErr != nil {
+				tb.Fatal(marshalErr)
+			}
+			records = append(records, taskstore.Record{ID: int64(id), Data: body})
+		}
+		if err = store.SaveBatch(records); err != nil {
+			tb.Fatal(err)
+		}
+	}
 	if err = store.Close(); err != nil {
 		tb.Fatal(err)
-	}
-	jobsPath := filepath.Join(queuePath, "jobs")
-	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	workers := min(runtime.GOMAXPROCS(0), 16)
-	if workers < 1 {
-		workers = 1
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ids := make(chan int)
-	writeErr := make(chan error, 1)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case id, ok := <-ids:
-					if !ok {
-						return
-					}
-					job := queueJob{
-						Version: 1,
-						Info:    baiduapi.FileInfo{FsID: int64(id), Path: fmt.Sprintf("/preview/file-%d.bin", id), ServerFilename: fmt.Sprintf("file-%d.bin", id), Size: 1024},
-						Mode:    DownloadModeKeep, Status: "done", Created: created, Updated: created,
-					}
-					body, marshalErr := json.Marshal(job)
-					if marshalErr == nil {
-						marshalErr = os.WriteFile(filepath.Join(jobsPath, fmt.Sprintf("%d.json", id)), body, 0600)
-					}
-					if marshalErr != nil {
-						select {
-						case writeErr <- marshalErr:
-						default:
-						}
-						cancel()
-						return
-					}
-				}
-			}
-		}()
-	}
-	for id := 1; id <= count; id++ {
-		select {
-		case ids <- id:
-		case <-ctx.Done():
-			break
-		}
-		if ctx.Err() != nil {
-			break
-		}
-	}
-	close(ids)
-	wg.Wait()
-	select {
-	case err := <-writeErr:
-		tb.Fatal(err)
-	default:
 	}
 	return root, queuePath
 }

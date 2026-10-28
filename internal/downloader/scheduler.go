@@ -17,18 +17,21 @@ import (
 )
 
 type queueJob struct {
-	Version     int               `json:"version"`
-	Info        baiduapi.FileInfo `json:"file"`
-	Mode        DownloadMode      `json:"mode"`
-	Status      string            `json:"status"`
-	SourceState string            `json:"source_state,omitempty"`
-	Attempts    int               `json:"attempts"`
-	Failures    int               `json:"failures"`
-	NextAttempt time.Time         `json:"next_attempt,omitempty"`
-	Error       string            `json:"error,omitempty"`
-	Created     time.Time         `json:"created"`
-	Updated     time.Time         `json:"updated"`
-	candidate   *candidateEntry
+	Version           int               `json:"version"`
+	Info              baiduapi.FileInfo `json:"file"`
+	Mode              DownloadMode      `json:"mode"`
+	Status            string            `json:"status"`
+	SourceState       string            `json:"source_state,omitempty"`
+	SourceOperationID string            `json:"source_operation_id,omitempty"`
+	SourceAttemptID   string            `json:"source_attempt_id,omitempty"`
+	Attempts          int               `json:"attempts"`
+	AttemptID         string            `json:"attempt_id,omitempty"`
+	Failures          int               `json:"failures"`
+	NextAttempt       time.Time         `json:"next_attempt,omitempty"`
+	Error             string            `json:"error,omitempty"`
+	Created           time.Time         `json:"created"`
+	Updated           time.Time         `json:"updated"`
+	candidate         *candidateEntry
 }
 
 const maxNewJobPersistenceBatch = 1024
@@ -123,6 +126,8 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		}
 		d.downloadMode = saved.Mode
 	}
+	var recoveredJobs []*queueJob
+	var recoveryEvents []taskstore.Event
 	err = store.LoadEachRaw(func(id int64, body json.RawMessage) error {
 		var job queueJob
 		decodeErr := json.Unmarshal(body, &job)
@@ -134,6 +139,7 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		job.Status = status
 		job.Mode = mode
 		job.Info = shareFileInfoStrings(job.Info)
+		oldStatus, oldSourceState := job.Status, job.SourceState
 		if job.SourceState == "sending" {
 			job.SourceState = "unknown"
 			job.Error = ErrSourceOperationUnknown.Error()
@@ -143,6 +149,16 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 			job.Error = "服务重启，等待扫描确认后恢复"
 		}
 		d.queue.jobs[id] = &job
+		if oldStatus != job.Status || oldSourceState != job.SourceState {
+			evidence, _ := json.Marshal(struct {
+				PreviousStatus      string `json:"previous_status"`
+				RecoveredStatus     string `json:"recovered_status"`
+				PreviousSourceState string `json:"previous_source_state,omitempty"`
+				RecoveredSource     string `json:"recovered_source_state,omitempty"`
+			}{oldStatus, job.Status, oldSourceState, job.SourceState})
+			recoveredJobs = append(recoveredJobs, &job)
+			recoveryEvents = append(recoveryEvents, taskstore.Event{Kind: "startup_recovery", AttemptID: job.AttemptID, OperationID: job.SourceOperationID, EvidenceType: "local_restart_recovery", Evidence: evidence})
+		}
 		// Restored records are all inactive, and the derived task map starts empty.
 		// Keep it lazy instead of locking it once per persisted record.
 		return nil
@@ -151,6 +167,13 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		store.Close()
 		d.cancel()
 		return nil, err
+	}
+	for i, job := range recoveredJobs {
+		if err = d.queue.persistWithEvent(job, recoveryEvents[i]); err != nil {
+			store.Close()
+			d.cancel()
+			return nil, err
+		}
 	}
 	d.queue.rebuildSourceBlocks()
 	if err = d.loadIntakes(); err != nil {
@@ -211,6 +234,10 @@ func retainFileInfo(info baiduapi.FileInfo) *baiduapi.FileInfo {
 }
 
 func (q *scheduler) persist(job *queueJob) error {
+	return q.persistWithEvent(job, taskstore.Event{})
+}
+
+func (q *scheduler) persistWithEvent(job *queueJob, event taskstore.Event) error {
 	q.owner.taskStatsGeneration.Add(1)
 	job.Error = errorSummary(job.Error)
 	job.Updated = time.Now()
@@ -219,7 +246,7 @@ func (q *scheduler) persist(job *queueJob) error {
 	}
 	body, err := json.Marshal(job)
 	if err == nil {
-		err = q.store.Save(job.Info.FsID, body)
+		err = q.store.SaveWithEvent(job.Info.FsID, body, event)
 	}
 	if err != nil {
 		q.err = fmt.Errorf("队列保存失败，停止调度: %w", err)
@@ -228,13 +255,14 @@ func (q *scheduler) persist(job *queueJob) error {
 	return err
 }
 
-func (q *scheduler) persistNewJobs(jobs []*queueJob) error {
+func (q *scheduler) persistNewJobs(jobs []*queueJob, cloudObservedAt time.Time) error {
 	if len(jobs) == 0 {
 		return nil
 	}
 	for start := 0; start < len(jobs); start += maxNewJobPersistenceBatch {
 		end := min(start+maxNewJobPersistenceBatch, len(jobs))
 		records := make([]taskstore.Record, 0, end-start)
+		events := make([]taskstore.Event, 0, end-start)
 		for _, job := range jobs[start:end] {
 			job.Error = errorSummary(job.Error)
 			job.Updated = time.Now()
@@ -248,9 +276,21 @@ func (q *scheduler) persistNewJobs(jobs []*queueJob) error {
 				return q.err
 			}
 			records = append(records, taskstore.Record{ID: job.Info.FsID, Data: body})
+			observedAt := time.Now().UTC()
+			evidence, evidenceErr := json.Marshal(job.Info)
+			if evidenceErr != nil {
+				q.err = fmt.Errorf("队列证据序列化失败，停止调度: %w", evidenceErr)
+				q.owner.cancel()
+				return q.err
+			}
+			observed := cloudObservedAt
+			if observed.IsZero() {
+				observed = observedAt
+			}
+			events = append(events, taskstore.Event{Kind: "cloud_file_observed", EvidenceType: "baidu_file_list", CloudObservedAtUTC: &observed, Evidence: evidence})
 		}
 		if q.store != nil {
-			if err := q.store.SaveBatch(records); err != nil {
+			if err := q.store.SaveBatchWithEvents(records, events); err != nil {
 				q.err = fmt.Errorf("队列批量保存失败，停止调度: %w", err)
 				q.owner.cancel()
 				return q.err
@@ -324,6 +364,10 @@ func (q *scheduler) signal() {
 	}
 }
 func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
+	return q.reconcileObserved(files, epoch, time.Now().UTC())
+}
+
+func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, cloudObservedAt time.Time) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.stopping || q.owner.ctx.Err() != nil {
@@ -377,7 +421,7 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 	}
 	// Persist the full scan's new roots before publishing them to the worker
 	// queue. The sources remain in the cloud queue until later post-processing.
-	if err := q.persistNewJobs(newJobs); err != nil {
+	if err := q.persistNewJobs(newJobs, cloudObservedAt); err != nil {
 		return err
 	}
 	for _, job := range newJobs {
@@ -451,10 +495,21 @@ func (q *scheduler) claim() (*queueJob, context.Context, time.Duration) {
 		}
 		return nil, nil, 0
 	}
+	attemptID, err := newSourceOperationID()
+	if err != nil {
+		q.err = fmt.Errorf("下载尝试 ID 生成失败，停止调度: %w", err)
+		q.owner.cancel()
+		return nil, nil, 0
+	}
 	chosen.Status = "downloading"
 	chosen.Attempts++
+	chosen.AttemptID = attemptID
 	chosen.NextAttempt = time.Time{}
-	if err := q.persist(chosen); err != nil {
+	attemptEvidence, _ := json.Marshal(struct {
+		Attempt int    `json:"attempt"`
+		Status  string `json:"status"`
+	}{chosen.Attempts, chosen.Status})
+	if err := q.persistWithEvent(chosen, taskstore.Event{Kind: "download_attempt_started", AttemptID: attemptID, EvidenceType: "local_scheduler_claim", Evidence: attemptEvidence}); err != nil {
 		return nil, nil, 0
 	}
 	ctx, cancel := context.WithCancel(q.owner.ctx)
@@ -562,7 +617,14 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 			}
 		}
 	}
-	if saveErr := q.persist(job); saveErr != nil {
+	resultEvidence, _ := json.Marshal(struct {
+		Status      string `json:"status"`
+		Attempts    int    `json:"attempts"`
+		Failures    int    `json:"failures"`
+		SourceState string `json:"source_state,omitempty"`
+		ErrorType   string `json:"error_type,omitempty"`
+	}{job.Status, job.Attempts, job.Failures, job.SourceState, errorType(err)})
+	if saveErr := q.persistWithEvent(job, taskstore.Event{Kind: "download_attempt_finished", AttemptID: executed.AttemptID, EvidenceType: "local_attempt_result", Evidence: resultEvidence}); saveErr != nil {
 		job.Status = "failed"
 		job.Error = q.err.Error()
 		if job.SourceState == "sending" || job.SourceState == "unknown" {
@@ -573,6 +635,13 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 	q.reflect(job)
 	q.enqueueCandidate(job)
 	q.signal()
+}
+
+func errorType(err error) string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("%T", err)
 }
 
 var ErrTaskNotFound = errors.New("task not found")

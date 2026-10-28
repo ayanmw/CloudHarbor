@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	_ "modernc.org/sqlite"
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/config"
 )
@@ -95,7 +97,13 @@ func TestSourceOperationProcessCrashRemainsIsolated(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("child did not reach the source request")
 			}
-			body, err := os.ReadFile(filepath.Join(root, stateDirectory, "queue", "jobs", "1.json"))
+			db, err := sql.Open("sqlite", filepath.Join(root, stateDirectory, "queue", "queue.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body []byte
+			err = db.QueryRow(`SELECT payload_json FROM jobs WHERE id=1`).Scan(&body)
+			db.Close()
 			var saved queueJob
 			if err != nil || json.Unmarshal(body, &saved) != nil || saved.SourceState != "sending" || saved.Status != "source_unknown" {
 				t.Fatalf("request preceded durable sending record: %s, %v", body, err)
@@ -116,6 +124,13 @@ func TestSourceOperationProcessCrashRemainsIsolated(t *testing.T) {
 				t.Fatalf("crash did not release writer lock: %v", err)
 			}
 			defer shutdown(t, d)
+			events, err := d.queue.store.Events(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) < 2 || events[len(events)-1].Kind != "startup_recovery" {
+				t.Fatalf("restart did not durably record sending-to-unknown recovery: %+v", events)
+			}
 			if err = d.ScanAndDownload(); err != nil {
 				t.Fatal(err)
 			}

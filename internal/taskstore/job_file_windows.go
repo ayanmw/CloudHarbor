@@ -9,8 +9,6 @@ import (
 	"syscall"
 )
 
-const defaultRecordReadWorkers = maxParallelRecordReads
-
 func openJobDirectory(name string) (*os.File, error) {
 	if err := safePath(name); err != nil {
 		return nil, err

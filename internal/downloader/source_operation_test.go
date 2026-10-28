@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
 func TestUncertainSourceOperationSurvivesRestartWithoutReplay(t *testing.T) {
@@ -36,6 +37,34 @@ func TestUncertainSourceOperationSurvivesRestartWithoutReplay(t *testing.T) {
 				t.Fatal(err)
 			}
 			waitForStatus(t, d, 1, "source_unknown")
+			var events []taskstore.Event
+			var sendingID string
+			foundSending, foundUnknown := false, false
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) && !foundUnknown {
+				events, err = d.queue.store.Events(1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, event := range events {
+					switch event.Kind {
+					case "source_operation_sending":
+						foundSending = true
+						sendingID = event.OperationID
+					case "source_operation_unknown":
+						foundUnknown = true
+						if sendingID == "" || event.OperationID != sendingID || event.AttemptID == "" || event.ResponseObservedAtUTC != nil || event.OccurredAtUTC != nil {
+							t.Fatalf("unknown receipt is not linked to the durable send: sending=%q event=%+v", sendingID, event)
+						}
+					}
+				}
+				if !foundUnknown {
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
+			if !foundSending || !foundUnknown {
+				t.Fatalf("source operation evidence missing: %+v", events)
+			}
 			shutdown(t, d)
 			for _, action := range []func(int64) error{d.Cancel, d.Retry} {
 				if !errors.Is(action(1), ErrTaskConflict) {
@@ -79,6 +108,22 @@ func TestUncertainSourceOperationSurvivesRestartWithoutReplay(t *testing.T) {
 				t.Fatal("new ID bypassed source path quarantine")
 			}
 		})
+	}
+}
+
+func TestValidSourceRecordRequiresPairedOperationIDs(t *testing.T) {
+	job := &queueJob{Status: "source_unknown", SourceState: "unknown", SourceOperationID: "0123456789abcdef0123456789abcdef"}
+	if validSourceRecord(job) {
+		t.Fatal("accepted source operation without its paired attempt ID")
+	}
+	job.SourceAttemptID = "fedcba9876543210fedcba9876543210"
+	if !validSourceRecord(job) {
+		t.Fatal("rejected well-formed linked source operation IDs")
+	}
+	job.SourceState = "confirmed"
+	job.Status = "done"
+	if validSourceRecord(job) {
+		t.Fatal("accepted operation IDs after the operation was finalized")
 	}
 }
 
@@ -161,6 +206,19 @@ func TestChangedSourceIdentityWaitsForFreshListingBeforeRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForStatus(t, d, original.FsID, "done")
+	events, err := d.queue.store.Events(original.FsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmed := false
+	for _, event := range events {
+		if event.Kind == "source_operation_confirmed" {
+			confirmed = event.OperationID != "" && event.AttemptID != "" && event.ResponseObservedAtUTC != nil && event.OccurredAtUTC == nil
+		}
+	}
+	if !confirmed {
+		t.Fatalf("synchronous result evidence missing or occurrence time was guessed: %+v", events)
+	}
 	if task := d.GetTaskByFsID(original.FsID); task == nil || task.FileInfo != changed {
 		t.Fatalf("fresh listing did not replace stale identity: %+v", task)
 	}
