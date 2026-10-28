@@ -277,7 +277,7 @@ func atomicWrite(name string, data []byte) error {
 	if err = temp.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(temp.Name(), name); err != nil {
+	if err = durablefs.ReplaceFile(temp.Name(), name); err != nil {
 		return err
 	}
 	return durablefs.SyncDirectory(filepath.Dir(name))

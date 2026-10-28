@@ -12,10 +12,18 @@ import (
 )
 
 var syncDirectory = platformSyncDirectory
+var replaceFile = platformReplaceFile
 
 const maxAtomicWriteWorkers = 4
 
 func SyncDirectory(path string) error { return syncDirectory(path) }
+
+// ReplaceFile atomically replaces destination with source using the platform's
+// rename semantics. Callers needing directory durability must also call
+// SyncDirectory.
+func ReplaceFile(source, destination string) error {
+	return replaceFile(source, destination)
+}
 
 type File struct {
 	Path string
@@ -77,7 +85,7 @@ func WriteFilesAtomic(files []File) error {
 		}
 	}
 	for i := range destinations {
-		if err := os.Rename(temps[i], destinations[i]); err != nil {
+		if err := ReplaceFile(temps[i], destinations[i]); err != nil {
 			// Earlier renames may already be visible. Sync them before returning;
 			// callers keep source items intact and can reconcile missing records.
 			return errors.Join(err, SyncDirectory(directory))

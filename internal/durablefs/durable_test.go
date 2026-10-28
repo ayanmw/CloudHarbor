@@ -53,6 +53,27 @@ func TestMkdirAllReturnsDirectorySyncFailure(t *testing.T) {
 	}
 }
 
+func TestReplaceFileReplacesExistingDestination(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "replacement.tmp")
+	destination := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(source, []byte("new state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("old state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceFile(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(destination); err != nil || string(got) != "new state" {
+		t.Fatalf("replacement content = %q, err=%v", got, err)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("source remains after replacement: %v", err)
+	}
+}
+
 func TestWriteFilesAtomicPublishesBatchWithOneDirectorySync(t *testing.T) {
 	dir := t.TempDir()
 	var synced []string

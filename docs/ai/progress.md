@@ -1,5 +1,11 @@
 # 持续优化进度
 
+## v0.8.30-preview.18（Windows 原子状态替换请求写通）
+
+- 新增 `durablefs.ReplaceFile`，并用于 taskstore 原子 JSON、下载部分文件元数据和批量原子记录发布。Windows 通过 `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` 更新；其他平台继续调用 `os.Rename`，Linux 既有目录同步行为不变。
+- 通用回归覆盖原子替换既有文件；Windows 专项回归核验替换/写通两个标志并检查实际结果。全模块 Windows Go 测试和 `go vet` 通过。
+- Windows 对原子文件替换和文件发布请求写通，但目录创建/删除仍没有目录 fsync；NAS/SMB 与物理掉电耐久仍需目标环境实测。
+
 ## v0.8.30-preview.17（Windows 文件发布请求写通完成）
 
 - Windows 无覆盖原子发布由 `MoveFile` 改为 `MoveFileExW` 并传入 `MOVEFILE_WRITE_THROUGH`。未传 `MOVEFILE_REPLACE_EXISTING`，已有目标仍拒绝覆盖；修改只影响 Windows 发布操作，不改变 Linux `renameat2(RENAME_NOREPLACE)` 路径。

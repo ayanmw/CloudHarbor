@@ -309,7 +309,7 @@ func writeRecord(name string, record fileRecord) error {
 	if err = temp.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(tempName, name); err != nil {
+	if err = durablefs.ReplaceFile(tempName, name); err != nil {
 		return err
 	}
 	return durablefs.SyncDirectory(filepath.Dir(name))
