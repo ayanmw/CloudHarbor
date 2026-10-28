@@ -62,7 +62,7 @@
 
 - [x] Write migration tests for multi-record legacy import, sidecar preservation, malformed record, interrupted pre-switch import, and authoritative SQLite corruption.
 - [x] Run migration tests and confirm expected failure before implementation.
-- [x] Implement staged import preserving raw job payloads and legacy Created/Updated values; emit only explicit `legacy_import` events without fabricated transition time/history.
+- [x] Implement staged import preserving raw job payloads and original `Created`/`Updated` values in `legacy_import` event evidence; missing values remain explicit `null`, with no fabricated transition time/history.
 - [x] Verify pre-switch failure leaves v1 intact, post-switch failure never silently falls back, and SQLite corruption fails closed.
 - [x] Run taskstore suite and migration interruption tests.
 

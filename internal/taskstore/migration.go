@@ -94,7 +94,22 @@ func migrateV1(store *Store, scope string) error {
 		if err = validateLegacyJob(id, body); err != nil {
 			return rollback(err)
 		}
-		event := Event{Kind: "legacy_import", RunID: migrationID, EvidenceType: "legacy_import", Evidence: json.RawMessage(`{"source_format":1}`)}
+		var originalTimes struct {
+			Created json.RawMessage `json:"created"`
+			Updated json.RawMessage `json:"updated"`
+		}
+		if err = json.Unmarshal(body, &originalTimes); err != nil {
+			return rollback(fmt.Errorf("invalid legacy timestamps for job %d: %w", id, err))
+		}
+		evidence, evidenceErr := json.Marshal(struct {
+			SourceFormat  int             `json:"source_format"`
+			LegacyCreated json.RawMessage `json:"legacy_created"`
+			LegacyUpdated json.RawMessage `json:"legacy_updated"`
+		}{1, originalTimes.Created, originalTimes.Updated})
+		if evidenceErr != nil {
+			return rollback(evidenceErr)
+		}
+		event := Event{Kind: "legacy_import", RunID: migrationID, EvidenceType: "legacy_import", Evidence: evidence}
 		if err = saveJobTx(ctx, tx, migrationID, id, body, event); err != nil {
 			return rollback(err)
 		}

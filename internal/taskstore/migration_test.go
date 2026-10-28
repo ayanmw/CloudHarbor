@@ -53,10 +53,22 @@ func TestOpenMigratesV1JobsWithoutFabricatingPastTimestamps(t *testing.T) {
 	if err != nil || string(jobs[1]) != first || string(jobs[2]) != second {
 		t.Fatalf("migrated payload mismatch: jobs=%q err=%v", jobs, err)
 	}
+	wantTimes := map[int64][2]string{
+		1: {"2026-10-20T00:00:00Z", "2026-10-21T00:00:00Z"},
+		2: {"2026-10-22T00:00:00Z", "2026-10-22T00:00:00Z"},
+	}
 	for _, id := range []int64{1, 2} {
 		events, err := store.Events(id)
 		if err != nil || len(events) != 1 || events[0].Kind != "legacy_import" || events[0].OccurredAtUTC != nil || events[0].CloudObservedAtUTC != nil || events[0].RecordedAtUTC.IsZero() {
 			t.Fatalf("legacy evidence has fabricated time or missing import evidence: events=%#v err=%v", events, err)
+		}
+		var evidence struct {
+			SourceFormat  int    `json:"source_format"`
+			LegacyCreated string `json:"legacy_created"`
+			LegacyUpdated string `json:"legacy_updated"`
+		}
+		if err = json.Unmarshal(events[0].Evidence, &evidence); err != nil || evidence.SourceFormat != 1 || evidence.LegacyCreated != wantTimes[id][0] || evidence.LegacyUpdated != wantTimes[id][1] {
+			t.Fatalf("legacy import evidence lost original timestamps: evidence=%s err=%v", events[0].Evidence, err)
 		}
 	}
 	manifestBody, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
@@ -124,5 +136,9 @@ func TestOpenRetriesInterruptedV1MigrationFromOriginalJobs(t *testing.T) {
 	jobs, err := store.Load()
 	if err != nil || string(jobs[1]) != record {
 		t.Fatalf("interrupted migration did not recover from v1: %q err=%v", jobs[1], err)
+	}
+	events, err := store.Events(1)
+	if err != nil || len(events) != 1 || string(events[0].Evidence) != `{"source_format":1,"legacy_created":null,"legacy_updated":null}` || events[0].OccurredAtUTC != nil {
+		t.Fatalf("missing legacy times were not kept explicitly unknown: events=%#v err=%v", events, err)
 	}
 }
