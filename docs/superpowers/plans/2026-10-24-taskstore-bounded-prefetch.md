@@ -50,4 +50,4 @@
 - [x] Compare Windows 10k raw reads: about 2.61 s/op with one worker and 1.32 s/op with four; full Windows `OpenDownloader` samples 1.41/1.64 s. WSL ext4 raw reads were 32–35 ms serial and 39–41 ms with four; keep four only on Windows and leave Linux serial pending NAS measurements.
 - [x] Run full Windows tests/vet and WSL full race/vet; update D6 measurements with platform and fixture limitations.
 - [x] Package and smoke-test immutable v0.8.16-preview.1: 17 Node tests, Windows test/vet, three-platform builds, 11 payload hashes, package startup/auth/401/SIGTERM, and ARM64 ELF check pass.
-- [ ] Package and smoke-test an immutable preview only if the A/B gate passes.
+- [x] Superseded before packaging: v0.8.23 moved the active task store to SQLite, so the per-record JSON filesystem A/B gate no longer measures the current startup path. Current SQLite startup measurements and package evidence are tracked in the SQLite design/progress records; retain this plan as historical evidence for the former JSON backend.

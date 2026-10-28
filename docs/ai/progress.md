@@ -1,5 +1,11 @@
 # 持续优化进度
 
+## v0.8.30-preview.17（Windows 文件发布请求写通完成）
+
+- Windows 无覆盖原子发布由 `MoveFile` 改为 `MoveFileExW` 并传入 `MOVEFILE_WRITE_THROUGH`。未传 `MOVEFILE_REPLACE_EXISTING`，已有目标仍拒绝覆盖；修改只影响 Windows 发布操作，不改变 Linux `renameat2(RENAME_NOREPLACE)` 路径。
+- 专项 Windows 回归拦截 API 调用，确认只传写通标志，并实际核对源文件移走、目标内容正确；现有下载回退目标冲突测试通过。
+- 此选项请求 Windows 等待移动落盘完成；不等同于对所有文件系统、NAS 控制器或设备缓存的物理断电保证。目标 NAS/SMB 仍需实机验证。
+
 ## v0.8.30-preview.16（SQLite 每次重连重新应用耐久 PRAGMA）
 
 - SQLite `busy_timeout`、`foreign_keys`、`synchronous` 原先只在数据库首次取用连接后设置一次；若 `database/sql` 因 I/O 错误丢弃该连接，后续物理连接会回到 SQLite 默认值。现在通过 `modernc.org/sqlite` 的每连接 `_pragma` DSN 重复应用这些连接级设置，并在每次新连接时将 journal mode 设回 DELETE。启动仍核验实际值，偏离即失败关闭。
