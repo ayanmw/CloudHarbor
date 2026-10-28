@@ -157,10 +157,56 @@ func TestAuthenticationWaitEventRecordsGateReasonAndProviderResponse(t *testing.
 	})
 }
 
+func TestAuthenticationRecoveryDoesNotRetainPreviousRetryDeadline(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	store := openEventStore(t, d)
+	job := &queueJob{
+		Version: 1, Info: file(83, "retry-after-auth.bin", 1), Mode: DownloadModeKeep,
+		Status: "retry_wait", Attempts: 2, Failures: 1, NextAttempt: time.Now().Add(time.Hour),
+	}
+	body, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(job.Info.FsID, body); err != nil {
+		t.Fatal(err)
+	}
+	d.queue.jobs[job.Info.FsID] = job
+	d.queue.started = true // Keep the scheduler deterministic; claimAt below drives the candidate.
+	oldRetryDeadline := job.NextAttempt.UTC()
+
+	d.SetAuthentication(baiduapi.NewClient("", "app"), false, time.Time{})
+	if job.Status != "auth_wait" {
+		t.Fatalf("job status after credentials were rejected = %q, want auth_wait", job.Status)
+	}
+	if !job.NextAttempt.IsZero() {
+		t.Fatalf("authentication wait retained obsolete retry deadline: %v", job.NextAttempt)
+	}
+	parkedEvent, err := latestTaskEvent(t, store, job.Info.FsID, "authentication_wait_entered")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parkedEvidence := decodeEventEvidence(t, parkedEvent)
+	if got, ok := parkedEvidence["cancelled_retry_deadline_at_utc"].(string); !ok || got != oldRetryDeadline.Format(time.RFC3339Nano) {
+		t.Fatalf("cancelled retry deadline evidence missing or changed: %#v", parkedEvidence)
+	}
+	d.SetAuthentication(baiduapi.NewClient("fresh-token", "app"), true, time.Now().Add(time.Hour))
+	if err := d.queue.reconcileObserved([]baiduapi.FileInfo{job.Info}, d.authEpoch, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != "pending" {
+		t.Fatalf("job status after successful scan = %q, want pending", job.Status)
+	}
+	claimed, _, wait := d.queue.claimAt(time.Now())
+	if claimed == nil || wait != 0 {
+		t.Fatalf("recovered task remained behind stale retry deadline: claimed=%v wait=%v next_attempt=%v", claimed != nil, wait, job.NextAttempt)
+	}
+}
+
 func TestReconcilePersistsScanRecoveryAndMissingSourceEvidence(t *testing.T) {
 	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	store := openEventStore(t, d)
-	recovered := &queueJob{Version: 1, Info: file(1, "one.bin", 1), Mode: DownloadModeKeep, Status: "auth_wait"}
+	recovered := &queueJob{Version: 1, Info: file(1, "one.bin", 1), Mode: DownloadModeKeep, Status: "auth_wait", NextAttempt: time.Now().Add(time.Hour)}
 	missing := &queueJob{Version: 1, Info: file(2, "two.bin", 1), Mode: DownloadModeKeep, Status: "retry_wait", Attempts: 2, Failures: 1, NextAttempt: time.Now().Add(time.Minute)}
 	for _, job := range []*queueJob{recovered, missing} {
 		body, err := json.Marshal(job)
@@ -191,6 +237,18 @@ func TestReconcilePersistsScanRecoveryAndMissingSourceEvidence(t *testing.T) {
 		}
 		if event.RunID == "" {
 			t.Fatalf("task %d event missing run id", id)
+		}
+		if id == 1 {
+			if !recovered.NextAttempt.IsZero() {
+				t.Fatalf("stale auth_wait deadline survived successful scan: %v", recovered.NextAttempt)
+			}
+			var evidence map[string]any
+			if err := json.Unmarshal(event.Evidence, &evidence); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := evidence["cleared_retry_deadline_at_utc"].(string); !ok {
+				t.Fatalf("legacy deadline removal was not evidenced: %#v", evidence)
+			}
 		}
 	}
 }

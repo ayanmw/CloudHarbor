@@ -444,14 +444,21 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 		}
 		if job.Status == "auth_wait" && eligible[id] != nil && *eligible[id] == job.Info && q.active[id] == nil {
 			previousStatus := job.Status
+			var clearedRetryDeadline *time.Time
+			if !job.NextAttempt.IsZero() {
+				value := job.NextAttempt.UTC()
+				clearedRetryDeadline = &value
+			}
 			job.Status = "pending"
 			job.Error = ""
+			job.NextAttempt = time.Time{}
 			evidence, _ := json.Marshal(struct {
-				PreviousStatus string `json:"previous_status"`
-				Status         string `json:"status"`
-				Reason         string `json:"reason"`
-				ScanEpoch      uint64 `json:"scan_epoch"`
-			}{previousStatus, job.Status, "authentication_ready_after_successful_scan", epoch})
+				PreviousStatus            string     `json:"previous_status"`
+				Status                    string     `json:"status"`
+				Reason                    string     `json:"reason"`
+				ScanEpoch                 uint64     `json:"scan_epoch"`
+				ClearedRetryDeadlineAtUTC *time.Time `json:"cleared_retry_deadline_at_utc,omitempty"`
+			}{previousStatus, job.Status, "authentication_ready_after_successful_scan", epoch, clearedRetryDeadline})
 			observedAt := cloudObservedAt.UTC()
 			if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_recovered_after_scan", CloudObservedAtUTC: &observedAt, EvidenceType: "successful_cloud_scan", Evidence: evidence}); err != nil {
 				return err

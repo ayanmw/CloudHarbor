@@ -94,8 +94,14 @@ func (q *scheduler) parkAuthenticationWaiting(reason string, cause error) {
 			continue
 		}
 		previousStatus := job.Status
+		var cancelledRetryDeadline *time.Time
+		if !job.NextAttempt.IsZero() {
+			value := job.NextAttempt.UTC()
+			cancelledRetryDeadline = &value
+		}
 		job.Status = "auth_wait"
 		job.Error = ErrAuthenticationWaiting.Error()
+		job.NextAttempt = time.Time{}
 		providerOperation, providerHTTPStatus, providerErrorCode := "", 0, 0
 		if providerErr := apiError(cause); providerErr != nil {
 			providerOperation = providerErr.Operation
@@ -103,14 +109,15 @@ func (q *scheduler) parkAuthenticationWaiting(reason string, cause error) {
 			providerErrorCode = providerErr.Code
 		}
 		evidence, _ := json.Marshal(struct {
-			PreviousStatus     string `json:"previous_status"`
-			Status             string `json:"status"`
-			Reason             string `json:"reason"`
-			ErrorClass         string `json:"error_class,omitempty"`
-			ProviderOperation  string `json:"provider_operation,omitempty"`
-			ProviderHTTPStatus int    `json:"provider_http_status,omitempty"`
-			ProviderErrorCode  int    `json:"provider_error_code,omitempty"`
-		}{previousStatus, job.Status, reason, errorClass(cause), providerOperation, providerHTTPStatus, providerErrorCode})
+			PreviousStatus              string     `json:"previous_status"`
+			Status                      string     `json:"status"`
+			Reason                      string     `json:"reason"`
+			ErrorClass                  string     `json:"error_class,omitempty"`
+			ProviderOperation           string     `json:"provider_operation,omitempty"`
+			ProviderHTTPStatus          int        `json:"provider_http_status,omitempty"`
+			ProviderErrorCode           int        `json:"provider_error_code,omitempty"`
+			CancelledRetryDeadlineAtUTC *time.Time `json:"cancelled_retry_deadline_at_utc,omitempty"`
+		}{previousStatus, job.Status, reason, errorClass(cause), providerOperation, providerHTTPStatus, providerErrorCode, cancelledRetryDeadline})
 		event := taskstore.Event{Kind: "authentication_wait_entered", EvidenceType: "authentication_gate", Evidence: evidence}
 		if providerHTTPStatus != 0 {
 			observedAt := time.Now().UTC()
