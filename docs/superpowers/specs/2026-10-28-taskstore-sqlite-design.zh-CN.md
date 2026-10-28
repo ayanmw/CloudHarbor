@@ -104,6 +104,7 @@ Windows 合成队列基准显示，100,000 条任务在当前环境中完整恢�
 - v1 导入保留源 JSON 和 sidecar；暂存库在单事务写入后关闭并重开，验证完整性、范围、任务数量及逐 ID 原文，再发布 SQLite 文件并切换格式清单。预切换失败可从保留的 v1 源重做；清单切换后 SQLite 是唯一权威源，损坏时失败关闭。
 - 下载尝试开始/结束、云端元数据观察、源操作发送/结果和启动恢复均有独立事件；线上操作 ID 关联对应尝试。没有提供方真实发生时间时保持 NULL，响应观察时间不冒充线上完成时间。
 - `legacy_import` 事件保留 v1 JSON 中 `created` 和 `updated` 字段的原始 JSON 时间值；源记录未提供时写为 `null`。事件 `recorded_at_utc` 表示本机迁移观察时间，`occurred_at_utc` 仍为空，不把任务更新时间误当作导入或线上操作的发生时间。
+- 当前事件查询仅由 `taskstore.Store.Events` 提供，尚未接入认证管理 API 或页面；用户暂不能通过管理界面浏览事件历史。源码审查还发现 `Cancel`/`Retry`、扫描后 `auth_wait` 恢复及源项缺失失败仍走通用 `persist`，事件只含前后状态，没有操作者/原因；`download_attempt_finished` 仅记错误 Go 类型，不含结构化失败分类或 `NextAttempt` 计划。事件细化范围待用户选择后再设计和实施。
 - Windows 全模块 Go 测试、`go vet`、WSL 全模块 race、17 项 Node 测试和三平台无 CGO 构建已通过。独立包启动/认证/停止冒烟与 payload 哈希、ELF 架构验证已完成，记录见 `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.23-preview.1-validation.md`。
 - 本机最小合成数据测量：100,000 个任务投影加 100,000 条通用状态事件，数据库 36,716,544 字节，`integrity_check=ok`，约 367 字节/任务。具体云端元数据和操作证据会增大事件 JSON，故该数字只是存储基线；迁移后的旧 v1 文件当前继续保留，部署空间需考虑两种格式共存。
 - 完整迁移测量：100,000 个带真实任务字段形状的合成 v1 文件耗时约 45.73 秒创建、34.17 秒迁移及重开校验；旧 JSON 逻辑长度 23,766,685 字节，SQLite 41,881,600 字节，v1 文件仍保留，两种格式逻辑总量约 65.65 MB。迁移校验确认 SQLite 完整性 `ok` 且 jobs/events 各 100,000 条。该数据是单次 Windows 本机测量，不能外推 NAS/SMB；双份共存是为保留离线恢复副本，清理前需明确回滚/备份政策。
