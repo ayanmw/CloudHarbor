@@ -498,6 +498,10 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 	return nil
 }
 func (q *scheduler) claim() (*queueJob, context.Context, time.Duration) {
+	return q.claimAt(time.Now())
+}
+
+func (q *scheduler) claimAt(now time.Time) (*queueJob, context.Context, time.Duration) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.stopping || q.err != nil || q.owner.ctx.Err() != nil {
@@ -507,11 +511,10 @@ func (q *scheduler) claim() (*queueJob, context.Context, time.Duration) {
 		q.parkAuthenticationWaiting()
 		return nil, nil, 0
 	}
-	now := time.Now()
 	chosen := q.popReadyCandidate(now)
 	if chosen == nil {
 		if len(q.delayed) > 0 {
-			wait := time.Until(q.delayed[0].job.NextAttempt)
+			wait := q.delayed[0].job.NextAttempt.Sub(now)
 			if wait <= 0 {
 				wait = time.Nanosecond
 			} else if wait > retryClockRecheckInterval {

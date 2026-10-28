@@ -346,6 +346,28 @@ func TestClaimRechecksLongRetryDeadlinesForWallClockChanges(t *testing.T) {
 	}
 }
 
+func TestClaimRunsDueRetryAfterWallClockMovesForward(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	info := file(84, "clock-jump.txt", 3)
+	wallNow := time.Now().UTC().Truncate(time.Second)
+	deadline := wallNow.Add(time.Hour)
+	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeKeep, Status: "retry_wait", NextAttempt: deadline}
+	d.queue.jobs[info.FsID] = job
+	d.queue.eligible[info.FsID] = &info
+	d.queue.rebuildCandidates()
+
+	claimed, ctx, wait := d.queue.claimAt(wallNow)
+	if claimed != nil || ctx != nil || wait <= 0 || wait > 30*time.Second {
+		t.Fatalf("claim before wall-clock jump = job %v, ctx %v, wait %v", claimed, ctx, wait)
+	}
+
+	claimed, ctx, wait = d.queue.claimAt(deadline.Add(time.Second))
+	if claimed == nil || claimed.Info.FsID != info.FsID || ctx == nil || wait != 0 {
+		t.Fatalf("claim after wall-clock jump = job %v, ctx %v, wait %v; want retry job immediately eligible", claimed, ctx, wait)
+	}
+	d.queue.active[info.FsID]()
+}
+
 func TestClaimUsesEligibleReadyQueueAndKeepsFutureRetriesDelayed(t *testing.T) {
 	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
