@@ -40,6 +40,17 @@ func newRunID() (string, error) {
 }
 
 func openSQLite(path, scope string) (*sql.DB, error) {
+	return openSQLiteMode(path, scope, true)
+}
+
+func openSQLiteExisting(path, scope string) (*sql.DB, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	return openSQLiteMode(path, scope, false)
+}
+
+func openSQLiteMode(path, scope string, initialize bool) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -52,6 +63,11 @@ func openSQLite(path, scope string) (*sql.DB, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if !initialize {
+		if err = validateSQLiteSchemaAndScope(ctx, db, scope); err != nil {
+			return fail(err)
+		}
+	}
 	for _, pragma := range []string{
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA foreign_keys=ON",
@@ -80,7 +96,8 @@ func openSQLite(path, scope string) (*sql.DB, error) {
 			return fail(fmt.Errorf("SQLite %s=%d, want %d", check.query, got, check.want))
 		}
 	}
-	if _, err = db.ExecContext(ctx, `
+	if initialize {
+		if _, err = db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS store_meta (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -108,24 +125,15 @@ CREATE TABLE IF NOT EXISTS job_events (
 CREATE INDEX IF NOT EXISTS job_events_job_sequence ON job_events(job_id, sequence);
 CREATE TRIGGER IF NOT EXISTS job_events_no_update BEFORE UPDATE ON job_events BEGIN SELECT RAISE(ABORT, 'job events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS job_events_no_delete BEFORE DELETE ON job_events BEGIN SELECT RAISE(ABORT, 'job events are append-only'); END;
-`); err != nil {
-		return fail(err)
-	}
-	if err = os.Chmod(path, 0600); err != nil {
-		return fail(err)
-	}
-	if _, err = db.ExecContext(ctx, `INSERT OR IGNORE INTO store_meta(key, value) VALUES('schema_version', ?), ('scope', ?)`, fmt.Sprint(sqliteSchemaVersion), scope); err != nil {
-		return fail(err)
-	}
-	var version, gotScope string
-	if err = db.QueryRowContext(ctx, `SELECT value FROM store_meta WHERE key='schema_version'`).Scan(&version); err != nil {
-		return fail(err)
-	}
-	if err = db.QueryRowContext(ctx, `SELECT value FROM store_meta WHERE key='scope'`).Scan(&gotScope); err != nil {
-		return fail(err)
-	}
-	if version != fmt.Sprint(sqliteSchemaVersion) || gotScope != scope {
-		return fail(fmt.Errorf("SQLite store version or scope mismatch"))
+		`); err != nil {
+			return fail(err)
+		}
+		if _, err = db.ExecContext(ctx, `INSERT OR IGNORE INTO store_meta(key, value) VALUES('schema_version', ?), ('scope', ?)`, fmt.Sprint(sqliteSchemaVersion), scope); err != nil {
+			return fail(err)
+		}
+		if err = validateSQLiteSchemaAndScope(ctx, db, scope); err != nil {
+			return fail(err)
+		}
 	}
 	var integrity string
 	if err = db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
@@ -134,39 +142,29 @@ CREATE TRIGGER IF NOT EXISTS job_events_no_delete BEFORE DELETE ON job_events BE
 	if integrity != "ok" {
 		return fail(fmt.Errorf("SQLite integrity check failed: %s", integrity))
 	}
+	if err = os.Chmod(path, 0600); err != nil {
+		return fail(err)
+	}
 	return db, nil
 }
 
-func verifyExistingSQLite(path, scope string) error {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
+func validateSQLiteSchemaAndScope(ctx context.Context, db *sql.DB, scope string) error {
+	var schemaObjects int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE (type='table' AND name IN ('store_meta','jobs','job_events')) OR (type='index' AND name='job_events_job_sequence') OR (type='trigger' AND name IN ('job_events_no_update','job_events_no_delete'))`).Scan(&schemaObjects); err != nil {
 		return err
 	}
-	db.SetMaxOpenConns(1)
-	defer db.Close()
-	var integrity string
-	if err = db.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("SQLite integrity check failed: %s", integrity)
+	if schemaObjects != 6 {
+		return fmt.Errorf("SQLite schema is incomplete")
 	}
 	var version, gotScope string
-	if err = db.QueryRow(`SELECT value FROM store_meta WHERE key='schema_version'`).Scan(&version); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT value FROM store_meta WHERE key='schema_version'`).Scan(&version); err != nil {
 		return err
 	}
-	if err = db.QueryRow(`SELECT value FROM store_meta WHERE key='scope'`).Scan(&gotScope); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT value FROM store_meta WHERE key='scope'`).Scan(&gotScope); err != nil {
 		return err
 	}
 	if version != fmt.Sprint(sqliteSchemaVersion) || gotScope != scope {
 		return fmt.Errorf("SQLite store version or scope mismatch")
-	}
-	var missing int
-	if err = db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE (type='table' AND name IN ('store_meta','jobs','job_events')) OR (type='index' AND name='job_events_job_sequence') OR (type='trigger' AND name IN ('job_events_no_update','job_events_no_delete'))`).Scan(&missing); err != nil {
-		return err
-	}
-	if missing != 6 {
-		return fmt.Errorf("SQLite schema is incomplete")
 	}
 	return nil
 }

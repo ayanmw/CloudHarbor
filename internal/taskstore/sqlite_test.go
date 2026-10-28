@@ -176,6 +176,41 @@ func TestOpenFailsClosedWhenAuthoritativeSQLiteSchemaIsDamaged(t *testing.T) {
 	}
 }
 
+func TestOpeningExistingSQLiteNeverInitializesMissingSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queue.sqlite")
+	db, err := openSQLite(path, "/queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`DROP TABLE job_events`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := openSQLiteExisting(path, "/queue"); err == nil {
+		reopened.Close()
+		t.Fatal("existing-store validation accepted and initialized missing schema")
+	}
+	db, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var count int
+	if err = db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='job_events'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("existing-store validation repaired schema: count=%d err=%v", count, err)
+	}
+}
+
 func TestSQLiteJobEventsAreAppendOnly(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "queue"), "/queue")
 	if err != nil {

@@ -170,10 +170,7 @@ func Open(dir, scope string) (*Store, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	if err = verifyExistingSQLite(dbPath, scope); err != nil {
-		return nil, err
-	}
-	s.db, err = openSQLite(dbPath, scope)
+	s.db, err = openSQLiteExisting(dbPath, scope)
 	if err != nil {
 		return nil, err
 	}

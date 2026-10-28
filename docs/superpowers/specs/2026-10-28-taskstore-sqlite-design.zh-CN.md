@@ -104,13 +104,14 @@ Windows 合成队列基准显示，100,000 条任务在当前环境中完整恢�
 - v1 导入保留源 JSON 和 sidecar；暂存库在单事务写入后关闭并重开，验证完整性、范围、任务数量及逐 ID 原文，再发布 SQLite 文件并切换格式清单。预切换失败可从保留的 v1 源重做；清单切换后 SQLite 是唯一权威源，损坏时失败关闭。
 - 下载尝试开始/结束、云端元数据观察、源操作发送/结果和启动恢复均有独立事件；线上操作 ID 关联对应尝试。没有提供方真实发生时间时保持 NULL，响应观察时间不冒充线上完成时间。
 - `legacy_import` 事件保留 v1 JSON 中 `created` 和 `updated` 字段的原始 JSON 时间值；源记录未提供时写为 `null`。事件 `recorded_at_utc` 表示本机迁移观察时间，`occurred_at_utc` 仍为空，不把任务更新时间误当作导入或线上操作的发生时间。
-- 当前事件查询仍仅由 `taskstore.Store.Events` 提供，尚未接入认证管理 API 或页面；用户暂不能通过管理界面浏览事件历史。关键事件已补齐：取消/手动重试记录原因和计数，成功扫描恢复/源项不再具备资格记录扫描 epoch、云端观察时间和状态转变，下载尝试记录结构化结果类别、可用的 HTTP/提供方数值码、响应观察时间和 UTC 未来重试计划。事件仍与当前任务投影在同一 SQLite 事务提交；未知或过期认证扫描不写恢复/缺失证据。
-- Windows 全模块 Go 测试、`go vet`、WSL 全模块 race、17 项 Node 测试和三平台无 CGO 构建已通过。独立包启动/认证/停止冒烟与 payload 哈希、ELF 架构验证已完成，记录见 `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.23-preview.1-validation.md`。
+- 管理页已接入管理员认证保护的任务级只读事件 API；事件按需加载并 keyset 分页，浏览器只保留一个任务的一页。关键事件包括取消/手动重试、成功扫描后的鉴权恢复/源项资格变化，以及下载结果类别和结构化 HTTP 证据。事件仍与当前任务投影在同一 SQLite 事务提交；未知或过期认证扫描不写恢复/缺失证据。
+- Windows 全模块 Go 测试、`go vet`、19 项 Node 测试和三平台无 CGO 构建已在 v0.8.28-preview.1 门禁通过；该预览包 race 未验证（Windows cgo `exit status 2`、WSL `E_ACCESSDENIED`）。独立包启动、认证 health、SQLite 诊断日志和 payload 哈希证据见 `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.28-preview.1-validation.md`。
 - 本机最小合成数据测量：100,000 个任务投影加 100,000 条通用状态事件，数据库 36,716,544 字节，`integrity_check=ok`，约 367 字节/任务。具体云端元数据和操作证据会增大事件 JSON，故该数字只是存储基线；迁移后的旧 v1 文件当前继续保留，部署空间需考虑两种格式共存。
 - 完整迁移测量：100,000 个带真实任务字段形状的合成 v1 文件耗时约 45.73 秒创建、34.17 秒迁移及重开校验；旧 JSON 逻辑长度 23,766,685 字节，SQLite 41,881,600 字节，v1 文件仍保留，两种格式逻辑总量约 65.65 MB。迁移校验确认 SQLite 完整性 `ok` 且 jobs/events 各 100,000 条。该数据是单次 Windows 本机测量，不能外推 NAS/SMB；双份共存是为保留离线恢复副本，清理前需明确回滚/备份政策。
 - **目标 NAS/SMB 的 SQLite 锁与刷盘语义仍待实测。** PRAGMA 值不能证明底层设备兑现同步请求；只有在用户实际挂载方式和容器卷测试通过后，才可宣称该 NAS 满足耐久要求。
 - 事件按用户要求保留，不设置自动裁剪期限。后续以实际事件增长和磁盘占用数据评估容量；未有目标环境测量前不宣称长期容量已验证。
 - 启动诊断通过结构化日志记录本次 `run_id`、格式版本、云端队列范围的 64 位 SHA-256 短指纹、任务/事件数量、最大事件序号、数据库字节数、迁移动作、实际 journal/synchronous/foreign_keys/busy_timeout、已通过的 `integrity_check` 结果和 UTC 采集时刻。诊断不打印队列路径，不重复执行完整性扫描，不写 SQLite。
+- 权威 SQLite 重启时先验证 schema、格式和队列范围，然后设置并读取 pragma，执行一次完整 `integrity_check`；不再先独立打开检查后又第二次打开检查。Windows 合成 100,000 条历史的 `Store.Load` 端到端 5 次样本中位数约 476 ms（459–526 ms），改动前 3 次样本中位数约 613 ms（609–674 ms），方向性改善约 22%；B/op 与分配次数基本不变。不同进程样本、Windows 本机缓存，不代表 NAS/SMB。
 
 ## 依据
 

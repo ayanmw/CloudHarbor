@@ -120,7 +120,7 @@ func migrateV1(store *Store, scope string) error {
 	if err = db.Close(); err != nil {
 		return err
 	}
-	check, err := openSQLite(tempPath, scope)
+	check, err := openSQLiteExisting(tempPath, scope)
 	if err != nil {
 		return err
 	}
