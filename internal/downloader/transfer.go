@@ -20,15 +20,112 @@ const stateDirectory = ".nas-downloader"
 
 var syncPublishedDirectory = durablefs.SyncDirectory
 var removePublishedPartial = os.Remove
+var linkDownloadedFile = os.Link
 
-func removePublishedPartialIfLinked(finalInfo os.FileInfo, partialName string) {
+func publishDownloadedFile(ctx context.Context, partialName, local, expectedSHA256 string, expectedSize int64) error {
+	linkErr := linkDownloadedFile(partialName, local)
+	if linkErr == nil {
+		return nil
+	}
+	if _, err := os.Lstat(local); err == nil {
+		return fmt.Errorf("发布文件失败（目标已存在）: %w", linkErr)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("检查发布目标失败: %w", err)
+	}
+	if err := copyAndPublishNoReplace(ctx, partialName, local, expectedSHA256, expectedSize); err != nil {
+		return fmt.Errorf("硬链接发布失败，复制回退也未能安全发布: %w", err)
+	}
+	return nil
+}
+
+func copyAndPublishNoReplace(ctx context.Context, partialName, local, expectedSHA256 string, expectedSize int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	source, err := os.Open(partialName)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	temporary, err := os.CreateTemp(filepath.Dir(local), ".nas-download-publish-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		if temporaryName != "" {
+			_ = os.Remove(temporaryName)
+		}
+	}()
+	if err = temporary.Chmod(0600); err != nil {
+		return err
+	}
+	digest := sha256.New()
+	writer := io.MultiWriter(temporary, digest)
+	buffer := make([]byte, 256*1024)
+	var copied int64
+	for {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		count, readErr := source.Read(buffer)
+		if count > 0 {
+			written, writeErr := writer.Write(buffer[:count])
+			copied += int64(written)
+			if writeErr != nil {
+				return writeErr
+			}
+			if written != count {
+				return io.ErrShortWrite
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	if copied != expectedSize || hex.EncodeToString(digest.Sum(nil)) != expectedSHA256 {
+		return fmt.Errorf("复制后的下载内容与已验证凭据不一致")
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	if err = temporary.Sync(); err != nil {
+		return err
+	}
+	if err = temporary.Close(); err != nil {
+		return err
+	}
+	if err = publishFileNoReplace(temporaryName, local); err != nil {
+		return err
+	}
+	temporaryName = ""
+	return nil
+}
+
+func removeVerifiedPublishedPartial(ctx context.Context, finalInfo os.FileInfo, receipt, expected fileRecord, partialName, metadataName string) {
 	partialInfo, err := os.Stat(partialName)
-	if err != nil || !os.SameFile(finalInfo, partialInfo) {
+	if err != nil || !partialInfo.Mode().IsRegular() || partialInfo.Size() != expected.Size {
 		return
 	}
-	// This path is only a leftover hard link to an already verified and
-	// directory-synced final file. Cleanup is best-effort; it must not make the
-	// durable download fail again if the filesystem still refuses unlinking.
+	if os.SameFile(finalInfo, partialInfo) {
+		_ = removePublishedPartial(partialName)
+		return
+	}
+	metadata, err := readRecord(metadataName)
+	if err != nil || !metadata.matches(expected) || receipt.SHA256 == "" {
+		return
+	}
+	digest, err := hashFile(ctx, partialName)
+	if err != nil || digest != receipt.SHA256 {
+		return
+	}
+	// A verified copy may remain if the process stopped after final publication
+	// but before unlinking the bound partial. Remove it only after rechecking both
+	// the partial's cloud identity and its content against the final receipt.
 	_ = removePublishedPartial(partialName)
 }
 
@@ -231,7 +328,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		if err = syncPublishedDirectory(filepath.Dir(local)); err != nil {
 			return fmt.Errorf("同步已发布文件所在目录失败: %w", err)
 		}
-		removePublishedPartialIfLinked(stat, partialName)
+		removeVerifiedPublishedPartial(ctx, stat, record, expected, partialName, metaName)
 		d.updateProgress(info.FsID, info.Size)
 		return nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
@@ -371,10 +468,10 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	if err = writeRecord(receiptName, expected); err != nil {
 		return err
 	}
-	// No-replace publication: a concurrently created target must be preserved.
-	// Both paths are inside the download volume; hard links are required.
-	if err = os.Link(partialName, local); err != nil {
-		return fmt.Errorf("发布文件失败（目标存在或文件系统不支持硬链接）: %w", err)
+	// Prefer the atomic hard-link path. If the filesystem does not support
+	// links, copy to a synced sibling and atomically publish without replacement.
+	if err = publishDownloadedFile(ctx, partialName, local, expected.SHA256, info.Size); err != nil {
+		return err
 	}
 	if err = syncPublishedDirectory(filepath.Dir(local)); err != nil {
 		return fmt.Errorf("同步已发布文件所在目录失败: %w", err)

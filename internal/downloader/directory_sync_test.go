@@ -2,6 +2,8 @@ package downloader
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -87,19 +89,29 @@ func TestCleanupDoesNotRemoveUnrelatedPartialFile(t *testing.T) {
 	dir := t.TempDir()
 	finalPath := filepath.Join(dir, "final.bin")
 	partialPath := filepath.Join(dir, "partial.bin")
-	if err := os.WriteFile(finalPath, []byte("verified final"), 0600); err != nil {
+	metadataPath := filepath.Join(dir, "partial.json")
+	finalContent := []byte("verified final")
+	if err := os.WriteFile(finalPath, finalContent, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(partialPath, []byte("different partial"), 0600); err != nil {
+	if err := os.WriteFile(partialPath, []byte("mismatch value"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	info := file(1, "final.bin", int64(len(finalContent)))
+	expected := recordFor(info, "final.bin")
+	if err := writeRecord(metadataPath, expected); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(finalContent)
+	receipt := expected
+	receipt.SHA256 = hex.EncodeToString(digest[:])
 	finalInfo, err := os.Stat(finalPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	removePublishedPartialIfLinked(finalInfo, partialPath)
+	removeVerifiedPublishedPartial(context.Background(), finalInfo, receipt, expected, partialPath, metadataPath)
 	body, err := os.ReadFile(partialPath)
-	if err != nil || string(body) != "different partial" {
+	if err != nil || string(body) != "mismatch value" {
 		t.Fatalf("unrelated partial changed during cleanup: %q %v", body, err)
 	}
 }
