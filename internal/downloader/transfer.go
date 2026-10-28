@@ -19,6 +19,18 @@ import (
 const stateDirectory = ".nas-downloader"
 
 var syncPublishedDirectory = durablefs.SyncDirectory
+var removePublishedPartial = os.Remove
+
+func removePublishedPartialIfLinked(finalInfo os.FileInfo, partialName string) {
+	partialInfo, err := os.Stat(partialName)
+	if err != nil || !os.SameFile(finalInfo, partialInfo) {
+		return
+	}
+	// This path is only a leftover hard link to an already verified and
+	// directory-synced final file. Cleanup is best-effort; it must not make the
+	// durable download fail again if the filesystem still refuses unlinking.
+	_ = removePublishedPartial(partialName)
+}
 
 type fileRecord struct {
 	FsID         int64  `json:"fs_id"`
@@ -219,6 +231,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		if err = syncPublishedDirectory(filepath.Dir(local)); err != nil {
 			return fmt.Errorf("同步已发布文件所在目录失败: %w", err)
 		}
+		removePublishedPartialIfLinked(stat, partialName)
 		d.updateProgress(info.FsID, info.Size)
 		return nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
@@ -366,7 +379,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	if err = syncPublishedDirectory(filepath.Dir(local)); err != nil {
 		return fmt.Errorf("同步已发布文件所在目录失败: %w", err)
 	}
-	if err = os.Remove(partialName); err != nil {
+	if err = removePublishedPartial(partialName); err != nil {
 		return fmt.Errorf("清理临时文件失败: %w", err)
 	}
 	d.updateProgress(info.FsID, info.Size)

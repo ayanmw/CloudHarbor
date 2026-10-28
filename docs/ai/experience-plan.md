@@ -147,3 +147,8 @@
 - [x] SQLite 正常重启路径去掉重复 integrity_check；Windows Go 1.27.1 100,000 条合成历史 `Store.Load` 5 次样本中位数约 476 ms，对照改动前 3 次样本中位数约 613 ms，约快 22%；只是当前 Windows 本机方向性测量，不外推 NAS/SMB。
 - [x] 启动专用 `LoadEachRaw` 按 SQLite 整数主键扫描，避免对旧 JSON 文件名表达式排序；100,000 根任务 Windows `OpenDownloader` 单轮 3 次中位数约 1.182 s → 0.600 s，B/op 与 allocs/op 基本不变。任务通用 `LoadEach` 保持原文件名顺序契约；样本受 Windows I/O 波动影响，不外推 NAS/SMB。
 - [x] 已明确目标 NAS/SMB 锁、刷盘与掉电恢复仍未验收；本地测试不替代目标文件系统证据。
+
+## D12：清理最终发布后残留的临时硬链接
+
+- [x] 最终文件与 SHA256 完成凭据已安全发布，但删除 `content.part` 名称短暂失败时，下一次重试验证最终文件后清理仅在 `os.SameFile` 确认两路径是同一文件时进行；不匹配或状态不明的部分文件保持原样。
+- [x] 回归覆盖注入第一次 unlink 失败后重试清除孤立硬链接，以及不删除无关的部分文件。
