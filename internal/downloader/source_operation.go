@@ -69,6 +69,29 @@ func sourceOperationEvidence(info baiduapi.FileInfo, state string) json.RawMessa
 	}{state, info.FsID, info.Path, info.Size, info.Mtime, info.IsDir, info.ServerFilename})
 	return body
 }
+
+func sourceOperationResultEvidence(info baiduapi.FileInfo, state string, operationErr error) json.RawMessage {
+	providerOperation, providerHTTPStatus, providerErrorCode := "", 0, 0
+	if providerErr := apiError(operationErr); providerErr != nil {
+		providerOperation = providerErr.Operation
+		providerHTTPStatus = providerErr.Status
+		providerErrorCode = providerErr.Code
+	}
+	body, _ := json.Marshal(struct {
+		State              string `json:"state"`
+		FsID               int64  `json:"fs_id"`
+		Path               string `json:"path"`
+		Size               int64  `json:"size"`
+		Mtime              int64  `json:"mtime"`
+		IsDir              int    `json:"is_dir"`
+		Filename           string `json:"server_filename"`
+		ErrorClass         string `json:"error_class,omitempty"`
+		ProviderOperation  string `json:"provider_operation,omitempty"`
+		ProviderHTTPStatus int    `json:"provider_http_status,omitempty"`
+		ProviderErrorCode  int    `json:"provider_error_code,omitempty"`
+	}{state, info.FsID, info.Path, info.Size, info.Mtime, info.IsDir, info.ServerFilename, errorClass(operationErr), providerOperation, providerHTTPStatus, providerErrorCode})
+	return body
+}
 func (q *scheduler) rebuildSourceBlocks() {
 	q.blockedSources = make(map[string]bool)
 	for _, job := range q.jobs {
@@ -136,6 +159,9 @@ func (d *Downloader) finishSourceOperation(info baiduapi.FileInfo, operationErr 
 	operationID, attemptID := job.SourceOperationID, job.SourceAttemptID
 	event := taskstore.Event{OperationID: operationID, AttemptID: attemptID}
 	responseObservedAt := time.Now().UTC()
+	if providerErr := apiError(operationErr); providerErr != nil && providerErr.Status != 0 {
+		event.ResponseObservedAtUTC = &responseObservedAt
+	}
 	switch {
 	case errors.Is(operationErr, ErrSourceIdentityChanged):
 		job.SourceState = "changed"
@@ -170,7 +196,7 @@ func (d *Downloader) finishSourceOperation(info baiduapi.FileInfo, operationErr 
 		event.Kind = "source_operation_retryable_failure"
 		event.EvidenceType = "explicit_retryable_failure"
 	}
-	event.Evidence = sourceOperationEvidence(info, job.SourceState)
+	event.Evidence = sourceOperationResultEvidence(info, job.SourceState, operationErr)
 	if err := q.persistWithEvent(job, event); err != nil {
 		// The old durable sending record must remain authoritative if saving a
 		// receipt fails. Never let the in-memory state release the quarantine.

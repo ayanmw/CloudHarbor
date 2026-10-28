@@ -675,7 +675,7 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 		ProviderHTTPStatus int        `json:"provider_http_status,omitempty"`
 		ProviderErrorCode  int        `json:"provider_error_code,omitempty"`
 		ErrorClass         string     `json:"error_class,omitempty"`
-	}{job.Status, downloadOutcomeClass(job, err, q.stopping), job.Attempts, job.Failures, job.SourceState, nextAttempt, providerOperation, providerHTTPStatus, providerErrorCode, downloadErrorClass(err)})
+	}{job.Status, downloadOutcomeClass(job, err, q.stopping), job.Attempts, job.Failures, job.SourceState, nextAttempt, providerOperation, providerHTTPStatus, providerErrorCode, errorClass(err)})
 	if saveErr := q.persistWithEvent(job, taskstore.Event{Kind: "download_attempt_finished", AttemptID: executed.AttemptID, ResponseObservedAtUTC: responseObservedAt, EvidenceType: "local_attempt_result", Evidence: resultEvidence}); saveErr != nil {
 		job.Status = "failed"
 		job.Error = q.err.Error()
@@ -725,7 +725,7 @@ func apiError(err error) *baiduapi.APIError {
 	return nil
 }
 
-func downloadErrorClass(err error) string {
+func errorClass(err error) string {
 	if err == nil {
 		return ""
 	}

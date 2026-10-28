@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +13,54 @@ import (
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
+
+func TestSourceOperationFailureEventRecordsStructuredProviderEvidence(t *testing.T) {
+	base, _ := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "abc") })
+	d, err := OpenDownloader(base.cfg, base.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, d)
+	info := file(701, "source.txt", 3)
+	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeDelete, Status: "downloading", Created: time.Now()}
+	d.queue.jobs[info.FsID] = job
+	if err = d.queue.persist(job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.beginSourceOperation(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	providerErr := &baiduapi.APIError{Operation: "delete", Status: http.StatusServiceUnavailable, Code: 31034}
+	if err = d.finishSourceOperation(info, providerErr); err == nil {
+		t.Fatal("expected retryable source operation error")
+	}
+	events, err := d.queue.store.Events(info.FsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 {
+		t.Fatal("source operation events missing")
+	}
+	event := events[len(events)-1]
+	if event.Kind != "source_operation_retryable_failure" || event.ResponseObservedAtUTC == nil || event.OccurredAtUTC != nil {
+		t.Fatalf("failure event timestamps or kind are incorrect: %+v", event)
+	}
+	var evidence struct {
+		ErrorClass         string `json:"error_class"`
+		ProviderOperation  string `json:"provider_operation"`
+		ProviderHTTPStatus int    `json:"provider_http_status"`
+		ProviderErrorCode  int    `json:"provider_error_code"`
+	}
+	if err = json.Unmarshal(event.Evidence, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if evidence.ErrorClass != "provider_api_error" || evidence.ProviderOperation != "delete" || evidence.ProviderHTTPStatus != http.StatusServiceUnavailable || evidence.ProviderErrorCode != 31034 {
+		t.Fatalf("structured provider evidence missing: %+v", evidence)
+	}
+	if strings.Contains(string(event.Evidence), providerErr.Error()) {
+		t.Fatal("raw provider error text was persisted in event evidence")
+	}
+}
 
 func TestUncertainSourceOperationSurvivesRestartWithoutReplay(t *testing.T) {
 	for _, mode := range []DownloadMode{DownloadModeKeep, DownloadModeDelete} {
