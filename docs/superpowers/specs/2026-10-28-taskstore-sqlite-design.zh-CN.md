@@ -59,6 +59,7 @@ Windows 合成队列基准显示，100,000 条任务在当前环境中完整恢�
 - 为保持 Windows、Linux AMD64 和 Linux ARM64 的无 CGO 交叉构建，采用纯 Go `modernc.org/sqlite v1.34.5`；其模块声明最低 Go 1.21，与项目 Go 1.22 基线兼容。依赖已锁定，仍须验证三平台构建与 race。
 - 保留单进程 `writer.lock`；数据库连接池限制为一个写连接，事务串行提交，设置有限 busy timeout。锁冲突必须作为错误上报并停止后续调度，不能丢弃或跳过保存。
 - 基线采用回滚日志 `journal_mode=DELETE`、`synchronous=EXTRA` 并启用外键；启动时读取并回验实际 pragma。DELETE 模式用于避开 WAL 要求所有数据库使用者位于同一主机且不支持网络文件系统的限制，但它不能修复错误的 SMB/NFS 锁实现。
+- `busy_timeout`、`foreign_keys` 和 `synchronous` 均为连接级设置。通过 `modernc.org/sqlite` DSN 的每连接 `_pragma` 配置，使 `database/sql` 因 I/O 错误丢弃连接并新建物理连接后仍恢复这些值；`journal_mode=DELETE` 也在每次连接创建时重设，并在启动时读取确认。测试强制关闭每个空闲连接、逐次触发新连接，验证各设置仍生效；这只能证明驱动连接生命周期行为，不能证明 NAS/SMB 锁和刷盘兑现。
 - 不通过降低同步级别、异步批量提交或忽略 `SQLITE_BUSY` 换取吞吐。新任务批量登记可在一个事务中提交；每次业务状态变更独立提交，尤其 `sending` 必须在网络请求之前完成并确认耐久提交。
 - 每次打开都检查格式版本、队列范围、完整性和所需 pragma。数据库缺失、损坏、范围不符、版本不兼容或同步设置未生效时，失败关闭；不得静默重建空库或回退读取过期文件。
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -74,6 +75,40 @@ func TestSQLiteStartupDiagnosticsDistinguishMigrationAndReopen(t *testing.T) {
 	diagnostic, err = store.StartupDiagnostics()
 	if err != nil || diagnostic.MigrationAction != "reopened" {
 		t.Fatalf("reopen incorrectly reported migration: %+v err=%v", diagnostic, err)
+	}
+}
+
+func TestSQLitePragmasAreAppliedToEveryConnection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queue space", "queue.sqlite")
+	if err := os.Mkdir(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSQLite(path, "/queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var journal string
+	if err := db.QueryRow("PRAGMA journal_mode=WAL").Scan(&journal); err != nil || journal != "wal" {
+		t.Fatalf("failed to prepare non-default journal mode: mode=%q err=%v", journal, err)
+	}
+	// Closing each idle physical connection forces database/sql to open a new
+	// one for the next query, as it may after a broken filesystem connection.
+	db.SetMaxIdleConns(0)
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&journal); err != nil || journal != "delete" {
+		t.Fatalf("new connection did not restore DELETE journal mode: mode=%q err=%v", journal, err)
+	}
+	for _, check := range []struct {
+		query string
+		want  int
+	}{{"PRAGMA synchronous", 3}, {"PRAGMA foreign_keys", 1}, {"PRAGMA busy_timeout", 5000}} {
+		var got int
+		if err := db.QueryRow(check.query).Scan(&got); err != nil {
+			t.Fatalf("read %s: %v", check.query, err)
+		}
+		if got != check.want {
+			t.Errorf("new connection %s=%d, want %d", check.query, got, check.want)
+		}
 	}
 }
 

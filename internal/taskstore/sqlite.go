@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -51,7 +52,7 @@ func openSQLiteExisting(path, scope string) (*sql.DB, error) {
 }
 
 func openSQLiteMode(path, scope string, initialize bool) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDataSourceName(path))
 	if err != nil {
 		return nil, err
 	}
@@ -68,17 +69,8 @@ func openSQLiteMode(path, scope string, initialize bool) (*sql.DB, error) {
 			return fail(err)
 		}
 	}
-	for _, pragma := range []string{
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA synchronous=EXTRA",
-	} {
-		if _, err = db.ExecContext(ctx, pragma); err != nil {
-			return fail(err)
-		}
-	}
 	var journal string
-	if err = db.QueryRowContext(ctx, "PRAGMA journal_mode=DELETE").Scan(&journal); err != nil {
+	if err = db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil {
 		return fail(err)
 	}
 	if journal != "delete" {
@@ -146,6 +138,21 @@ CREATE TRIGGER IF NOT EXISTS job_events_no_delete BEFORE DELETE ON job_events BE
 		return fail(err)
 	}
 	return db, nil
+}
+
+func sqliteDataSourceName(path string) string {
+	query := url.Values{}
+	for _, pragma := range []string{
+		"busy_timeout(5000)",
+		"foreign_keys(1)",
+		"journal_mode(DELETE)",
+		"synchronous(3)",
+	} {
+		query.Add("_pragma", pragma)
+	}
+	// modernc applies these pragmas whenever database/sql opens a physical
+	// connection, including after it discards a connection with an I/O error.
+	return path + "?" + query.Encode()
 }
 
 func validateSQLiteSchemaAndScope(ctx context.Context, db *sql.DB, scope string) error {

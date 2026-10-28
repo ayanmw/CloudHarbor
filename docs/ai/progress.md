@@ -1,5 +1,10 @@
 # 持续优化进度
 
+## v0.8.30-preview.16（SQLite 每次重连重新应用耐久 PRAGMA）
+
+- SQLite `busy_timeout`、`foreign_keys`、`synchronous` 原先只在数据库首次取用连接后设置一次；若 `database/sql` 因 I/O 错误丢弃该连接，后续物理连接会回到 SQLite 默认值。现在通过 `modernc.org/sqlite` 的每连接 `_pragma` DSN 重复应用这些连接级设置，并在每次新连接时将 journal mode 设回 DELETE。启动仍核验实际值，偏离即失败关闭。
+- 回归先失败后通过：测试把连接池空闲连接上限设为 0，强制每次查询新建连接，确认 `synchronous=3`、`foreign_keys=1`、`busy_timeout=5000`；另先切换 WAL 再丢弃连接，确认新连接重新使用 DELETE。SQLite 文件位于带空格目录的场景也通过。
+
 ## v0.8.30-preview.15（区分登记意图与已拥有的复制临时文件）
 
 - 复制回退先把随机临时 basename 作为“尚未创建/拥有”的意图写入 `partial.json`，再用独占创建；创建成功后先耐久标记为本程序拥有，才开始复制。重启时只清理已标记拥有且位于目标目录的普通文件；仅有意图标记时只清除登记，不碰磁盘上的同名文件。
