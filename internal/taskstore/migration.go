@@ -146,7 +146,7 @@ func migrateV1(store *Store, scope string) error {
 	if err = check.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(tempPath, finalPath); err != nil {
+	if err = durablefs.PublishNoReplace(tempPath, finalPath); err != nil {
 		return err
 	}
 	if err = durablefs.SyncDirectory(store.dir); err != nil {

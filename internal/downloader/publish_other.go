@@ -2,8 +2,8 @@
 
 package downloader
 
-import "errors"
+import "web_browser_baidu_onekey_upload/internal/durablefs"
 
-func publishFileNoReplace(string, string) error {
-	return errors.New("atomic no-replace file publication is unsupported on this platform")
+func publishFileNoReplace(source, destination string) error {
+	return durablefs.PublishNoReplace(source, destination)
 }

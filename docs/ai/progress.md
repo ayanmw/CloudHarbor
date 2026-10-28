@@ -1,5 +1,11 @@
 # 持续优化进度
 
+## v0.8.30-preview.19（迁移数据库无覆盖写通发布）
+
+- 新增 `durablefs.PublishNoReplace`，统一 Windows 最终下载文件和 v1 迁移 SQLite 数据库发布路径。Windows 使用不带 `REPLACE_EXISTING` 的 `MoveFileExW(MOVEFILE_WRITE_THROUGH)`；Linux 保持 `renameat2(RENAME_NOREPLACE)`；其他平台继续失败关闭。
+- RED/GREEN 覆盖发布成功后源项移走、目标已存在时拒绝覆盖且保留两边证据，以及 Windows API 标志；v1 迁移仍通过现有等价验证和清单切换回归。
+- 迁移发布后才原子替换 SQLite 版本清单；Windows 写通请求不替代目录创建/删除 fsync，也不证明 NAS/SMB 或设备断电耐久。
+
 ## v0.8.30-preview.18（Windows 原子状态替换请求写通）
 
 - 新增 `durablefs.ReplaceFile`，并用于 taskstore 原子 JSON、下载部分文件元数据和批量原子记录发布。Windows 通过 `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` 更新；其他平台继续调用 `os.Rename`，Linux 既有目录同步行为不变。

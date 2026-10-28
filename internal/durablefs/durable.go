@@ -13,6 +13,7 @@ import (
 
 var syncDirectory = platformSyncDirectory
 var replaceFile = platformReplaceFile
+var publishNoReplace = platformPublishNoReplace
 
 const maxAtomicWriteWorkers = 4
 
@@ -23,6 +24,12 @@ func SyncDirectory(path string) error { return syncDirectory(path) }
 // SyncDirectory.
 func ReplaceFile(source, destination string) error {
 	return replaceFile(source, destination)
+}
+
+// PublishNoReplace atomically moves source to a previously absent destination.
+// Callers needing parent-directory durability must also call SyncDirectory.
+func PublishNoReplace(source, destination string) error {
+	return publishNoReplace(source, destination)
 }
 
 type File struct {
