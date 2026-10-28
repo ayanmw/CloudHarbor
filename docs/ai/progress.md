@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.25-preview.1（补齐 SQLite 关键任务事件证据）
+
+- 新增取消、手动重试、成功扫描后的鉴权恢复/源项不再具备资格事件；下载尝试事件增加稳定结果分类、可用的 HTTP/提供方错误码、HTTP 响应观察时间和 UTC 未来重试计划。任务投影与事件仍同事务提交，不改 schema、状态机、重试策略或管理页接口。
+- 自动化验证：Windows 全仓 Go 测试/vet、Node 17 项通过；Go 1.22.2 Ubuntu-24.04 WSL 全模块 race 通过。一次全模块 race 的既有退避用例曾遇时序超时，单项重跑与之后的完整 race 重跑通过。Windows race 因本机 cgo 子进程退出码 2 未能验证。
+- 打包脚本的 Windows AMD64、Linux AMD64、Linux ARM64 无 CGO 构建通过；ZIP 12 个文件与发布目录一致、11 个 payload 哈希匹配，ELF 架构分别为 x86-64/AArch64。包内 Windows 冒烟验证版本/revision、匿名 401、管理员认证 health=`waiting_authorization`、无百度凭证启动及停止后端口释放；未做真实云端操作。
+- 源码提交：`5b654b955a29a65b274403b6513a453c1f95ae4d`。独立包：[v0.8.25-preview.1.zip](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.25-preview.1.zip)，SHA256：`5FE241409EFD177C3A918C7B9732FDBDADBD1E62D8C843F857FBDD2C8D7A0978`；验证记录：[v0.8.25-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.25-preview.1-validation.md)。
+- SQLite 事件仍未开放管理 API/UI 查询；目标 NAS/SMB 耐久、真实百度链路、浏览器/油猴实机和长期运行仍待环境验收。
+
 ## 2026-10-28 任务状态查询接口证据更新
 
 - 同类工具 BaiduPCS-Rust 的变更记录说明其对异步 `filemanager` 结果调用 `taskquery` 轮询；公开的旧版网页脚本展示 `/share/taskquery` 并携带 `bdstoken`。这确认网页会话路线存在相似用法，但不能证明该接口接受本项目 OAuth access token，亦不能证明其终态可作为当前源操作的完成凭据。
