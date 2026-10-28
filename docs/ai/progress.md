@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.27-preview.1（限制事件时间线的浏览器内存）
+
+- 修复事件页“更早事件”累积历史项的问题：前后翻页时替换当前 20 项，而不是把所有浏览过的事件加入同一 DOM；使用游标栈返回较新页面，点击刷新回到最新页。一次只保留一个展开任务的事件状态。
+- Node 回归先在旧实现上因翻页后仍同时保留新旧事件失败；修正后 WebUI 16 项与油猴 3 项全绿。回归明确断言当前事件数组不随翻页增长、同时展开另一任务会释放旧面板状态。
+- 独立包门禁：Windows 全模块 Go 测试、`go vet`、WebUI/油猴 19 项和 Windows AMD64/Linux AMD64/Linux ARM64 无 CGO 构建通过。
+- 包内版本/revision：`v0.8.27-preview.1` / `1bffe4e301fb244bcafbf0bed364d9a2b98db48b`。实际 Windows 包无百度凭证启动后 health=`waiting_authorization`；嵌入资源包含较新页导航和单任务面板限制。ZIP 有 12 项、11 个 payload 哈希一致，SHA256 `8B37CB59FE15A7FA90886CF03CEA73C745E65E8B5C561B358B055AA6E364A685`。
+- 独立包：[v0.8.27-preview.1.zip](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.27-preview.1.zip)；验证记录：[v0.8.27-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.27-preview.1-validation.md)。未运行本包全量 race；未测试真实百度、NAS/SMB 与实机浏览器。
+
 ## v0.8.26-preview.1（管理页核查 SQLite 任务事件）
 
 - 新增管理员认证保护的只读 `GET /api/tasks/{id}/events`，按任务读取最新事件，默认 20 条、最多 50 条，使用 exclusive `before_sequence` keyset 游标；事件按 sequence 正序展示。空历史返回空数组，不存在的任务返回 404。
