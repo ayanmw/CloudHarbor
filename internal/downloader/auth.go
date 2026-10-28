@@ -2,9 +2,11 @@ package downloader
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
 var ErrAuthenticationWaiting = errors.New("等待百度账号授权或续期")
@@ -70,7 +72,13 @@ func (d *Downloader) SetAuthentication(client *baiduapi.Client, ready bool, expi
 	usable := d.authenticationReadyLocked()
 	d.clientMutex.Unlock()
 	if !usable {
-		q.parkAuthenticationWaiting()
+		reason := "credentials_unavailable"
+		if !ready {
+			reason = "credentials_not_ready"
+		} else if !expiry.IsZero() && !time.Now().Before(expiry) {
+			reason = "credentials_expired"
+		}
+		q.parkAuthenticationWaiting(reason, nil)
 	}
 	q.signal()
 }
@@ -79,15 +87,36 @@ func (d *Downloader) SetAuthenticationFailureHandler(handler func(string)) {
 	defer d.clientMutex.Unlock()
 	d.onRejected = handler
 }
-func (q *scheduler) parkAuthenticationWaiting() {
+func (q *scheduler) parkAuthenticationWaiting(reason string, cause error) {
 	q.clearCandidates()
 	for _, job := range q.jobs {
 		if job.Status != "pending" && job.Status != "retry_wait" {
 			continue
 		}
+		previousStatus := job.Status
 		job.Status = "auth_wait"
 		job.Error = ErrAuthenticationWaiting.Error()
-		if q.persist(job) != nil {
+		providerOperation, providerHTTPStatus, providerErrorCode := "", 0, 0
+		if providerErr := apiError(cause); providerErr != nil {
+			providerOperation = providerErr.Operation
+			providerHTTPStatus = providerErr.Status
+			providerErrorCode = providerErr.Code
+		}
+		evidence, _ := json.Marshal(struct {
+			PreviousStatus     string `json:"previous_status"`
+			Status             string `json:"status"`
+			Reason             string `json:"reason"`
+			ErrorClass         string `json:"error_class,omitempty"`
+			ProviderOperation  string `json:"provider_operation,omitempty"`
+			ProviderHTTPStatus int    `json:"provider_http_status,omitempty"`
+			ProviderErrorCode  int    `json:"provider_error_code,omitempty"`
+		}{previousStatus, job.Status, reason, errorClass(cause), providerOperation, providerHTTPStatus, providerErrorCode})
+		event := taskstore.Event{Kind: "authentication_wait_entered", EvidenceType: "authentication_gate", Evidence: evidence}
+		if providerHTTPStatus != 0 {
+			observedAt := time.Now().UTC()
+			event.ResponseObservedAtUTC = &observedAt
+		}
+		if q.persistWithEvent(job, event) != nil {
 			return
 		}
 		q.reflect(job)
@@ -111,7 +140,7 @@ func (d *Downloader) reportAuthenticationFailure(err error) {
 	handler := d.onRejected
 	q.eligible = make(map[int64]*baiduapi.FileInfo)
 	d.clientMutex.Unlock()
-	q.parkAuthenticationWaiting()
+	q.parkAuthenticationWaiting("provider_rejected", err)
 	q.mu.Unlock()
 	// The manager callback may update admission; never invoke it under q.mu.
 	if handler != nil {

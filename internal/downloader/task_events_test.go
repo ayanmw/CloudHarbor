@@ -108,6 +108,55 @@ func TestCancelAndRetryPersistIntentEvents(t *testing.T) {
 	})
 }
 
+func TestAuthenticationWaitEventRecordsGateReasonAndProviderResponse(t *testing.T) {
+	t.Run("credentials not ready", func(t *testing.T) {
+		d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+		job := &queueJob{Version: 1, Info: file(81, "auth-wait.bin", 1), Mode: DownloadModeKeep, Status: "pending"}
+		store := seedEventJob(t, d, job)
+		d.SetAuthentication(baiduapi.NewClient("", "app"), false, time.Time{})
+		event, err := latestTaskEvent(t, store, job.Info.FsID, "authentication_wait_entered")
+		if err != nil {
+			t.Fatal(err)
+		}
+		evidence := decodeEventEvidence(t, event)
+		if evidence["reason"] != "credentials_not_ready" || evidence["previous_status"] != "pending" || evidence["status"] != "auth_wait" {
+			t.Fatalf("authentication gate evidence = %#v", evidence)
+		}
+		if event.ResponseObservedAtUTC != nil || event.OccurredAtUTC != nil {
+			t.Fatalf("local credential state fabricated an online response/occurrence time: %+v", event)
+		}
+	})
+
+	t.Run("provider rejected credential", func(t *testing.T) {
+		d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+		job := &queueJob{Version: 1, Info: file(82, "auth-rejected.bin", 1), Mode: DownloadModeKeep, Status: "pending"}
+		store := seedEventJob(t, d, job)
+		client := baiduapi.NewClient("auth-event-secret", "app")
+		d.SetAuthentication(client, true, time.Now().Add(time.Hour))
+		oldTransport := http.DefaultTransport
+		defer func() { http.DefaultTransport = oldTransport }()
+		http.DefaultTransport = transportFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
+		})
+		_, providerErr := client.ListDir("/queue")
+		if providerErr == nil {
+			t.Fatal("expected provider rejection")
+		}
+		d.reportAuthenticationFailure(providerErr)
+		event, err := latestTaskEvent(t, store, job.Info.FsID, "authentication_wait_entered")
+		if err != nil {
+			t.Fatal(err)
+		}
+		evidence := decodeEventEvidence(t, event)
+		if evidence["reason"] != "provider_rejected" || evidence["error_class"] != "provider_api_error" || evidence["provider_operation"] != "list" || evidence["provider_http_status"] != float64(http.StatusUnauthorized) {
+			t.Fatalf("provider rejection evidence = %#v", evidence)
+		}
+		if event.ResponseObservedAtUTC == nil || event.OccurredAtUTC != nil || strings.Contains(string(event.Evidence), client.AccessToken) {
+			t.Fatalf("provider event timestamps or credential redaction are incorrect: %+v", event)
+		}
+	})
+}
+
 func TestReconcilePersistsScanRecoveryAndMissingSourceEvidence(t *testing.T) {
 	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	store := openEventStore(t, d)

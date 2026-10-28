@@ -508,7 +508,7 @@ func (q *scheduler) claimAt(now time.Time) (*queueJob, context.Context, time.Dur
 		return nil, nil, 0
 	}
 	if !q.owner.AuthenticationReady() {
-		q.parkAuthenticationWaiting()
+		q.parkAuthenticationWaiting("credentials_unavailable", nil)
 		return nil, nil, 0
 	}
 	chosen := q.popReadyCandidate(now)
