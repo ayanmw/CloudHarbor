@@ -103,7 +103,8 @@ Windows 合成队列基准显示，100,000 条任务在当前环境中完整恢�
 - 当前实现使用 `modernc.org/sqlite v1.34.5`，无 CGO；任务投影列为 `id`、`payload_json`、`status`、`updated_at_utc`，事件列包含 SQLite 序号、事件类型、分离的本机/线上时间、run/operation/attempt ID 及限长 JSON 证据。事件表通过数据库触发器拒绝 UPDATE/DELETE。
 - v1 导入保留源 JSON 和 sidecar；暂存库在单事务写入后关闭并重开，验证完整性、范围、任务数量及逐 ID 原文，再发布 SQLite 文件并切换格式清单。预切换失败可从保留的 v1 源重做；清单切换后 SQLite 是唯一权威源，损坏时失败关闭。
 - 下载尝试开始/结束、云端元数据观察、源操作发送/结果和启动恢复均有独立事件；线上操作 ID 关联对应尝试。没有提供方真实发生时间时保持 NULL，响应观察时间不冒充线上完成时间。
-- Windows 全模块 Go 测试、`go vet`、WSL 全模块 race、17 项 Node 测试和三平台无 CGO 构建已通过。独立包冒烟与文件哈希验证在预览包生成后记录。
+- Windows 全模块 Go 测试、`go vet`、WSL 全模块 race、17 项 Node 测试和三平台无 CGO 构建已通过。独立包启动/认证/停止冒烟与 payload 哈希、ELF 架构验证已完成，记录见 `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.23-preview.1-validation.md`。
+- 本机最小合成数据测量：100,000 个任务投影加 100,000 条通用状态事件，数据库 36,716,544 字节，`integrity_check=ok`，约 367 字节/任务。具体云端元数据和操作证据会增大事件 JSON，故该数字只是存储基线；迁移后的旧 v1 文件当前继续保留，部署空间需考虑两种格式共存。
 - **目标 NAS/SMB 的 SQLite 锁与刷盘语义仍待实测。** PRAGMA 值不能证明底层设备兑现同步请求；只有在用户实际挂载方式和容器卷测试通过后，才可宣称该 NAS 满足耐久要求。
 - 事件按用户要求保留，不设置自动裁剪期限。后续以实际事件增长和磁盘占用数据评估容量；未有目标环境测量前不宣称长期容量已验证。
 
