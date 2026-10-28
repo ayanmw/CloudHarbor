@@ -1,5 +1,11 @@
 # 持续优化进度
 
+## v0.8.30-preview.4（区分网络超时事件类别）
+
+- 下载尝试事件现在把 `net.Error.Timeout()` 明确记为 `network_timeout`，普通网络错误仍为 `network_error`；不保存原始错误/URL，也不改变下载器现有重试判断。
+- 回归先观察到超时被记为普通 `network_error` 而失败，修复后断言 `network_timeout` 且事件证据不含模拟 URL 和 Token 参数。错误证据仍只使用稳定分类。
+- 独立预览包与哈希验证将在 `v0.8.30-preview.4-validation.md` 记录；真实网络、百度/NAS 和目标浏览器仍待环境验收。
+
 ## v0.8.30-preview.3（启动恢复按 SQLite 主键顺序读取）
 
 - 通用且已验证 JSON 的 `LoadEach` 保持兼容顺序；下载器启动专用 `LoadEachRaw` 改按 SQLite 整数主键升序扫描，避免对 100k 行计算旧 JSON 文件名表达式并排序。回归使用 ID 2、10、1 先观察到旧顺序 `[1,10,2]`，再验证主键顺序 `[1,2,10]`。

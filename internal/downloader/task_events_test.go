@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,6 +220,31 @@ func TestDownloadAttemptEventStoresSafeFailureClassWithoutRawError(t *testing.T)
 	}
 	if strings.Contains(string(event.Evidence), "secret.bin") || strings.Contains(string(event.Evidence), "disk write failed") {
 		t.Fatalf("raw error leaked into event evidence: %s", event.Evidence)
+	}
+}
+
+type timeoutTestError struct{}
+
+func (timeoutTestError) Error() string   { return "request timed out" }
+func (timeoutTestError) Timeout() bool   { return true }
+func (timeoutTestError) Temporary() bool { return true }
+
+func TestDownloadAttemptEventDistinguishesNetworkTimeoutWithoutLeakingURL(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	job := &queueJob{Version: 1, Info: file(1, "one.bin", 1), Mode: DownloadModeKeep, Status: "downloading", Attempts: 1}
+	store := seedEventJob(t, d, job)
+	failure := &url.Error{Op: "Get", URL: "https://private.example/download?token=secret", Err: net.Error(timeoutTestError{})}
+	d.queue.complete(job, failure)
+	event, lookupErr := latestTaskEvent(t, store, 1, "download_attempt_finished")
+	if lookupErr != nil {
+		t.Fatal(lookupErr)
+	}
+	evidence := decodeEventEvidence(t, event)
+	if evidence["error_class"] != "network_timeout" {
+		t.Fatalf("timeout evidence class = %#v", evidence["error_class"])
+	}
+	if strings.Contains(string(event.Evidence), "private.example") || strings.Contains(string(event.Evidence), "token=secret") {
+		t.Fatalf("sensitive URL leaked into event evidence: %s", event.Evidence)
 	}
 }
 

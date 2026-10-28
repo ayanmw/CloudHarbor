@@ -731,6 +731,9 @@ func downloadErrorClass(err error) string {
 	}
 	var networkErr net.Error
 	if errors.As(err, &networkErr) {
+		if networkErr.Timeout() {
+			return "network_timeout"
+		}
 		return "network_error"
 	}
 	return "other_error"
