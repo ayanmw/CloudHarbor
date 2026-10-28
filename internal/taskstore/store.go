@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,6 +69,29 @@ func safePath(name string) error {
 	}
 	return nil
 }
+
+func cleanupAbandonedAtomicTemps(dir string) {
+	if safePath(dir) != nil {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.Type().IsRegular() || !strings.HasPrefix(name, "record-") || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		if len(name) <= len("record-.tmp") {
+			continue
+		}
+		// Temporary files are non-authoritative; failed cleanup can be retried
+		// on the next locked startup without blocking queue recovery.
+		_ = os.Remove(filepath.Join(dir, name))
+	}
+}
+
 func Open(dir, scope string) (*Store, error) {
 	if scope == "" {
 		return nil, fmt.Errorf("empty queue scope")
@@ -102,6 +126,12 @@ func Open(dir, scope string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{dir: absolute, lock: lock, runID: runID, scope: scope}
+	// CreateTemp-based atomic writes may leave record-*.tmp after a process
+	// crash. The writer lock is already held, so only abandoned files from this
+	// store can be cleaned before the current process starts serving requests.
+	for _, tempDir := range []string{absolute, filepath.Join(absolute, "jobs"), filepath.Join(absolute, "intake")} {
+		cleanupAbandonedAtomicTemps(tempDir)
+	}
 	migrationAction := "reopened"
 	success := false
 	defer func() {

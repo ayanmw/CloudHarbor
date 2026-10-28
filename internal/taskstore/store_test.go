@@ -13,6 +13,74 @@ import (
 	"time"
 )
 
+func TestOpenRemovesOnlyAbandonedAtomicWriteTemps(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	store, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, subdir := range []string{"", "intake", "jobs"} {
+		location := dir
+		if subdir != "" {
+			location = filepath.Join(dir, subdir)
+			if err = os.MkdirAll(location, 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err = os.WriteFile(filepath.Join(location, "record-abandoned.tmp"), []byte("incomplete"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = os.WriteFile(filepath.Join(dir, "notes.tmp"), []byte("user file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(filepath.Join(dir, "record-directory.tmp"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, subdir := range []string{"", "intake", "jobs"} {
+		location := dir
+		if subdir != "" {
+			location = filepath.Join(dir, subdir)
+		}
+		if _, statErr := os.Stat(filepath.Join(location, "record-abandoned.tmp")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("abandoned atomic temp remains in %s: %v", location, statErr)
+		}
+	}
+	for _, name := range []string{"notes.tmp", "record-directory.tmp"} {
+		if _, statErr := os.Stat(filepath.Join(dir, name)); statErr != nil {
+			t.Fatalf("non-temp entry %s was removed: %v", name, statErr)
+		}
+	}
+}
+
+func TestOpenDoesNotCleanTempsBeforeAcquiringWriterLock(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	first, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	temp := filepath.Join(dir, "record-active.tmp")
+	if err = os.WriteFile(temp, []byte("active writer temp"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if second, secondErr := Open(dir, "/preview"); secondErr == nil {
+		second.Close()
+		t.Fatal("second writer unexpectedly acquired the queue")
+	}
+	if _, err = os.Stat(temp); err != nil {
+		t.Fatalf("failed second opener removed temp under active writer: %v", err)
+	}
+}
+
 func TestCredentialsAndAccountBindingAreIndependentFromQueueSettings(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "queue")
 	s, err := Open(dir, "/preview")
