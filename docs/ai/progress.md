@@ -1,5 +1,15 @@
 # 持续优化进度
 
+## v0.8.23-preview.1（SQLite 任务历史与重启证据）
+
+- 任务当前投影迁入 SQLite，状态快照与追加事件在同一事务提交；事件使用单调序号并分离本机记录时间、云端元数据观察时间、线上响应观察时间、提供方 mtime 和未来重试时间。源操作的 sending 在网络请求前落盘；重启将未决发送恢复为 unknown 并隔离，不自动或人工重放。启动恢复、下载尝试和云端扫描证据均通过独立 run/operation/attempt ID 关联。
+- v1 任务 JSON 经暂存数据库、完整性/范围/记录数和逐 ID 原文等价验证后切换权威清单；旧 JSON 与 intake/凭证/账户/设置 sidecar 保留。损坏 SQLite、scope/版本不符和耐久设置不符时失败关闭。
+- Windows Go 1.27.1 全模块 `go test -count=1 ./...`、`go vet ./...` 通过；Go 1.22.2 WSL 全模块 `go test -race -count=1 ./...` 通过；Node 17 项通过；Windows AMD64/Linux AMD64/Linux ARM64 无 CGO 构建通过。Windows AMD64 合成基准（5 次，Intel Core Ultra 7 265KF，夹具创建不计时）：10k `Store.Load`/`OpenDownloader` 均值约 61/72 ms，100k 约 698/739 ms；100k 恢复后保留堆单次测量约 35.07 MiB（367.8 B/任务）。旧版本记录的 Go 工具链未与本次固定一致，因此不把跨版本比值作为严格 A/B；结果也不代表目标 NAS/SMB。
+- 解压后的 Windows 包从独立目录启动并创建 SQLite 状态库；匿名 health=401，Basic 认证 health=200，状态显示 `waiting_authorization` 和包内版本/revision。Ctrl+C 后服务日志报告 `Service stopped`，18090 端口不再监听；PowerShell 外层 PTY因 Ctrl+C 返回 1，因此不宣称外层 shell exit 0。未提供真实百度凭证，也未进行云端操作。
+- 11 个 payload SHA256 与清单匹配；ZIP 与发布目录 12 个文件一致；Linux AMD64/ARM64 ELF64 machine 分别为 62/183；Windows `-version` 输出的版本/revision 与清单一致。
+- 源码 revision `37aa64a7b13d4f314942aaa3842a0c7d9c06c45c`。独立 ZIP：`D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.23-preview.1.zip`，15,132,493 字节，SHA256 `68DF6B28D423EBABD959DBABCE469F5E3EB72FC3E70C80EC277F74777187C14A`。详细验证：[v0.8.23-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.23-preview.1-validation.md)。
+- 真实 NAS/SMB 的锁、刷盘与断电恢复、真实百度异步完成查询契约、浏览器/油猴实机兼容及长时间运行仍未验收；本包不等同这些环境的认证。
+
 ## v0.8.22-preview.1（精简启动恢复的派生状态同步）
 
 - 启动恢复将持久化的 `downloading` 任务改为 `pending` 后，恢复记录都处于非活动态，且派生 `Downloader.tasks` 表为空；移除每条记录上的 `reflect` 调用，避免逐条加锁并删除空表项。任务查询仍以 scheduler job 映射为持久化来源，运行期活动任务仍由既有 `reflect` 维护。

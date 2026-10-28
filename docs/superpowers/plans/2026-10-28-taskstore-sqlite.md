@@ -94,6 +94,6 @@
 
 - [x] Run full `go test -count=1 ./...` and `go vet ./...` on Windows; run full `go test -race -count=1 ./...` on Go 1.22.2 WSL; run Node UI tests (17 passed).
 - [x] Build Windows AMD64, Linux AMD64, and Linux ARM64 with CGO disabled.
-- [ ] Run package startup/auth/stop smoke; verify release payload hashes and Linux ELF architectures. SQLite migration/crash failure paths are covered by the taskstore and downloader regression suites.
+- [x] Run package startup/auth/stop smoke; verify release payload hashes and Linux ELF architectures. SQLite migration/crash failure paths are covered by the taskstore and downloader regression suites.
 - [x] Record target NAS/SMB locking and power-loss behavior as unverified until tested on the actual deployment filesystem; do not claim local tests prove NAS durability.
-- [ ] Publish a new immutable preview ZIP with exact commit, hashes, run instructions, and evidence boundaries.
+- [x] Publish immutable `v0.8.23-preview.1` with exact commit, SHA256, run instructions, and evidence boundaries.
