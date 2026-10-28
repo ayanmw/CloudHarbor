@@ -37,6 +37,8 @@
 
 2026-10-28 交叉核对：百度网盘组织的 [bdpan-storage Skill](https://github.com/baidu-netdisk/bdpan-storage/blob/main/skills/baidu-drive/SKILL.md) 记载 `status=submitted` 及 `get-content-result <taskid>`，但该查询用于文件正文解析，不是 filemanager 的 copy/move/rename。其文件管理章节仍仅描述异步请求返回 `taskid`，未提供对应完成查询契约。因此它不能解除本项目的异步 Move 阻塞；继续隔离未知结果，不用不同业务类型的 task API 推断可互换。
 
+2026-10-29 复核：当前官方 [Go SDK FileManagerResponse](https://github.com/baidu-netdisk/baidu-drive-sdk-go/blob/main/baidudriver/api/file_manager.go)仍只定义 `taskid` 响应字段及 async 取值，没有公开任务状态查询方法；其 [`bdpan-storage` 命令参考](https://github.com/baidu-netdisk/bdpan-storage/blob/main/skills/baidu-drive/reference/bdpan-commands.md)描述的 `status=submitted` / `task_id` 属于分享转存与分享下载工作流，另有正文解析任务查询，未声明适用于 xpan `filemanager` 移动。仓库内 [MoveFile](../../internal/baiduapi/move.go)固定请求 `async=0`；若响应仍返回 taskid 或运行中 errno，仍按 unknown 处理。现有公开证据因此仍不足以恢复这类源项；不借用其它任务域的查询能力，也不按目标路径出现推断完成。
+
 2026-10-23 追加核查：百度官方 [Go SDK API 文档](https://pkg.go.dev/github.com/baidu-netdisk/baidu-drive-sdk-go/baidudriver/api)仍将 `taskid` 定义为异步文件管理响应字段，但公开的 `FileManagerService` 方法清单没有任务查询方法；其链接的官方 Move 文档本轮无法读取。搜索到的 `/api/taskquery` 用例来自网盘网页脚本，使用的是浏览器页面环境，未证明它属于 OAuth 开放平台契约，也未给出可由应用凭据调用的授权、状态终态或结果一致性保证。因此本工具继续将异步 Move 结果视为 unknown；不调用网页登录 Cookie 接口、不按目标路径出现推断完成，也不提供人工解除隔离。只有取得适用于当前 OAuth 应用的官方契约并能对终态和单项结果做验证后，才继续设计查询接线。
 
 ## D3：油猴与管理页衔接（已实现，真实页面适配待验收）
