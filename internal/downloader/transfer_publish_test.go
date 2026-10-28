@@ -46,7 +46,7 @@ func TestPublishDownloadedFileFallsBackToVerifiedCopy(t *testing.T) {
 		t.Fatalf("fallback did not create an independent file: final=%v partial=%v err=%v", finalInfo, partialInfo, err)
 	}
 	registered, err := readRecord(filepath.Join(dir, "partial.json"))
-	if err != nil || registered.PublishTempName == "" {
+	if err != nil || registered.PublishTempName == "" || !registered.PublishTempOwned {
 		t.Fatalf("copy temporary was not durably registered: %+v err=%v", registered, err)
 	}
 	if err = cleanupRegisteredPublishTemp(dir, filepath.Join(dir, "partial.json"), &expected); err != nil {
@@ -162,6 +162,7 @@ func TestCleanupRegisteredPublishTemporaryAfterInterruptedCopy(t *testing.T) {
 	}
 	metadata := recordFor(file(912, "result.bin", 20), "result.bin")
 	metadata.PublishTempName = temporaryName
+	metadata.PublishTempOwned = true
 	if err := writeRecord(metadataPath, metadata); err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +188,7 @@ func TestCleanupRegisteredPublishTemporaryRejectsPathEscape(t *testing.T) {
 	metadataPath := filepath.Join(dir, "partial.json")
 	metadata := recordFor(file(913, "result.bin", 1), "result.bin")
 	metadata.PublishTempName = filepath.Join("..", filepath.Base(filepath.Dir(outside)), filepath.Base(outside))
+	metadata.PublishTempOwned = true
 	if err := writeRecord(metadataPath, metadata); err != nil {
 		t.Fatal(err)
 	}
@@ -195,6 +197,31 @@ func TestCleanupRegisteredPublishTemporaryRejectsPathEscape(t *testing.T) {
 	}
 	if got, err := os.ReadFile(outside); err != nil || string(got) != "user file" {
 		t.Fatalf("path escape changed user file: %q err=%v", got, err)
+	}
+}
+
+func TestCleanupUnownedPublishNamePreservesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	metadataPath := filepath.Join(dir, "partial.json")
+	name := ".nas-download-publish-0123456789abcdef0123456789abcdef.tmp"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("unowned file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	metadata := recordFor(file(915, "result.bin", 12), "result.bin")
+	metadata.PublishTempName = name
+	if err := writeRecord(metadataPath, metadata); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupRegisteredPublishTemp(dir, metadataPath, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "unowned file" {
+		t.Fatalf("unowned file was removed or changed: %q err=%v", got, err)
+	}
+	cleaned, err := readRecord(metadataPath)
+	if err != nil || cleaned.PublishTempName != "" || cleaned.PublishTempOwned {
+		t.Fatalf("unowned intent was not cleared: %+v err=%v", cleaned, err)
 	}
 }
 

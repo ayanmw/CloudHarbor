@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -47,32 +48,39 @@ func copyAndPublishNoReplace(ctx context.Context, partialName, local string, exp
 		return err
 	}
 	defer source.Close()
-	temporary, err := os.CreateTemp(filepath.Dir(local), ".nas-download-publish-*.tmp")
-	if err != nil {
-		return err
-	}
-	temporaryName := temporary.Name()
-	defer func() {
-		_ = temporary.Close()
-		if temporaryName != "" {
-			_ = os.Remove(temporaryName)
-		}
-	}()
 	metadataName := filepath.Join(filepath.Dir(partialName), "partial.json")
 	metadata, err := readRecord(metadataName)
 	if err != nil {
-		return fmt.Errorf("下载部分文件元数据与发布记录不匹配: %w", err)
+		return err
 	}
 	if !metadata.matches(expected) {
 		return fmt.Errorf("下载部分文件元数据与发布记录不匹配")
 	}
-	// Persist the generated sibling name before copying so a restart can clean
-	// an interrupted large copy without scanning or touching unrelated files.
-	metadata.PublishTempName = filepath.Base(temporaryName)
+	var randomName [16]byte
+	if _, err = rand.Read(randomName[:]); err != nil {
+		return err
+	}
+	temporaryName := ".nas-download-publish-" + hex.EncodeToString(randomName[:]) + ".tmp"
+	metadata.PublishTempName = temporaryName
+	metadata.PublishTempOwned = false
 	if err = writeRecord(metadataName, metadata); err != nil {
 		return err
 	}
-	if err = temporary.Chmod(0600); err != nil {
+	temporaryPath := filepath.Join(filepath.Dir(local), temporaryName)
+	temporary, err := os.OpenFile(temporaryPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		metadata.PublishTempName = ""
+		clearErr := writeRecord(metadataName, metadata)
+		return errors.Join(err, clearErr)
+	}
+	defer func() {
+		_ = temporary.Close()
+		if temporaryPath != "" {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	metadata.PublishTempOwned = true
+	if err = writeRecord(metadataName, metadata); err != nil {
 		return err
 	}
 	digest := sha256.New()
@@ -113,10 +121,10 @@ func copyAndPublishNoReplace(ctx context.Context, partialName, local string, exp
 	if err = temporary.Close(); err != nil {
 		return err
 	}
-	if err = publishFileNoReplace(temporaryName, local); err != nil {
+	if err = publishFileNoReplace(temporaryPath, local); err != nil {
 		return err
 	}
-	temporaryName = ""
+	temporaryPath = ""
 	return nil
 }
 
@@ -130,10 +138,17 @@ func cleanupRegisteredPublishTemp(destinationDir, metadataName string, expected 
 	}
 	name := metadata.PublishTempName
 	if name == "" {
+		if metadata.PublishTempOwned {
+			return fmt.Errorf("registered publish ownership has no temporary name")
+		}
 		return nil
 	}
 	if filepath.Base(name) != name || !strings.HasPrefix(name, ".nas-download-publish-") || !strings.HasSuffix(name, ".tmp") {
 		return fmt.Errorf("invalid registered publish temporary name")
+	}
+	if !metadata.PublishTempOwned {
+		metadata.PublishTempName = ""
+		return writeRecord(metadataName, metadata)
 	}
 	path := filepath.Join(destinationDir, name)
 	info, err := os.Lstat(path)
@@ -151,6 +166,7 @@ func cleanupRegisteredPublishTemp(destinationDir, metadataName string, expected 
 		return err
 	}
 	metadata.PublishTempName = ""
+	metadata.PublishTempOwned = false
 	return writeRecord(metadataName, metadata)
 }
 
@@ -178,13 +194,14 @@ func removeVerifiedPublishedPartial(ctx context.Context, finalInfo os.FileInfo, 
 }
 
 type fileRecord struct {
-	FsID            int64  `json:"fs_id"`
-	Size            int64  `json:"size"`
-	Mtime           int64  `json:"mtime"`
-	CloudMD5        string `json:"cloud_md5"`
-	RelativePath    string `json:"relative_path"`
-	SHA256          string `json:"sha256,omitempty"`
-	PublishTempName string `json:"publish_temp_name,omitempty"`
+	FsID             int64  `json:"fs_id"`
+	Size             int64  `json:"size"`
+	Mtime            int64  `json:"mtime"`
+	CloudMD5         string `json:"cloud_md5"`
+	RelativePath     string `json:"relative_path"`
+	SHA256           string `json:"sha256,omitempty"`
+	PublishTempName  string `json:"publish_temp_name,omitempty"`
+	PublishTempOwned bool   `json:"publish_temp_owned,omitempty"`
 }
 
 func recordFor(info baiduapi.FileInfo, relative string) fileRecord {
@@ -195,6 +212,8 @@ func (r fileRecord) matches(other fileRecord) bool {
 	other.SHA256 = ""
 	r.PublishTempName = ""
 	other.PublishTempName = ""
+	r.PublishTempOwned = false
+	other.PublishTempOwned = false
 	return r == other
 }
 
