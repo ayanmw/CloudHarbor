@@ -332,6 +332,20 @@ func TestClaimWaitsUntilEarliestRetryDeadline(t *testing.T) {
 	}
 }
 
+func TestClaimRechecksLongRetryDeadlinesForWallClockChanges(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	info := file(83, "clock-adjusted.txt", 3)
+	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeKeep, Status: "retry_wait", NextAttempt: time.Now().Add(time.Minute)}
+	d.queue.jobs[info.FsID] = job
+	d.queue.eligible[info.FsID] = &info
+	d.queue.rebuildCandidates()
+
+	claimed, ctx, wait := d.queue.claim()
+	if claimed != nil || ctx != nil || wait <= 0 || wait > 30*time.Second {
+		t.Fatalf("long retry wait = job %v, ctx %v, wait %v; want wall-clock recheck within 30s", claimed, ctx, wait)
+	}
+}
+
 func TestClaimUsesEligibleReadyQueueAndKeepsFutureRetriesDelayed(t *testing.T) {
 	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

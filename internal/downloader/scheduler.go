@@ -37,7 +37,10 @@ type queueJob struct {
 	candidate         *candidateEntry
 }
 
-const maxNewJobPersistenceBatch = 1024
+const (
+	maxNewJobPersistenceBatch = 1024
+	retryClockRecheckInterval = 30 * time.Second
+)
 
 type scheduler struct {
 	mu      sync.Mutex
@@ -511,6 +514,10 @@ func (q *scheduler) claim() (*queueJob, context.Context, time.Duration) {
 			wait := time.Until(q.delayed[0].job.NextAttempt)
 			if wait <= 0 {
 				wait = time.Nanosecond
+			} else if wait > retryClockRecheckInterval {
+				// Persisted retry deadlines use wall time. Recompute long waits
+				// periodically so clock adjustments are reflected while workers sleep.
+				wait = retryClockRecheckInterval
 			}
 			return nil, nil, wait
 		}
@@ -633,7 +640,9 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 					if delay > 5*time.Minute {
 						delay = 5 * time.Minute
 					}
-					job.NextAttempt = time.Now().Add(delay)
+					// UTC strips Go's process-local monotonic reading so the durable
+					// wall-clock deadline responds to later system clock adjustments.
+					job.NextAttempt = time.Now().UTC().Add(delay)
 				}
 			}
 		}

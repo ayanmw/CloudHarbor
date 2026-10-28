@@ -76,6 +76,9 @@ func TestBusinessRateLimitUsesScheduledRetryAndRecovers(t *testing.T) {
 	if job.NextAttempt.IsZero() || job.Attempts != 1 {
 		t.Fatalf("missing bounded retry: %+v", job)
 	}
+	if job.NextAttempt.Location() != time.UTC {
+		t.Fatalf("retry deadline must be a persisted UTC wall-clock time, got %s", job.NextAttempt.Location())
+	}
 	time.Sleep(100 * time.Millisecond)
 	if metadata.Load() != 1 {
 		t.Fatal("rate limit retried without backoff")
