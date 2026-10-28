@@ -18,7 +18,7 @@
 - 事件表按任务的 `sequence` 是单调追加。API 使用 `before_sequence` keyset 游标，从最新事件开始，每页最多 50 条，并将结果按时间正序显示；新事件追加不会使已翻页游标偏移。
 - API 返回总是限量的事件行，保留 `recorded_at_utc`、`occurred_at_utc`、`cloud_observed_at_utc`、`response_observed_at_utc`、run/operation/attempt ID、evidence type 和结构化 evidence 原样语义。缺失的时间不补值，不返回访问令牌或原始错误。
 - 任务不存在返回 404；参数无效返回 400；当前页无更早事件时 `next_before_sequence` 为 null。
-- 管理页面只在用户展开对应任务时请求事件；字段按标签分别显示，JSON evidence 转义后作为文本展示。不得将证据字段拼接进 HTML。
+- 管理页面只在用户展开对应任务时请求事件；一次只保留一个任务时间线和一页事件，向更早/较新导航时替换当前页，避免连续翻页造成 DOM 和证据对象无限累积。字段按标签分别显示，JSON evidence 转义后作为文本展示。不得将证据字段拼接进 HTML。
 - 不改变事件产生范围、SQLite schema、任务状态机、异步云操作隔离、任务列表分页或认证/Origin 策略。
 
 ## 验收
@@ -31,6 +31,6 @@
 ## 实现记录
 
 - `Store.EventPage` 使用 `(job_id, sequence)` 索引及 exclusive `before_sequence` 游标，每页最多 50 条，选取最新窗口后按 sequence 正序返回。Downloader 提供任务级转接，HTTP 端点为 `GET /api/tasks/{id}/events`，默认 20 条，匿名请求沿用管理门禁返回 401。
-- WebSocket 与轮询任务列表都增加“查看事件”展开项；默认只取最新一页，支持刷新和读取更早记录。UTC 时间字段分开显示，证据 JSON 转义显示。接口与页面不提供任何事件修改或隔离放行操作。
-- Store 测试覆盖重开数据库后的连续翻页、追加事件期间旧游标稳定、任务隔离、空历史和非法参数；HTTP 测试覆盖 401/400/404/405 及 cursor；Node 测试覆盖按需查询、页面接线、时间缺失和证据转义。
+- WebSocket 与轮询任务列表都增加“查看事件”展开项；默认只取最新一页，支持刷新、较旧/较新页导航。浏览器仅保留当前一个任务的一页事件，使用游标栈保存小型页位置，不积累完整事件历史。UTC 时间字段分开显示，证据 JSON 转义显示。接口与页面不提供任何事件修改或隔离放行操作。
+- Store 测试覆盖重开数据库后的连续翻页、追加事件期间旧游标稳定、任务隔离、空历史和非法参数；HTTP 测试覆盖 401/400/404/405 及 cursor；Node 测试覆盖按需查询、较旧/较新导航、一次仅保留一页/一个任务、时间缺失和证据转义。
 - 全模块 Go 测试、`go vet`、WebUI 16 项和油猴 3 项通过。v0.8.26-preview.1 三平台无 CGO 包构建成功；ZIP 中 11 个 payload 哈希一致；包内 Windows 进程无百度凭证运行后，health 为 `waiting_authorization`、匿名请求 401、未知 task event 404、嵌入式事件 UI 资源 200。完整证据见发布目录验证记录。

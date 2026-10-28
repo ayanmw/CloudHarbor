@@ -54,7 +54,7 @@
 - [x] Write HTTP regression tests for anonymous 401, GET success, POST 405, malformed parameters 400, missing task 404, task isolation at Store level, and next cursor.
 - [x] Run the focused API tests and observe them fail before route implementation.
 - [x] Implement `GET /api/tasks/{id}/events?before_sequence=&limit=` with default limit 20, maximum 50, strict positive task IDs, and JSON response `{events,next_before_sequence}`; register it under existing `gate.Wrap`.
-- [x] Add delegated expand/load-more controls to both task list renderers. Request events only on expansion, preserve expanded state across status refresh, display time fields separately, and render evidence through text nodes/escaped text.
+- [x] Add delegated expand/page controls to both task list renderers. Request events only on expansion, preserve the current page across status refresh, retain only one page for one expanded task, display time fields separately, and render evidence through text nodes/escaped text.
 - [x] Add frontend tests for on-demand loading, pagination, missing timestamps, and HTML-special evidence rendering.
 - [x] Run focused Go and Node tests, then full `go test ./...`, `go vet ./...`, and Node suite.
 - [x] Review final diff and run `git diff --check`.

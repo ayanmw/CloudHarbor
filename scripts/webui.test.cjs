@@ -67,10 +67,19 @@ test('task event timeline loads on demand, pages older evidence and escapes payl
  await vm.runInContext("loadOlderTaskEvents('123')",p.context);
  html=vm.runInContext('taskEventsControl(task)',p.context);
  assert.equal(calls.length,2);assert.ok(calls[1].includes('before_sequence=2'));
- assert.ok(html.indexOf('job_registered')<html.indexOf('task_cancelled'));
+ assert.ok(html.includes('job_registered'));assert.ok(!html.includes('task_cancelled'),'older page should replace the current page');
+ assert.equal(vm.runInContext("taskEventPanels.get('123').events.length",p.context),1,'only the current page should remain in memory');
  const olderEvent=html.slice(html.indexOf('job_registered'),html.indexOf('</article>',html.indexOf('job_registered')));
  assert.ok(!olderEvent.includes('云端扫描观察时间'),'missing cloud observation time must stay absent');
- assert.ok(html.includes('cloud_observed_at_utc') || html.includes('云端扫描观察时间'));
+ assert.ok(html.includes('返回较新事件'));
+ await vm.runInContext("loadNewerTaskEvents('123')",p.context);
+ html=vm.runInContext('taskEventsControl(task)',p.context);
+ assert.equal(calls.length,3);assert.ok(!calls[2].includes('before_sequence='));
+ assert.ok(html.includes('task_cancelled'));assert.ok(!html.includes('job_registered'));
+ assert.equal(vm.runInContext("taskEventPanels.get('123').events.length",p.context),1,'newer navigation must also retain only one page');
+ await vm.runInContext("toggleTaskEvents('456')",p.context);
+ assert.equal(vm.runInContext('taskEventPanels.size',p.context),1,'only one task timeline should stay expanded in memory');
+ assert.equal(vm.runInContext("taskEventPanels.has('123')",p.context),false);
 });
 
 test('both task list renderers expose event inspection only for root tasks',async()=>{
