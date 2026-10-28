@@ -5,7 +5,9 @@ package taskstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,12 +20,31 @@ import (
 )
 
 type Store struct {
-	mu     sync.Mutex
-	dir    string
-	lock   *os.File
-	db     *sql.DB
-	runID  string
-	closed bool
+	mu              sync.Mutex
+	dir             string
+	lock            *os.File
+	db              *sql.DB
+	runID           string
+	scope           string
+	migrationAction string
+	closed          bool
+}
+
+type StartupDiagnostics struct {
+	RecordedAtUTC       time.Time `json:"recorded_at_utc"`
+	RunID               string    `json:"run_id"`
+	SchemaVersion       int       `json:"schema_version"`
+	ScopeFingerprint    string    `json:"scope_fingerprint"`
+	JobCount            int64     `json:"job_count"`
+	EventCount          int64     `json:"event_count"`
+	LatestEventSequence int64     `json:"latest_event_sequence"`
+	DatabaseSizeBytes   int64     `json:"database_size_bytes"`
+	MigrationAction     string    `json:"migration_action"`
+	IntegrityCheck      string    `json:"integrity_check"`
+	JournalMode         string    `json:"journal_mode"`
+	Synchronous         int       `json:"synchronous"`
+	ForeignKeys         bool      `json:"foreign_keys"`
+	BusyTimeoutMS       int       `json:"busy_timeout_ms"`
 }
 type Record struct {
 	ID   int64
@@ -80,7 +101,8 @@ func Open(dir, scope string) (*Store, error) {
 		lock.Close()
 		return nil, err
 	}
-	s := &Store{dir: absolute, lock: lock, runID: runID}
+	s := &Store{dir: absolute, lock: lock, runID: runID, scope: scope}
+	migrationAction := "reopened"
 	success := false
 	defer func() {
 		if !success {
@@ -93,6 +115,7 @@ func Open(dir, scope string) (*Store, error) {
 	}
 	body, err := os.ReadFile(manifestName)
 	if errors.Is(err, os.ErrNotExist) {
+		migrationAction = "created"
 		entries, readErr := os.ReadDir(filepath.Join(absolute, "jobs"))
 		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 			return nil, readErr
@@ -128,6 +151,7 @@ func Open(dir, scope string) (*Store, error) {
 		}
 		switch m.Version {
 		case 1:
+			migrationAction = "migrated_v1"
 			if err = migrateV1(s, scope); err != nil {
 				return nil, err
 			}
@@ -136,6 +160,7 @@ func Open(dir, scope string) (*Store, error) {
 			return nil, fmt.Errorf("unsupported queue format version %d", m.Version)
 		}
 	}
+	s.migrationAction = migrationAction
 	if err = safePath(filepath.Join(absolute, "queue.sqlite")); err != nil {
 		return nil, err
 	}
@@ -154,6 +179,54 @@ func Open(dir, scope string) (*Store, error) {
 	}
 	success = true
 	return s, nil
+}
+
+// StartupDiagnostics returns a read-only summary of the queue opened by this
+// process. IntegrityCheck reports the successful check already performed by
+// Open; this method deliberately does not scan the database a second time.
+func (s *Store) StartupDiagnostics() (StartupDiagnostics, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return StartupDiagnostics{}, os.ErrClosed
+	}
+	diagnostic := StartupDiagnostics{
+		RecordedAtUTC:   time.Now().UTC(),
+		RunID:           s.runID,
+		MigrationAction: s.migrationAction,
+		IntegrityCheck:  "ok",
+	}
+	scopeHash := sha256.Sum256([]byte(s.scope))
+	diagnostic.ScopeFingerprint = hex.EncodeToString(scopeHash[:8])
+	var version string
+	if err := s.db.QueryRow(`SELECT value FROM store_meta WHERE key='schema_version'`).Scan(&version); err != nil {
+		return StartupDiagnostics{}, err
+	}
+	if _, err := fmt.Sscanf(version, "%d", &diagnostic.SchemaVersion); err != nil {
+		return StartupDiagnostics{}, fmt.Errorf("read SQLite schema version: %w", err)
+	}
+	if err := s.db.QueryRow(`SELECT count(*) FROM jobs`).Scan(&diagnostic.JobCount); err != nil {
+		return StartupDiagnostics{}, err
+	}
+	if err := s.db.QueryRow(`SELECT count(*), coalesce(max(sequence),0) FROM job_events`).Scan(&diagnostic.EventCount, &diagnostic.LatestEventSequence); err != nil {
+		return StartupDiagnostics{}, err
+	}
+	var foreignKeys int
+	for _, pragma := range []struct {
+		query string
+		dest  any
+	}{{"PRAGMA journal_mode", &diagnostic.JournalMode}, {"PRAGMA synchronous", &diagnostic.Synchronous}, {"PRAGMA foreign_keys", &foreignKeys}, {"PRAGMA busy_timeout", &diagnostic.BusyTimeoutMS}} {
+		if err := s.db.QueryRow(pragma.query).Scan(pragma.dest); err != nil {
+			return StartupDiagnostics{}, err
+		}
+	}
+	diagnostic.ForeignKeys = foreignKeys == 1
+	stat, err := os.Stat(filepath.Join(s.dir, "queue.sqlite"))
+	if err != nil {
+		return StartupDiagnostics{}, err
+	}
+	diagnostic.DatabaseSizeBytes = stat.Size()
+	return diagnostic, nil
 }
 
 func atomicWrite(name string, data []byte) error {

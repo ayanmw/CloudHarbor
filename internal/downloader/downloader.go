@@ -936,3 +936,13 @@ func (d *Downloader) TaskEventPage(id, beforeSequence int64, limit int) ([]tasks
 	}
 	return store.EventPage(id, beforeSequence, limit)
 }
+
+func (d *Downloader) TaskStoreStartupDiagnostics() (taskstore.StartupDiagnostics, error) {
+	d.queue.mu.Lock()
+	store := d.queue.store
+	d.queue.mu.Unlock()
+	if store == nil {
+		return taskstore.StartupDiagnostics{}, errors.New("task store unavailable")
+	}
+	return store.StartupDiagnostics()
+}

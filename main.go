@@ -113,6 +113,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if diagnostic, diagnosticErr := dl.TaskStoreStartupDiagnostics(); diagnosticErr != nil {
+		log.Printf("SQLite startup diagnostics unavailable: %v", diagnosticErr)
+	} else if diagnosticJSON, marshalErr := json.Marshal(diagnostic); marshalErr != nil {
+		log.Printf("SQLite startup diagnostics unavailable: %v", marshalErr)
+	} else {
+		log.Printf("SQLite startup diagnostics: %s", diagnosticJSON)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	dl.SetAuthentication(client, false, time.Time{})

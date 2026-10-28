@@ -5,9 +5,77 @@ import (
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestSQLiteStartupDiagnosticsDescribeValidatedQueueWithoutLeakingScope(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	store, err := Open(dir, "/private/queue-scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveWithEvent(41, []byte(`{"status":"pending"}`), Event{Kind: "job_registered"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveWithEvent(41, []byte(`{"status":"done"}`), Event{Kind: "job_completed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	diagnostic, err := store.StartupDiagnostics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diagnostic.SchemaVersion != sqliteSchemaVersion || diagnostic.JobCount != 1 || diagnostic.EventCount != 2 || diagnostic.LatestEventSequence != 2 {
+		t.Fatalf("wrong queue summary: %+v", diagnostic)
+	}
+	if diagnostic.ScopeFingerprint == "" || diagnostic.ScopeFingerprint == "/private/queue-scope" || strings.Contains(diagnostic.ScopeFingerprint, "/private") {
+		t.Fatalf("scope was not summarized: %+v", diagnostic)
+	}
+	if diagnostic.IntegrityCheck != "ok" || diagnostic.JournalMode != "delete" || diagnostic.Synchronous != 3 || !diagnostic.ForeignKeys || diagnostic.BusyTimeoutMS != 5000 {
+		t.Fatalf("wrong effective SQLite checks: %+v", diagnostic)
+	}
+	if diagnostic.MigrationAction != "created" || diagnostic.RunID == "" || diagnostic.RecordedAtUTC.IsZero() || diagnostic.DatabaseSizeBytes <= 0 {
+		t.Fatalf("missing startup context: %+v", diagnostic)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, diagnostic.RecordedAtUTC.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("startup time is not RFC3339 UTC: %v", err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER reject_event BEFORE INSERT ON job_events BEGIN SELECT RAISE(ABORT, 'diagnostics must remain read-only'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartupDiagnostics(); err != nil {
+		t.Fatalf("read-only diagnostics failed: %v", err)
+	}
+}
+
+func TestSQLiteStartupDiagnosticsDistinguishMigrationAndReopen(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "migrated-queue")
+	writeLegacyStore(t, dir, map[string]string{"7.json": `{"version":1,"file":{"fs_id":7,"path":"/queue/seven","server_filename":"seven"},"mode":"keep","status":"pending"}`})
+	store, err := Open(dir, "/queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostic, err := store.StartupDiagnostics()
+	if err != nil || diagnostic.MigrationAction != "migrated_v1" || diagnostic.JobCount != 1 || diagnostic.EventCount != 1 {
+		store.Close()
+		t.Fatalf("migration not captured: %+v err=%v", diagnostic, err)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dir, "/queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	diagnostic, err = store.StartupDiagnostics()
+	if err != nil || diagnostic.MigrationAction != "reopened" {
+		t.Fatalf("reopen incorrectly reported migration: %+v err=%v", diagnostic, err)
+	}
+}
 
 func TestSQLiteProjectionAndEventCommitAtomically(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "queue"), "/queue")
