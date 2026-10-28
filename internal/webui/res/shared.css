@@ -213,3 +213,11 @@ body {
 .task-feedback { min-height:22px; margin-top:10px; font-size:13px; color:#555; }
 .status-badge.auth_wait, .status-badge.retry_wait, .status-badge.source_unknown { background:#fff3cd; color:#856404; }
 .status-badge.cancelled { background:#e9ecef; color:#495057; }
+.task-events { margin-top: 10px; }
+.task-events > button, .task-event-actions button { border:1px solid #667eea; border-radius:5px; padding:5px 10px; background:#fff; color:#455bc6; cursor:pointer; }
+.task-event-panel { margin-top:8px; padding:12px; background:#f8f9fa; border:1px solid #e2e6ea; border-radius:6px; }
+.task-event-actions { display:flex; gap:8px; margin-bottom:10px; }
+.task-event { padding:10px 0; border-top:1px solid #dee2e6; color:#555; font-size:12px; overflow-wrap:anywhere; }
+.task-event-title { color:#333; font-weight:600; margin-bottom:5px; }
+.task-event pre { white-space:pre-wrap; word-break:break-word; max-height:240px; overflow:auto; margin-top:6px; padding:8px; background:#fff; border-radius:4px; }
+.event-error { color:#842029; }

@@ -211,6 +211,7 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/api/health", handleHealth)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/scan", handleScan)
+	mux.HandleFunc("/api/tasks/{id}/events", handleTaskEvents)
 	mux.HandleFunc("/api/tasks/", handleTaskAction)
 	mux.HandleFunc("/api/cloud", intakeHTTP.HandleCloud)
 	mux.HandleFunc("/api/intakes", intakeHTTP.HandleRecords)
@@ -418,4 +419,50 @@ func handleTaskAction(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"message": "task action accepted"})
+}
+
+func handleTaskEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid task id", http.StatusBadRequest)
+		return
+	}
+	query := r.URL.Query()
+	beforeSequence := int64(0)
+	if raw := query.Get("before_sequence"); raw != "" {
+		beforeSequence, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || beforeSequence < 0 {
+			http.Error(w, "invalid before_sequence", http.StatusBadRequest)
+			return
+		}
+	}
+	limit := 20
+	if raw := query.Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 50 {
+			http.Error(w, "invalid limit", http.StatusBadRequest)
+			return
+		}
+	}
+	events, nextBefore, more, err := dl.TaskEventPage(id, beforeSequence, limit)
+	if errors.Is(err, os.ErrNotExist) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "task events unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var next *int64
+	if more {
+		next = &nextBefore
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"events": events, "next_before_sequence": next,
+	})
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,9 +30,16 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Save(3400000000000000123, []byte(`{"version":1,"file":{"fs_id":3400000000000000123,"path":"/preview/a.txt","server_filename":"a.txt","size":3},"mode":"keep","status":"cancelled"}`)); err != nil {
+	jobRecord := []byte(`{"version":1,"file":{"fs_id":3400000000000000123,"path":"/preview/a.txt","server_filename":"a.txt","size":3},"mode":"keep","status":"cancelled"}`)
+	if err = store.Save(3400000000000000123, jobRecord); err != nil {
 		store.Close()
 		t.Fatal(err)
+	}
+	for i := 1; i <= 21; i++ {
+		if err = store.SaveWithEvent(3400000000000000123, jobRecord, taskstore.Event{Kind: "api-event-" + strconv.Itoa(i)}); err != nil {
+			store.Close()
+			t.Fatal(err)
+		}
 	}
 	store.Close()
 	dl, err = downloader.OpenDownloader(cfg, baiduapi.NewClient("", ""))
@@ -54,7 +62,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	gate, _ := management.New("private-administrator-password")
 	srv := httptest.NewServer(applicationHandler(gate, authorization.New(dl.Context(), "", "", auth, nil)))
 	defer srv.Close()
-	for _, path := range []string{"/", "/oauth", "/intake", "/api/cloud", "/api/intakes", "/api/health", "/api/oauth/status", "/api/status", "/res/shared.js", "/res/intake.js", "/ws"} {
+	for _, path := range []string{"/", "/oauth", "/intake", "/api/cloud", "/api/intakes", "/api/health", "/api/oauth/status", "/api/status", "/api/tasks/3400000000000000123/events", "/res/shared.js", "/res/intake.js", "/ws"} {
 		response, err := http.Get(srv.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -103,6 +111,74 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	response.Body.Close()
 	if json.Unmarshal(body, &status) != nil || len(status.Tasks) != 1 || status.Tasks[0].ID != "3400000000000000123" || status.Tasks[0].CanRetry || status.Tasks[0].CanCancel {
 		t.Fatalf("incorrect paged action DTO: %s", body)
+	}
+	req, _ = http.NewRequest("GET", srv.URL+"/api/tasks/3400000000000000123/events?limit=1", nil)
+	req.SetBasicAuth("admin", "private-administrator-password")
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(response.Body)
+	response.Body.Close()
+	var eventPage struct {
+		Events             []taskstore.Event `json:"events"`
+		NextBeforeSequence *int64            `json:"next_before_sequence"`
+	}
+	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &eventPage) != nil || len(eventPage.Events) != 1 || eventPage.Events[0].Kind != "api-event-21" || eventPage.NextBeforeSequence == nil {
+		t.Fatalf("task events were not returned in the authenticated response: status=%d body=%s", response.StatusCode, body)
+	}
+	req, _ = http.NewRequest("GET", srv.URL+"/api/tasks/3400000000000000123/events?limit=1&before_sequence="+strconv.FormatInt(*eventPage.NextBeforeSequence, 10), nil)
+	req.SetBasicAuth("admin", "private-administrator-password")
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &eventPage) != nil || len(eventPage.Events) != 1 || eventPage.Events[0].Kind != "api-event-20" {
+		t.Fatalf("older event page was not returned in sequence: status=%d body=%s", response.StatusCode, body)
+	}
+	req, _ = http.NewRequest("GET", srv.URL+"/api/tasks/43/events", nil)
+	req.SetBasicAuth("admin", "private-administrator-password")
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing task event history status=%d, want 404", response.StatusCode)
+	}
+	for _, target := range []string{"/api/tasks/not-a-number/events", "/api/tasks/3400000000000000123/events?before_sequence=bad"} {
+		req, _ = http.NewRequest("GET", srv.URL+target, nil)
+		req.SetBasicAuth("admin", "private-administrator-password")
+		response, err = http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid event query %s status=%d, want 400", target, response.StatusCode)
+		}
+	}
+	req, _ = http.NewRequest("GET", srv.URL+"/api/tasks/3400000000000000123/events?limit=51", nil)
+	req.SetBasicAuth("admin", "private-administrator-password")
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized event page accepted: %d", response.StatusCode)
+	}
+	req, _ = http.NewRequest("POST", srv.URL+"/api/tasks/3400000000000000123/events", nil)
+	req.SetBasicAuth("admin", "private-administrator-password")
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("event mutation method status=%d, want 405", response.StatusCode)
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/status?offset=1&limit=1&sort_by=name", nil)
 	req.SetBasicAuth("admin", "private-administrator-password")

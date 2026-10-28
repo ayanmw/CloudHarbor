@@ -51,6 +51,38 @@ test('poll page escapes cloud text',async()=>{
     assert.ok(!p.get('tasks-list').innerHTML.includes('<svg>'));
 });
 
+test('task event timeline loads on demand, pages older evidence and escapes payload text',async()=>{
+ const p=page('index_ws.html');const calls=[];
+ p.context.task={task_id:'123',is_root:true};
+ p.context.fetch=async url=>{
+  calls.push(String(url));
+  if(String(url).includes('before_sequence=2'))return{ok:true,json:async()=>({events:[{sequence:1,kind:'job_registered',recorded_at_utc:'2026-10-28T01:00:00Z',evidence_type:'local_state',evidence:{note:'older'}}],next_before_sequence:null})};
+  return{ok:true,json:async()=>({events:[{sequence:2,kind:'task_cancelled',recorded_at_utc:'2026-10-28T02:00:00Z',cloud_observed_at_utc:'2026-10-28T02:00:01Z',response_observed_at_utc:null,evidence_type:'local_user_action',evidence:{note:'<img src=x onerror=alert(1)>'}}],next_before_sequence:2})};
+ };
+ assert.equal(calls.length,0,'events must not load before expansion');
+ await vm.runInContext("toggleTaskEvents('123')",p.context);
+ let html=vm.runInContext('taskEventsControl(task)',p.context);
+ assert.equal(calls.length,1);assert.ok(html.includes('本机记录时间'));assert.ok(html.includes('task_cancelled'));
+ assert.ok(html.includes('&lt;img'));assert.ok(!html.includes('<img'));
+ await vm.runInContext("loadOlderTaskEvents('123')",p.context);
+ html=vm.runInContext('taskEventsControl(task)',p.context);
+ assert.equal(calls.length,2);assert.ok(calls[1].includes('before_sequence=2'));
+ assert.ok(html.indexOf('job_registered')<html.indexOf('task_cancelled'));
+ const olderEvent=html.slice(html.indexOf('job_registered'),html.indexOf('</article>',html.indexOf('job_registered')));
+ assert.ok(!olderEvent.includes('云端扫描观察时间'),'missing cloud observation time must stay absent');
+ assert.ok(html.includes('cloud_observed_at_utc') || html.includes('云端扫描观察时间'));
+});
+
+test('both task list renderers expose event inspection only for root tasks',async()=>{
+ const task={task_id:'123',is_root:true,status:'done',path:'/queue/a',server_filename:'a',size:1};
+ const ws=page('index_ws.html');ws.context.payload={tasks:[task]};vm.runInContext('renderTasks(payload)',ws.context);
+ assert.ok(ws.get('tasks-list').innerHTML.includes('data-task-events="toggle"'));
+ const poll=page('index_poll.html',[task]);await new Promise(resolve=>setImmediate(resolve));
+ assert.ok(poll.get('tasks-list').innerHTML.includes('data-task-events="toggle"'));
+ const child=page('index_ws.html');child.context.task={task_id:'124',is_root:false};
+ assert.equal(vm.runInContext('taskEventsControl(task)',child.context),'');
+});
+
 test('poll status page requests the next server page without loading full history',async()=>{
  const p=page('index_poll.html');const requests=[];
  p.context.fetch=async url=>{

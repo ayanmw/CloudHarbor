@@ -19,7 +19,10 @@ try {
     $sourceRevision = (git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read source revision.' }
     if (git status --porcelain) { throw 'Commit source before packaging so the revision identifies the exact source.' }
-    node --test scripts/webui.test.cjs scripts/userscript.test.cjs
+    # Run each node:test file as its own process; the multi-file runner in recent Node versions spawns workers that are denied in the Windows package environment.
+    node scripts/webui.test.cjs
+    if ($LASTEXITCODE -ne 0) { throw 'Web UI tests failed.' }
+    node scripts/userscript.test.cjs
     if ($LASTEXITCODE -ne 0) { throw 'Browser script tests failed.' }
     $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
     go test ./...

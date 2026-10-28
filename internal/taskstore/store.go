@@ -326,6 +326,64 @@ func (s *Store) Events(id int64) ([]Event, error) {
 	}
 	return result, rows.Err()
 }
+
+// EventPage returns the newest bounded event window in sequence order. A
+// nonzero beforeSequence is an exclusive upper bound; callers can use the
+// returned cursor to fetch older rows without shifting when new events append.
+func (s *Store) EventPage(id, beforeSequence int64, limit int) ([]Event, int64, bool, error) {
+	if id <= 0 || beforeSequence < 0 || limit < 1 || limit > 50 {
+		return nil, 0, false, fmt.Errorf("invalid task event page")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, 0, false, os.ErrClosed
+	}
+	var exists int
+	if err := s.db.QueryRow(`SELECT 1 FROM jobs WHERE id=?`, id).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, 0, false, os.ErrNotExist
+		}
+		return nil, 0, false, err
+	}
+	query := `SELECT ` + eventColumns + ` FROM job_events WHERE job_id=?`
+	args := []any{id}
+	if beforeSequence > 0 {
+		query += ` AND sequence<?`
+		args = append(args, beforeSequence)
+	}
+	query += ` ORDER BY sequence DESC LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	defer rows.Close()
+	events := make([]Event, 0, limit+1)
+	for rows.Next() {
+		event, scanErr := eventFromRow(rows)
+		if scanErr != nil {
+			return nil, 0, false, scanErr
+		}
+		events = append(events, event)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, 0, false, err
+	}
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+	for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
+		events[left], events[right] = events[right], events[left]
+	}
+	var nextBefore int64
+	if hasMore {
+		nextBefore = events[0].Sequence
+	}
+	return events, nextBefore, hasMore, nil
+}
+
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

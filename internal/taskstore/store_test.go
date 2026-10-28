@@ -107,6 +107,78 @@ func TestSaveBatchRoundTripsRecordsAndRejectsInvalidBatchWithoutPublishing(t *te
 	}
 }
 
+func TestEventPageUsesStableExclusiveKeysetAndAscendingOrder(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "queue"), "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for i := 1; i <= 5; i++ {
+		if err := s.SaveWithEvent(42, []byte(`{"status":"pending"}`), Event{Kind: "event-" + strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := s.dir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	first, before, more, err := s.EventPage(42, 0, 2)
+	if err != nil || !more || len(first) != 2 || first[0].Kind != "event-4" || first[1].Kind != "event-5" || before != first[0].Sequence {
+		t.Fatalf("latest page = events %#v cursor %d more %v err %v", first, before, more, err)
+	}
+	if err := s.SaveWithEvent(42, []byte(`{"status":"pending"}`), Event{Kind: "appended-between-pages"}); err != nil {
+		t.Fatal(err)
+	}
+	second, nextBefore, more, err := s.EventPage(42, before, 2)
+	if err != nil || !more || len(second) != 2 || second[0].Kind != "event-2" || second[1].Kind != "event-3" || nextBefore != second[0].Sequence {
+		t.Fatalf("older page = events %#v cursor %d more %v err %v", second, nextBefore, more, err)
+	}
+	last, cursor, more, err := s.EventPage(42, nextBefore, 2)
+	if err != nil || more || cursor != 0 || len(last) != 1 || last[0].Kind != "event-1" {
+		t.Fatalf("oldest page = events %#v cursor %d more %v err %v", last, cursor, more, err)
+	}
+	if err := s.SaveWithEvent(43, []byte(`{"status":"pending"}`), Event{Kind: "other-task-only"}); err != nil {
+		t.Fatal(err)
+	}
+	other, _, otherMore, err := s.EventPage(43, 0, 2)
+	if err != nil || otherMore || len(other) != 1 || other[0].Kind != "other-task-only" {
+		t.Fatalf("task-scoped event query = %#v more %v err %v", other, otherMore, err)
+	}
+	mainEvents, _, _, err := s.EventPage(42, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range mainEvents {
+		if event.Kind == "other-task-only" {
+			t.Fatal("task event query returned another task's evidence")
+		}
+	}
+	if _, err := s.db.Exec(`INSERT INTO jobs(id,payload_json,status,updated_at_utc) VALUES(44, ?, 'pending', 0)`, []byte(`{"status":"pending"}`)); err != nil {
+		t.Fatal(err)
+	}
+	empty, emptyCursor, emptyMore, err := s.EventPage(44, 0, 2)
+	if err != nil || len(empty) != 0 || emptyCursor != 0 || emptyMore {
+		t.Fatalf("empty event history = %#v cursor %d more %v err %v", empty, emptyCursor, emptyMore, err)
+	}
+	if _, _, _, err = s.EventPage(45, 0, 2); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing task error = %v, want os.ErrNotExist", err)
+	}
+	for _, tc := range []struct {
+		before int64
+		limit  int
+	}{{before: -1, limit: 2}, {limit: 0}, {limit: 51}} {
+		if _, _, _, err = s.EventPage(42, tc.before, tc.limit); err == nil {
+			t.Fatalf("accepted invalid cursor/limit: %#v", tc)
+		}
+	}
+}
+
 func TestLoadRetainsIndependentRecordBytes(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "queue"), "/preview")
 	if err != nil {

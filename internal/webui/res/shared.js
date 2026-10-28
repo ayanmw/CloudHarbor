@@ -10,6 +10,94 @@ function credentialStatusText(auth) {
 }
 
 const pendingTaskActions = new Set();
+const taskEventPanels = new Map();
+const taskEventPageSize = 20;
+
+function taskEventState(id) {
+    let state = taskEventPanels.get(id);
+    if (!state) {
+        state = {expanded:true, loaded:false, loading:false, error:'', events:[], nextBeforeSequence:null};
+        taskEventPanels.set(id, state);
+    }
+    return state;
+}
+
+function eventTime(label, value) {
+    return value ? `<div><strong>${label}（UTC）:</strong> ${escapeHTML(value)}</div>` : '';
+}
+
+function taskEventMarkup(state) {
+    if (state.loading) return '<p>正在读取事件…</p>';
+    if (state.error) return `<p class="event-error">${escapeHTML(state.error)}</p>`;
+    if (!state.loaded) return '<p>展开后读取该任务的 SQLite 事件。</p>';
+    if (state.events.length === 0) return '<p>该任务暂无事件记录。</p>';
+    return state.events.map(event => {
+        const evidence = event.evidence ?? null;
+        const retryAt = evidence && typeof evidence === 'object' ? evidence.next_attempt_at_utc : null;
+        return `<article class="task-event">
+  <div class="task-event-title">#${escapeHTML(event.sequence)} · ${escapeHTML(event.kind)}</div>
+  ${eventTime('本机记录时间', event.recorded_at_utc)}
+  ${eventTime('提供方发生时间', event.occurred_at_utc)}
+  ${eventTime('云端扫描观察时间', event.cloud_observed_at_utc)}
+  ${eventTime('HTTP 响应观察时间', event.response_observed_at_utc)}
+  ${eventTime('未来重试计划时间', retryAt)}
+  <div><strong>证据类型:</strong> ${escapeHTML(event.evidence_type)}</div>
+  ${event.run_id ? `<div><strong>运行 ID:</strong> ${escapeHTML(event.run_id)}</div>` : ''}
+  ${event.operation_id ? `<div><strong>线上操作 ID:</strong> ${escapeHTML(event.operation_id)}</div>` : ''}
+  ${event.attempt_id ? `<div><strong>尝试 ID:</strong> ${escapeHTML(event.attempt_id)}</div>` : ''}
+  <details><summary>结构化证据</summary><pre>${escapeHTML(JSON.stringify(evidence, null, 2))}</pre></details>
+</article>`;
+    }).join('');
+}
+
+function taskEventsControl(task) {
+    const id = typeof task?.task_id === 'string' && /^[1-9][0-9]{0,18}$/.test(task.task_id) ? task.task_id : '';
+    if (!id || task.is_root !== true) return '';
+    const state = taskEventPanels.get(id) || {expanded:false, loaded:false, loading:false, error:'', events:[], nextBeforeSequence:null};
+    return `<div class="task-events">
+  <button type="button" data-task-events="toggle" data-event-task-id="${id}" aria-expanded="${state.expanded}">${state.expanded ? '收起事件' : '查看事件'}</button>
+  ${state.expanded ? `<section class="task-event-panel" aria-label="任务事件时间线">
+    <div class="task-event-actions"><button type="button" data-task-events="refresh" data-event-task-id="${id}"${state.loading ? ' disabled' : ''}>刷新事件</button>${state.nextBeforeSequence !== null ? `<button type="button" data-task-events="older" data-event-task-id="${id}"${state.loading ? ' disabled' : ''}>更早事件</button>` : ''}</div>
+    ${taskEventMarkup(state)}
+  </section>` : ''}
+</div>`;
+}
+
+async function fetchTaskEventPage(id, beforeSequence, prepend) {
+    const state = taskEventState(id);
+    state.loading = true; state.error = '';
+    try {
+        const query = new URLSearchParams({limit:String(taskEventPageSize)});
+        if (beforeSequence !== null) query.set('before_sequence', String(beforeSequence));
+        const response = await fetch(`/api/tasks/${id}/events?${query}`);
+        if (!response.ok) {
+            state.error = response.status === 401 ? '管理登录已失效，请重新登录后查看事件。' : '事件读取失败，请稍后重试。';
+            state.loaded = true;
+            return;
+        }
+        const page = await response.json();
+        const incoming = Array.isArray(page.events) ? page.events : [];
+        state.events = prepend ? [...incoming, ...state.events] : incoming;
+        state.nextBeforeSequence = page.next_before_sequence ?? null;
+        state.loaded = true;
+    } catch {
+        state.error = '事件读取失败，请检查服务连接后重试。';
+        state.loaded = true;
+    } finally { state.loading = false; }
+}
+
+async function toggleTaskEvents(id) {
+    if (taskEventPanels.has(id)) { taskEventPanels.delete(id); return; }
+    await fetchTaskEventPage(id, null, false);
+}
+
+async function refreshTaskEvents(id) { await fetchTaskEventPage(id, null, false); }
+async function loadOlderTaskEvents(id) {
+    const state = taskEventPanels.get(id);
+    if (!state || state.loading || state.nextBeforeSequence === null) return;
+    await fetchTaskEventPage(id, state.nextBeforeSequence, true);
+}
+
 function taskControls(task) {
     if (!task.is_root) return '';
     const mode = task.download_mode === 'delete' ? '完成后删除网盘项' : '保留并标记网盘项';
@@ -40,6 +128,15 @@ async function performTaskAction(id, action, refresh) {
 }
 function bindTaskControls(refresh) {
     document.getElementById('tasks-list').addEventListener('click', async event => {
+        const eventButton = event.target.closest('button[data-task-events]');
+        if (eventButton) {
+            const id = eventButton.dataset.eventTaskId;
+            if (eventButton.dataset.taskEvents === 'toggle') await toggleTaskEvents(id);
+            else if (eventButton.dataset.taskEvents === 'refresh') await refreshTaskEvents(id);
+            else if (eventButton.dataset.taskEvents === 'older') await loadOlderTaskEvents(id);
+            await refresh();
+            return;
+        }
         const button = event.target.closest('button[data-task-id]');
         if (!button) return;
         button.disabled = true;

@@ -16,6 +16,7 @@ import (
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/config"
+	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
 type Task struct {
@@ -924,4 +925,14 @@ func (d *Downloader) GetTaskByFsID(id int64) *Task {
 		return &copy
 	}
 	return nil
+}
+
+func (d *Downloader) TaskEventPage(id, beforeSequence int64, limit int) ([]taskstore.Event, int64, bool, error) {
+	d.queue.mu.Lock()
+	store := d.queue.store
+	d.queue.mu.Unlock()
+	if store == nil {
+		return nil, 0, false, errors.New("task event store unavailable")
+	}
+	return store.EventPage(id, beforeSequence, limit)
 }

@@ -157,6 +157,7 @@
   </div>
   ${t.error ? `<div class="error-msg">❌ ${escapeHTML(t.error)}</div>` : ''}
   ${taskControls(t)}
+  ${taskEventsControl(t)}
 </div>`;
         }).join('');
     }

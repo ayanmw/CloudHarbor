@@ -35,6 +35,8 @@
 
 异步查询复核：本轮读取的[百度官方网盘 MCP 文档](https://github.com/baidu-netdisk/mcp)列出 copy/delete/move/rename 在 `async=2` 时返回 `taskid`，但其公开工具目录与说明未描述任务状态查询工具或可据以完成源操作的状态语义。这不能证明底层 API 一定不存在查询接口；现有证据仍不足以凭 taskid 或路径可见性解除 unknown 隔离。
 
+2026-10-28 交叉核对：百度网盘组织的 [bdpan-storage Skill](https://github.com/baidu-netdisk/bdpan-storage/blob/main/skills/baidu-drive/SKILL.md) 记载 `status=submitted` 及 `get-content-result <taskid>`，但该查询用于文件正文解析，不是 filemanager 的 copy/move/rename。其文件管理章节仍仅描述异步请求返回 `taskid`，未提供对应完成查询契约。因此它不能解除本项目的异步 Move 阻塞；继续隔离未知结果，不用不同业务类型的 task API 推断可互换。
+
 2026-10-23 追加核查：百度官方 [Go SDK API 文档](https://pkg.go.dev/github.com/baidu-netdisk/baidu-drive-sdk-go/baidudriver/api)仍将 `taskid` 定义为异步文件管理响应字段，但公开的 `FileManagerService` 方法清单没有任务查询方法；其链接的官方 Move 文档本轮无法读取。搜索到的 `/api/taskquery` 用例来自网盘网页脚本，使用的是浏览器页面环境，未证明它属于 OAuth 开放平台契约，也未给出可由应用凭据调用的授权、状态终态或结果一致性保证。因此本工具继续将异步 Move 结果视为 unknown；不调用网页登录 Cookie 接口、不按目标路径出现推断完成，也不提供人工解除隔离。只有取得适用于当前 OAuth 应用的官方契约并能对终态和单项结果做验证后，才继续设计查询接线。
 
 ## D3：油猴与管理页衔接（已实现，真实页面适配待验收）
@@ -139,5 +141,6 @@
 - [x] `sending` 在网络操作前耐久提交；进程重启时把任务状态恢复变化再以独立事件保存，结果未知仍隔离且不重放。
 - [x] v1 每任务 JSON 导入采用暂存库、完整性/记录数/逐 ID 原文等价验证和格式清单提交点；`legacy_import` 事件保留原始 `Created`/`Updated` 值，缺失时显式记录 `null`，不虚构历史发生时间。
 - [x] 补齐关键任务事件：取消/重试意图、成功扫描后的认证恢复/源项不再具备资格、下载结果分类与结构化 HTTP 证据；未来重试时间显式标为 UTC 计划时间，并保留响应观察时间与云端扫描观察时间的区别。
+- [x] 管理页提供任务级只读事件时间线，按需请求并用序号 keyset 分页；明确展示本机记录、提供方发生、云端扫描、HTTP 响应和未来重试计划时间，事件内容作为转义文本显示。
 - [x] Windows 全模块测试/vet、Go 1.22.2 WSL 全模块 race、Node 17 项和 v0.8.25-preview.1 三平台无 CGO 构建及包内冒烟验证通过。
 - [x] 已明确目标 NAS/SMB 锁、刷盘与掉电恢复仍未验收；本地测试不替代目标文件系统证据。

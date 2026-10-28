@@ -124,6 +124,7 @@
     ${t.error?`<div style="color:#f5576c;">错误：${escapeHTML(t.error)}</div>`:''}
     ${taskControls(t)}
   </div>
+  ${taskEventsControl(t)}
 </div>`).join('');
         } catch (e) {
             document.getElementById('tasks-list').innerHTML = '<div class="empty" style="color:#f5576c;">获取状态失败</div>';
