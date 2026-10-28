@@ -200,6 +200,21 @@ func TestDownloadAttemptEventStoresClassAndFutureRetryTime(t *testing.T) {
 	}
 }
 
+func TestDownloadAttemptEventStoresBoundedFailureReason(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	job := &queueJob{Version: 1, Info: file(1, "one.bin", 1), Mode: DownloadModeKeep, Status: "downloading", Attempts: 1}
+	store := seedEventJob(t, d, job)
+	d.queue.complete(job, errors.New("local disk write failed"))
+	event, err := latestTaskEvent(t, store, 1, "download_attempt_finished")
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := decodeEventEvidence(t, event)
+	if evidence["error_summary"] != "local disk write failed" {
+		t.Fatalf("attempt evidence missing failure reason: %#v", evidence)
+	}
+}
+
 func TestDownloadOutcomeClassMatchesSchedulerFinalState(t *testing.T) {
 	retryable := &baiduapi.APIError{Operation: "download", Status: http.StatusServiceUnavailable}
 	authentication := &baiduapi.APIError{Operation: "download", Status: http.StatusUnauthorized}

@@ -659,7 +659,8 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 		ProviderOperation  string     `json:"provider_operation,omitempty"`
 		ProviderHTTPStatus int        `json:"provider_http_status,omitempty"`
 		ProviderErrorCode  int        `json:"provider_error_code,omitempty"`
-	}{job.Status, downloadOutcomeClass(job, err, q.stopping), job.Attempts, job.Failures, job.SourceState, nextAttempt, providerOperation, providerHTTPStatus, providerErrorCode})
+		ErrorSummary       string     `json:"error_summary,omitempty"`
+	}{job.Status, downloadOutcomeClass(job, err, q.stopping), job.Attempts, job.Failures, job.SourceState, nextAttempt, providerOperation, providerHTTPStatus, providerErrorCode, errorSummary(job.Error)})
 	if saveErr := q.persistWithEvent(job, taskstore.Event{Kind: "download_attempt_finished", AttemptID: executed.AttemptID, ResponseObservedAtUTC: responseObservedAt, EvidenceType: "local_attempt_result", Evidence: resultEvidence}); saveErr != nil {
 		job.Status = "failed"
 		job.Error = q.err.Error()
