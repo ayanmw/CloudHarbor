@@ -90,7 +90,7 @@ Windows 合成队列基准显示，100,000 条任务在当前环境中完整恢�
 
 ## 其他仍待解除的阻塞与验收项
 
-- **百度异步操作完成查询契约仍未证实。** 现有公开资料不能证明 OAuth 应用可查询异步任务的可靠终态。在取得适用的官方契约前，结果不确定的目录继续隔离，不按路径可见性推断完成，也不提供人工放行。
+- **百度异步操作完成查询契约仍未证实。** 新查到的 BaiduPCS-Rust 版本记录描述了对异步 `filemanager` 的 `taskquery` 轮询；一份百度网盘网页脚本也展示了 `/share/taskquery` 请求和 `bdstoken` 参数。这说明网页客户端/第三方工具存在任务查询用法，但并非适用于本项目 OAuth access token 的官方开放平台契约，也没有证明可查询本项目已发出的操作或得到可用于自动解除隔离的可靠终态。官方 Go SDK 当前公开模型仅说明 `async=2` 返回 `taskid`，其公开文件管理方法未列出任务查询方法；官方 MCP 工具清单也未列出此类查询。[百度官方 Go SDK](https://github.com/baidu-netdisk/baidu-drive-sdk-go/blob/main/baidudriver/api/file_manager.go)、[百度官方 MCP](https://github.com/baidu-netdisk/mcp)、[BaiduPCS-Rust 变更记录](https://github.com/komorebiCarry/BaiduPCS-Rust/blob/main/CHANGELOG.md)、[网页脚本示例](https://greasyfork.org/en/scripts/398489-baidu-netdisk-rename/code)。因此结果不确定的目录继续隔离，不按路径可见性推断完成，也不提供人工放行。
 - **真实百度/NAS 端到端尚待用户环境验收。** 本地替身、合成队列和包内冒烟不能证明真实账号的入队、Move、下载、改名/删除、限流恢复或断电恢复表现。
 - **目标 NAS/SMB 的 SQLite 锁与刷盘语义待实测。** SQLite 官方文档警告网络文件系统锁实现异常会导致损坏风险；WAL 不支持网络文件系统。设计选 DELETE 回滚日志和 `synchronous=EXTRA`，但这仍需在用户的实际挂载方式、NAS 型号与容器卷上做重启/强制终止验证。若验证失败，该存储位置无法获得此项耐久保证，是 SQLite 上线部署的硬阻塞；本地磁盘实现和验证不受此阻塞。
 - **浏览器和油猴的实机兼容待验收。** 实际百度 SPA 选择模式、油猴沙箱以及目标浏览器原生 Basic 登录/TLS 反代尚未完整验证；现有页面与 DOM 夹具不能代替实机结果。
@@ -104,7 +104,7 @@ Windows 合成队列基准显示，100,000 条任务在当前环境中完整恢�
 - v1 导入保留源 JSON 和 sidecar；暂存库在单事务写入后关闭并重开，验证完整性、范围、任务数量及逐 ID 原文，再发布 SQLite 文件并切换格式清单。预切换失败可从保留的 v1 源重做；清单切换后 SQLite 是唯一权威源，损坏时失败关闭。
 - 下载尝试开始/结束、云端元数据观察、源操作发送/结果和启动恢复均有独立事件；线上操作 ID 关联对应尝试。没有提供方真实发生时间时保持 NULL，响应观察时间不冒充线上完成时间。
 - `legacy_import` 事件保留 v1 JSON 中 `created` 和 `updated` 字段的原始 JSON 时间值；源记录未提供时写为 `null`。事件 `recorded_at_utc` 表示本机迁移观察时间，`occurred_at_utc` 仍为空，不把任务更新时间误当作导入或线上操作的发生时间。
-- 当前事件查询仅由 `taskstore.Store.Events` 提供，尚未接入认证管理 API 或页面；用户暂不能通过管理界面浏览事件历史。源码审查还发现 `Cancel`/`Retry`、扫描后 `auth_wait` 恢复及源项缺失失败仍走通用 `persist`，事件只含前后状态，没有操作者/原因；`download_attempt_finished` 仅记错误 Go 类型，不含结构化失败分类或 `NextAttempt` 计划。事件细化范围待用户选择后再设计和实施。
+- 当前事件查询仍仅由 `taskstore.Store.Events` 提供，尚未接入认证管理 API 或页面；用户暂不能通过管理界面浏览事件历史。关键事件已补齐：取消/手动重试记录原因和计数，成功扫描恢复/源项不再具备资格记录扫描 epoch、云端观察时间和状态转变，下载尝试记录结构化结果类别、可用的 HTTP/提供方数值码、响应观察时间和 UTC 未来重试计划。事件仍与当前任务投影在同一 SQLite 事务提交；未知或过期认证扫描不写恢复/缺失证据。
 - Windows 全模块 Go 测试、`go vet`、WSL 全模块 race、17 项 Node 测试和三平台无 CGO 构建已通过。独立包启动/认证/停止冒烟与 payload 哈希、ELF 架构验证已完成，记录见 `D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.23-preview.1-validation.md`。
 - 本机最小合成数据测量：100,000 个任务投影加 100,000 条通用状态事件，数据库 36,716,544 字节，`integrity_check=ok`，约 367 字节/任务。具体云端元数据和操作证据会增大事件 JSON，故该数字只是存储基线；迁移后的旧 v1 文件当前继续保留，部署空间需考虑两种格式共存。
 - 完整迁移测量：100,000 个带真实任务字段形状的合成 v1 文件耗时约 45.73 秒创建、34.17 秒迁移及重开校验；旧 JSON 逻辑长度 23,766,685 字节，SQLite 41,881,600 字节，v1 文件仍保留，两种格式逻辑总量约 65.65 MB。迁移校验确认 SQLite 完整性 `ok` 且 jobs/events 各 100,000 条。该数据是单次 Windows 本机测量，不能外推 NAS/SMB；双份共存是为保留离线恢复副本，清理前需明确回滚/备份政策。

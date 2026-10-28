@@ -1,5 +1,11 @@
 # 持续优化进度
 
+## 2026-10-28 任务状态查询接口证据更新
+
+- 同类工具 BaiduPCS-Rust 的变更记录说明其对异步 `filemanager` 结果调用 `taskquery` 轮询；公开的旧版网页脚本展示 `/share/taskquery` 并携带 `bdstoken`。这确认网页会话路线存在相似用法，但不能证明该接口接受本项目 OAuth access token，亦不能证明其终态可作为当前源操作的完成凭据。
+- 百度官方 Go SDK 的 `filemanager` 响应模型标注 `async=2` 返回 `taskid`，其公开 SDK 文件管理方法未列出任务状态查询；官方 MCP 工具列表同样未列出该查询。故维持既有安全行为：未知源操作继续隔离，不按路径或目录可见性推断完成，不提供人工放行。
+- 资料链接与边界已补入 [SQLite 设计文档](../superpowers/specs/2026-10-28-taskstore-sqlite-design.zh-CN.md)。关键任务事件证据设计与实现记录见 [task-event-evidence.zh-CN.md](../superpowers/specs/2026-10-28-task-event-evidence.zh-CN.md)。
+
 ## v0.8.24-preview.1（补齐旧格式迁移事件时间证据）
 
 - 修复 `legacy_import` 事件只记录 `source_format`、没有原任务时间字段的问题。现在事件保留 v1 原始 JSON 的 `created`/`updated` 值，来源缺字段时明确写 `null`；仅将本机导入观察时刻记为 `recorded_at_utc`，不伪造 `occurred_at_utc`。任务原始 JSON 未改变。

@@ -437,9 +437,17 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 			continue
 		}
 		if job.Status == "auth_wait" && eligible[id] != nil && *eligible[id] == job.Info && q.active[id] == nil {
+			previousStatus := job.Status
 			job.Status = "pending"
 			job.Error = ""
-			if err := q.persist(job); err != nil {
+			evidence, _ := json.Marshal(struct {
+				PreviousStatus string `json:"previous_status"`
+				Status         string `json:"status"`
+				Reason         string `json:"reason"`
+				ScanEpoch      uint64 `json:"scan_epoch"`
+			}{previousStatus, job.Status, "authentication_ready_after_successful_scan", epoch})
+			observedAt := cloudObservedAt.UTC()
+			if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_recovered_after_scan", CloudObservedAtUTC: &observedAt, EvidenceType: "successful_cloud_scan", Evidence: evidence}); err != nil {
 				return err
 			}
 			q.reflect(job)
@@ -449,10 +457,20 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 			continue
 		}
 		if job.Status == "pending" || job.Status == "retry_wait" || job.Status == "auth_wait" {
+			previousStatus := job.Status
 			job.Status = "failed"
 			job.Error = "源项目已离开队列或已被标记；请核对网盘与本地结果，恢复源位置后手动重试"
 			job.NextAttempt = time.Time{}
-			if err := q.persist(job); err != nil {
+			evidence, _ := json.Marshal(struct {
+				PreviousStatus string `json:"previous_status"`
+				Status         string `json:"status"`
+				Reason         string `json:"reason"`
+				ScanEpoch      uint64 `json:"scan_epoch"`
+				Attempts       int    `json:"attempts"`
+				Failures       int    `json:"failures"`
+			}{previousStatus, job.Status, "source_not_eligible_after_successful_scan", epoch, job.Attempts, job.Failures})
+			observedAt := cloudObservedAt.UTC()
+			if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_source_missing", CloudObservedAtUTC: &observedAt, EvidenceType: "successful_cloud_scan", Evidence: evidence}); err != nil {
 				return err
 			}
 			q.reflect(job)
@@ -617,14 +635,32 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 			}
 		}
 	}
+	var nextAttempt *time.Time
+	if job.Status == "retry_wait" && !job.NextAttempt.IsZero() {
+		utc := job.NextAttempt.UTC()
+		nextAttempt = &utc
+	}
+	providerOperation, providerHTTPStatus, providerErrorCode := "", 0, 0
+	var responseObservedAt *time.Time
+	if providerErr := apiError(err); providerErr != nil {
+		providerOperation, providerHTTPStatus, providerErrorCode = providerErr.Operation, providerErr.Status, providerErr.Code
+		if providerErr.Status != 0 {
+			observedAt := time.Now().UTC()
+			responseObservedAt = &observedAt
+		}
+	}
 	resultEvidence, _ := json.Marshal(struct {
-		Status      string `json:"status"`
-		Attempts    int    `json:"attempts"`
-		Failures    int    `json:"failures"`
-		SourceState string `json:"source_state,omitempty"`
-		ErrorType   string `json:"error_type,omitempty"`
-	}{job.Status, job.Attempts, job.Failures, job.SourceState, errorType(err)})
-	if saveErr := q.persistWithEvent(job, taskstore.Event{Kind: "download_attempt_finished", AttemptID: executed.AttemptID, EvidenceType: "local_attempt_result", Evidence: resultEvidence}); saveErr != nil {
+		Status             string     `json:"status"`
+		OutcomeClass       string     `json:"outcome_class"`
+		Attempts           int        `json:"attempts"`
+		Failures           int        `json:"failures"`
+		SourceState        string     `json:"source_state,omitempty"`
+		NextAttemptAtUTC   *time.Time `json:"next_attempt_at_utc"`
+		ProviderOperation  string     `json:"provider_operation,omitempty"`
+		ProviderHTTPStatus int        `json:"provider_http_status,omitempty"`
+		ProviderErrorCode  int        `json:"provider_error_code,omitempty"`
+	}{job.Status, downloadOutcomeClass(job, err, q.stopping), job.Attempts, job.Failures, job.SourceState, nextAttempt, providerOperation, providerHTTPStatus, providerErrorCode})
+	if saveErr := q.persistWithEvent(job, taskstore.Event{Kind: "download_attempt_finished", AttemptID: executed.AttemptID, ResponseObservedAtUTC: responseObservedAt, EvidenceType: "local_attempt_result", Evidence: resultEvidence}); saveErr != nil {
 		job.Status = "failed"
 		job.Error = q.err.Error()
 		if job.SourceState == "sending" || job.SourceState == "unknown" {
@@ -637,11 +673,40 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 	q.signal()
 }
 
-func errorType(err error) string {
-	if err == nil {
-		return ""
+func downloadOutcomeClass(job *queueJob, err error, stopping bool) string {
+	switch job.Status {
+	case "done":
+		return "succeeded"
+	case "auth_wait":
+		return "authentication_wait"
+	case "retry_wait":
+		return "retry_scheduled"
+	case "cancelled":
+		return "cancelled"
+	case "source_unknown":
+		return "source_operation_unknown"
+	case "failed":
+		if baiduapi.IsRetryable(err) {
+			return "retry_exhausted"
+		}
+		return "non_retryable"
+	case "pending":
+		if baiduapi.IsAuthenticationError(err) && job.Error == "" {
+			return "authentication_recovered"
+		}
+		if stopping || errors.Is(err, context.Canceled) {
+			return "interrupted"
+		}
 	}
-	return fmt.Sprintf("%T", err)
+	return "unknown"
+}
+
+func apiError(err error) *baiduapi.APIError {
+	var apiErr *baiduapi.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr
+	}
+	return nil
 }
 
 var ErrTaskNotFound = errors.New("task not found")
@@ -661,10 +726,19 @@ func (d *Downloader) Cancel(id int64) error {
 	if job.Status == "done" || job.SourceState != "" {
 		return ErrTaskConflict
 	}
+	previousStatus := job.Status
+	attempts, failures := job.Attempts, job.Failures
 	job.Status = "cancelled"
 	job.Error = "用户取消"
 	job.NextAttempt = time.Time{}
-	if err := q.persist(job); err != nil {
+	evidence, _ := json.Marshal(struct {
+		PreviousStatus string `json:"previous_status"`
+		Status         string `json:"status"`
+		Attempts       int    `json:"attempts"`
+		Failures       int    `json:"failures"`
+		Reason         string `json:"reason"`
+	}{previousStatus, job.Status, attempts, failures, "user_request"})
+	if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_cancelled", EvidenceType: "local_user_action", Evidence: evidence}); err != nil {
 		return err
 	}
 	q.removeCandidate(job)
@@ -686,12 +760,23 @@ func (d *Downloader) Retry(id int64) error {
 	if q.stopping || q.err != nil || job.SourceState != "" || q.blockedSources[job.Info.Path] || q.blockedIntakes[job.Info.Path] || !d.AuthenticationReady() || q.active[id] != nil || (job.Status != "failed" && job.Status != "cancelled") || eligibleInfo == nil || *eligibleInfo != job.Info {
 		return ErrTaskConflict
 	}
+	previousStatus := job.Status
+	previousAttempts, previousFailures := job.Attempts, job.Failures
 	job.Status = "pending"
 	job.Attempts = 0
 	job.Failures = 0
 	job.Error = ""
 	job.NextAttempt = time.Time{}
-	if err := q.persist(job); err != nil {
+	evidence, _ := json.Marshal(struct {
+		PreviousStatus   string `json:"previous_status"`
+		Status           string `json:"status"`
+		PreviousAttempts int    `json:"previous_attempts"`
+		Attempts         int    `json:"attempts"`
+		PreviousFailures int    `json:"previous_failures"`
+		Failures         int    `json:"failures"`
+		Reason           string `json:"reason"`
+	}{previousStatus, job.Status, previousAttempts, job.Attempts, previousFailures, job.Failures, "manual_retry"})
+	if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_retry_requested", EvidenceType: "local_user_action", Evidence: evidence}); err != nil {
 		return err
 	}
 	q.reflect(job)
