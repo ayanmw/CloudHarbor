@@ -1,5 +1,14 @@
 # 持续优化进度
 
+## v0.8.29-preview.1（消除重启时重复 SQLite 完整性扫描）
+
+- 旧 SQLite 格式启动先单独连接执行一次全库 `integrity_check`，再由正式连接重复检查一次。现拆分建库与已有库验证：既有权威库先核对 schema、版本和 scope，不做 schema 补建，再设置/核实 pragma 并执行一次完整性扫描；迁移 staging 库重开也用不创建 schema 的路径。
+- TDD：新回归在现有库缺 `job_events` 时先因 existing-open 接口缺失编译失败；实现后验证启动失败且缺表仍缺失。已有权威库损坏失败关闭测试继续通过。
+- Windows AMD64 Go 1.27.1、Intel Core Ultra 7 265KF、100k 合成历史 `Store.Load` 端到端：改动前 3 次中位数 613.1 ms，改动后 5 次中位数 475.9 ms，方向性改善约 22%；B/op 和 alloc/op 基本不变。此本机基准不代表 NAS/SMB。
+- 发布门禁：Windows 全模块 Go 测试/vet、WebUI 16 项、userscript 3 项、三平台无 CGO 构建通过。ZIP 有 12 项、11 个 payload 哈希一致。包内 Windows 同一临时队列连续两次启动，health=`waiting_authorization`，诊断从 `created` 变为 `reopened`，完整性和 pragma 正确。
+- 全量 race 未验证：Windows cgo 子进程退出码 2，WSL `E_ACCESSDENIED`。真实 NAS/SMB 耐久与性能、百度线上链路、实机浏览器仍待目标环境。
+- 独立包：[v0.8.29-preview.1.zip](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.29-preview.1.zip)，SHA256：`639BB905DDD91A8EE4D621D41862A2900371D73E93D9A34F215C7D456A53EAF5`；验证记录：[v0.8.29-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.29-preview.1-validation.md)。源码提交：`e2111c28e833c96bc11e43836ae5c8fee1520a45`。
+
 ## v0.8.28-preview.1（增加 SQLite 启动诊断）
 
 - SQLite 成功打开并完成既有完整性检查后，服务启动日志新增一条 JSON 摘要：run ID、schema 版本、云队列范围的 64 位短指纹、任务/事件计数、最大事件序号、数据库文件大小、当前启动动作、已验证完整性结果、实际 journal/synchronous/foreign_keys/busy_timeout 和 UTC 采集时间。摘要不输出队列路径、任务内容或凭证，也不再次全表扫描、不写数据库。

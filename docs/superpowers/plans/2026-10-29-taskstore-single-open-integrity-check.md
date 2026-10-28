@@ -35,4 +35,4 @@
 - [x] `Store.Open` 的 SQLite 格式直接走一次现有库校验；迁移临时库关闭后以现有库模式重开校验。
 - [x] Windows 全模块 Go 测试/vet、WebUI 16 项、userscript 3 项和 taskstore/downloader 定向测试通过；三平台构建纳入下方发布门禁。
 - [x] Windows Go 1.27.1、Intel Core Ultra 7 265KF、100k 合成历史：改动前 `Store.Load` 3 次 609–674 ms，中位数 613 ms；改动后 5 次 459–526 ms，中位数 476 ms，B/op 与 alloc/op 基本不变。样本含主库打开、integrity check 和全量任务读取，不代表 NAS。
-- [ ] 生成不可变预览包、核验归档哈希及包内启动诊断，并记录验证范围。
+- [x] 生成 v0.8.29-preview.1 不可变预览包；12 项归档/11 个 payload 哈希核对通过，包内连续创建/重开诊断冒烟通过。全量 race 未验证并记录环境限制。
