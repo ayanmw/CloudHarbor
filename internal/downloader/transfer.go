@@ -22,7 +22,7 @@ var syncPublishedDirectory = durablefs.SyncDirectory
 var removePublishedPartial = os.Remove
 var linkDownloadedFile = os.Link
 
-func publishDownloadedFile(ctx context.Context, partialName, local, expectedSHA256 string, expectedSize int64) error {
+func publishDownloadedFile(ctx context.Context, partialName, local string, expected fileRecord) error {
 	linkErr := linkDownloadedFile(partialName, local)
 	if linkErr == nil {
 		return nil
@@ -32,13 +32,13 @@ func publishDownloadedFile(ctx context.Context, partialName, local, expectedSHA2
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("检查发布目标失败: %w", err)
 	}
-	if err := copyAndPublishNoReplace(ctx, partialName, local, expectedSHA256, expectedSize); err != nil {
+	if err := copyAndPublishNoReplace(ctx, partialName, local, expected); err != nil {
 		return fmt.Errorf("硬链接发布失败，复制回退也未能安全发布: %w", err)
 	}
 	return nil
 }
 
-func copyAndPublishNoReplace(ctx context.Context, partialName, local, expectedSHA256 string, expectedSize int64) error {
+func copyAndPublishNoReplace(ctx context.Context, partialName, local string, expected fileRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -58,6 +58,20 @@ func copyAndPublishNoReplace(ctx context.Context, partialName, local, expectedSH
 			_ = os.Remove(temporaryName)
 		}
 	}()
+	metadataName := filepath.Join(filepath.Dir(partialName), "partial.json")
+	metadata, err := readRecord(metadataName)
+	if err != nil {
+		return fmt.Errorf("下载部分文件元数据与发布记录不匹配: %w", err)
+	}
+	if !metadata.matches(expected) {
+		return fmt.Errorf("下载部分文件元数据与发布记录不匹配")
+	}
+	// Persist the generated sibling name before copying so a restart can clean
+	// an interrupted large copy without scanning or touching unrelated files.
+	metadata.PublishTempName = filepath.Base(temporaryName)
+	if err = writeRecord(metadataName, metadata); err != nil {
+		return err
+	}
 	if err = temporary.Chmod(0600); err != nil {
 		return err
 	}
@@ -87,7 +101,7 @@ func copyAndPublishNoReplace(ctx context.Context, partialName, local, expectedSH
 			return readErr
 		}
 	}
-	if copied != expectedSize || hex.EncodeToString(digest.Sum(nil)) != expectedSHA256 {
+	if copied != expected.Size || hex.EncodeToString(digest.Sum(nil)) != expected.SHA256 {
 		return fmt.Errorf("复制后的下载内容与已验证凭据不一致")
 	}
 	if err = ctx.Err(); err != nil {
@@ -104,6 +118,40 @@ func copyAndPublishNoReplace(ctx context.Context, partialName, local, expectedSH
 	}
 	temporaryName = ""
 	return nil
+}
+
+func cleanupRegisteredPublishTemp(destinationDir, metadataName string, expected *fileRecord) error {
+	metadata, err := readRecord(metadataName)
+	if err != nil {
+		return err
+	}
+	if expected != nil && !metadata.matches(*expected) {
+		return nil
+	}
+	name := metadata.PublishTempName
+	if name == "" {
+		return nil
+	}
+	if filepath.Base(name) != name || !strings.HasPrefix(name, ".nas-download-publish-") || !strings.HasSuffix(name, ".tmp") {
+		return fmt.Errorf("invalid registered publish temporary name")
+	}
+	path := filepath.Join(destinationDir, name)
+	info, err := os.Lstat(path)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("registered publish temporary is not a regular file")
+		}
+		if err = os.Remove(path); err != nil {
+			return err
+		}
+		if err = syncPublishedDirectory(destinationDir); err != nil {
+			return fmt.Errorf("同步已清理的发布临时文件目录失败: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	metadata.PublishTempName = ""
+	return writeRecord(metadataName, metadata)
 }
 
 func removeVerifiedPublishedPartial(ctx context.Context, finalInfo os.FileInfo, receipt, expected fileRecord, partialName, metadataName string) {
@@ -130,12 +178,13 @@ func removeVerifiedPublishedPartial(ctx context.Context, finalInfo os.FileInfo, 
 }
 
 type fileRecord struct {
-	FsID         int64  `json:"fs_id"`
-	Size         int64  `json:"size"`
-	Mtime        int64  `json:"mtime"`
-	CloudMD5     string `json:"cloud_md5"`
-	RelativePath string `json:"relative_path"`
-	SHA256       string `json:"sha256,omitempty"`
+	FsID            int64  `json:"fs_id"`
+	Size            int64  `json:"size"`
+	Mtime           int64  `json:"mtime"`
+	CloudMD5        string `json:"cloud_md5"`
+	RelativePath    string `json:"relative_path"`
+	SHA256          string `json:"sha256,omitempty"`
+	PublishTempName string `json:"publish_temp_name,omitempty"`
 }
 
 func recordFor(info baiduapi.FileInfo, relative string) fileRecord {
@@ -144,6 +193,8 @@ func recordFor(info baiduapi.FileInfo, relative string) fileRecord {
 func (r fileRecord) matches(other fileRecord) bool {
 	r.SHA256 = ""
 	other.SHA256 = ""
+	r.PublishTempName = ""
+	other.PublishTempName = ""
 	return r == other
 }
 
@@ -328,6 +379,11 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		if err = syncPublishedDirectory(filepath.Dir(local)); err != nil {
 			return fmt.Errorf("同步已发布文件所在目录失败: %w", err)
 		}
+		if metadata, metadataErr := readRecord(metaName); metadataErr == nil && metadata.PublishTempName != "" {
+			if err = cleanupRegisteredPublishTemp(filepath.Dir(local), metaName, &expected); err != nil {
+				return fmt.Errorf("清理已登记的发布临时文件失败: %w", err)
+			}
+		}
 		removeVerifiedPublishedPartial(ctx, stat, record, expected, partialName, metaName)
 		d.updateProgress(info.FsID, info.Size)
 		return nil
@@ -336,6 +392,15 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	}
 
 	record, recordErr := readRecord(metaName)
+	if recordErr != nil && !errors.Is(recordErr, os.ErrNotExist) {
+		return fmt.Errorf("读取部分文件元数据失败，保留现状以避免丢失发布恢复记录: %w", recordErr)
+	}
+	if recordErr == nil && record.PublishTempName != "" {
+		if err = cleanupRegisteredPublishTemp(filepath.Dir(local), metaName, nil); err != nil {
+			return fmt.Errorf("恢复并清理中断的发布临时文件失败: %w", err)
+		}
+		record.PublishTempName = ""
+	}
 	var offset int64
 	if recordErr == nil && record.matches(expected) {
 		if stat, statErr := os.Stat(partialName); statErr == nil {
@@ -470,11 +535,14 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	}
 	// Prefer the atomic hard-link path. If the filesystem does not support
 	// links, copy to a synced sibling and atomically publish without replacement.
-	if err = publishDownloadedFile(ctx, partialName, local, expected.SHA256, info.Size); err != nil {
+	if err = publishDownloadedFile(ctx, partialName, local, expected); err != nil {
 		return err
 	}
 	if err = syncPublishedDirectory(filepath.Dir(local)); err != nil {
 		return fmt.Errorf("同步已发布文件所在目录失败: %w", err)
+	}
+	if err = cleanupRegisteredPublishTemp(filepath.Dir(local), metaName, &expected); err != nil {
+		return fmt.Errorf("清理已登记的发布临时文件失败: %w", err)
 	}
 	if err = removePublishedPartial(partialName); err != nil {
 		return fmt.Errorf("清理临时文件失败: %w", err)
