@@ -1,5 +1,7 @@
 # Task history journal and snapshot design
 
+> Superseded on 2026-10-28 by [the SQLite-backed design](2026-10-28-taskstore-sqlite-design.zh-CN.md), following the user's storage decision. Retained as historical context only; do not implement this proposal.
+
 中文版本：[任务历史日志与快照设计](2026-10-24-taskstore-log-snapshot-design.zh-CN.md)。
 
 ## Intent

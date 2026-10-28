@@ -1,5 +1,7 @@
 # 任务历史日志与快照设计
 
+> 本文于 2026-10-28 起被 [SQLite 存储设计](2026-10-28-taskstore-sqlite-design.zh-CN.md)取代，原因是用户指定使用 SQLite。此文仅保留为历史方案背景，不应按此方案实现。
+
 英文原文：[Task history journal and snapshot design](2026-10-24-taskstore-log-snapshot-design.md)。
 
 ## 目的
