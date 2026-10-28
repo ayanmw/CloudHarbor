@@ -96,4 +96,4 @@
 - [x] Build Windows AMD64, Linux AMD64, and Linux ARM64 with CGO disabled.
 - [x] Run package startup/auth/stop smoke; verify release payload hashes and Linux ELF architectures. SQLite migration/crash failure paths are covered by the taskstore and downloader regression suites.
 - [x] Record target NAS/SMB locking and power-loss behavior as unverified until tested on the actual deployment filesystem; do not claim local tests prove NAS durability.
-- [x] Publish immutable `v0.8.23-preview.1` with exact commit, SHA256, run instructions, and evidence boundaries.
+- [x] Publish immutable `v0.8.24-preview.1` with exact commit, SHA256, run instructions, and evidence boundaries.

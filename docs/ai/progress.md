@@ -1,5 +1,14 @@
 # 持续优化进度
 
+## v0.8.24-preview.1（补齐旧格式迁移事件时间证据）
+
+- 修复 `legacy_import` 事件只记录 `source_format`、没有原任务时间字段的问题。现在事件保留 v1 原始 JSON 的 `created`/`updated` 值，来源缺字段时明确写 `null`；仅将本机导入观察时刻记为 `recorded_at_utc`，不伪造 `occurred_at_utc`。任务原始 JSON 未改变。
+- TDD：迁移回归先失败，指出事件证据只有 `{"source_format":1}`；实现后，带时间、含非 UTC 时区以及缺失时间三种用例通过。迁移中断重试和副本保留回归仍通过。
+- Windows 全模块 `go test -count=1 ./...` / `go vet ./...` 通过；Go 1.22.2 WSL 全模块 `go test -race -count=1 ./...` 通过；Node 17 项通过；Windows AMD64/Linux AMD64/Linux ARM64 无 CGO 构建通过。
+- 包内 Windows 程序从临时 v1 队列实际启动并完成迁移；匿名 health=401、Basic 认证 health=200，任务总数 2、状态等待授权。SQLite `integrity_check=ok`；事件读回原始时间 `2026-10-20T00:00:00Z` 与 `2026-10-21T12:34:56+08:00`，缺失时间读回 null。未配置百度凭证或执行云端操作。Ctrl+C 后日志 `Service stopped`，18091 端口无监听；PowerShell 外层 PTY 返回码 1，不宣称外层 shell exit 0。
+- ZIP 11 项 payload SHA256 匹配，包内 Windows 版本/revision 匹配；ZIP 大小 15,134,541 字节，SHA256 `CA3F591EF52AE13B2A5D8B5C2ED9C9EAE72D277658B2FB911D647BDEF7C47254`。源码 revision `3da7cb61ac46429bea375f8c4a2efb7ef54355ac`。独立包：[v0.8.24-preview.1.zip](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.24-preview.1.zip)，验证记录：[v0.8.24-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.24-preview.1-validation.md)。
+- 真实 NAS/SMB 锁与刷盘、百度真实账号链路、以及尚未确定的事件细化范围仍待后续处理；本包仅验证本机迁移行为。
+
 ## v0.8.23-preview.1（SQLite 任务历史与重启证据）
 
 - 任务当前投影迁入 SQLite，状态快照与追加事件在同一事务提交；事件使用单调序号并分离本机记录时间、云端元数据观察时间、线上响应观察时间、提供方 mtime 和未来重试时间。源操作的 sending 在网络请求前落盘；重启将未决发送恢复为 unknown 并隔离，不自动或人工重放。启动恢复、下载尝试和云端扫描证据均通过独立 run/operation/attempt ID 关联。
