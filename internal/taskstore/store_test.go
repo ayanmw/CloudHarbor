@@ -235,6 +235,30 @@ func TestLoadEachVisitsRecordsInFilenameOrderWithoutBuildingResultMap(t *testing
 	}
 }
 
+func TestLoadEachRawVisitsRecordsInPrimaryKeyOrder(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "queue")
+	s, err := Open(dir, "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []int64{2, 10, 1} {
+		if err := s.Save(id, []byte(`{"id":`+strconv.FormatInt(id, 10)+`}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ids []int64
+	if err := s.LoadEachRaw(func(id int64, _ json.RawMessage) error {
+		ids = append(ids, id)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ids, []int64{1, 2, 10}) {
+		t.Fatalf("raw record order = %v, want primary-key order [1 2 10]", ids)
+	}
+}
+
 func TestLoadEachStopsAndReturnsCallbackError(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "queue")
 	s, err := Open(dir, "/preview")

@@ -145,4 +145,5 @@
 - [x] 启动时结构化记录 SQLite 格式、scope 短指纹、任务/事件计数、最大序号、数据库大小、pragma、完整性检查结果、迁移动作和 UTC 时间；诊断只读且不重复完整性扫描。
 - [x] v0.8.28-preview.1 Windows 全模块测试/vet、Node 19 项、三平台无 CGO 构建及包内启动诊断冒烟通过；该版 race 因 Windows cgo/WSL 环境错误未验证，不能以更早版本的 race 结果代替。
 - [x] SQLite 正常重启路径去掉重复 integrity_check；Windows Go 1.27.1 100,000 条合成历史 `Store.Load` 5 次样本中位数约 476 ms，对照改动前 3 次样本中位数约 613 ms，约快 22%；只是当前 Windows 本机方向性测量，不外推 NAS/SMB。
+- [x] 启动专用 `LoadEachRaw` 按 SQLite 整数主键扫描，避免对旧 JSON 文件名表达式排序；100,000 根任务 Windows `OpenDownloader` 单轮 3 次中位数约 1.182 s → 0.600 s，B/op 与 allocs/op 基本不变。任务通用 `LoadEach` 保持原文件名顺序契约；样本受 Windows I/O 波动影响，不外推 NAS/SMB。
 - [x] 已明确目标 NAS/SMB 锁、刷盘与掉电恢复仍未验收；本地测试不替代目标文件系统证据。

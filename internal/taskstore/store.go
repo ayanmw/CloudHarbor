@@ -338,9 +338,9 @@ func (s *Store) LoadEach(visit func(int64, json.RawMessage) error) error {
 	return s.loadEachSQL(visit, true)
 }
 
-// LoadEachRaw visits bounded record bytes without parsing their JSON. The
-// visitor must validate or decode each body before trusting it, and may only
-// use the body until it returns.
+// LoadEachRaw visits bounded record bytes in ascending ID order without
+// parsing their JSON. The visitor must validate or decode each body before
+// trusting it, and may only use the body until it returns.
 func (s *Store) LoadEachRaw(visit func(int64, json.RawMessage) error) error {
 	return s.loadEachSQL(visit, false)
 }
@@ -354,7 +354,13 @@ func (s *Store) loadEachSQL(visit func(int64, json.RawMessage) error, validateJS
 	if s.closed {
 		return os.ErrClosed
 	}
-	rows, err := s.db.Query(`SELECT id,payload_json FROM jobs ORDER BY (CAST(id AS TEXT) || '.json') COLLATE BINARY`)
+	order := `(CAST(id AS TEXT) || '.json') COLLATE BINARY`
+	if !validateJSON {
+		// Startup only needs deterministic order; the integer primary key avoids
+		// sorting every row by a legacy filename expression.
+		order = `id`
+	}
+	rows, err := s.db.Query(`SELECT id,payload_json FROM jobs ORDER BY ` + order)
 	if err != nil {
 		return err
 	}
