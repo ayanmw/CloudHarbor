@@ -37,6 +37,6 @@
 - [x] 在下载器完成恢复后暴露快照；主程序只记录一条 JSON 结构化日志，诊断失败则记录明确错误。
 - [x] 覆盖 fresh/migrated/reopened、非空计数、scope 脱敏及实际 pragma；Windows 全模块测试和 vet 通过。
 - [x] Node WebUI 16 项和 userscript 3 项通过。
-- [ ] 运行三平台构建。
-- [ ] 运行发布打包脚本并检查最终差异；若受 race 环境限制，记录准确失败原因但不把它描述为代码失败。
-- [ ] 生成新的不可变预览 ZIP、SHA256、测试指南和验证记录。
+- [x] 发布门禁完成 Windows AMD64、Linux AMD64、Linux ARM64 无 CGO 构建。
+- [x] `scripts/package.ps1 -Version v0.8.28-preview.1` 通过；复核最终差异与归档 payload 哈希。
+- [x] 生成不可变预览 ZIP、SHA256、测试指南和验证记录。完整 race 因本机 cgo `exit status 2` 与 WSL `E_ACCESSDENIED` 未验证，已明确记录，未声称通过。

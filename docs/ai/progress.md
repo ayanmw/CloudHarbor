@@ -1,5 +1,13 @@
 # 持续优化进度
 
+## v0.8.28-preview.1（增加 SQLite 启动诊断）
+
+- SQLite 成功打开并完成既有完整性检查后，服务启动日志新增一条 JSON 摘要：run ID、schema 版本、云队列范围的 64 位短指纹、任务/事件计数、最大事件序号、数据库文件大小、当前启动动作、已验证完整性结果、实际 journal/synchronous/foreign_keys/busy_timeout 和 UTC 采集时间。摘要不输出队列路径、任务内容或凭证，也不再次全表扫描、不写数据库。
+- 回归先因 StartupDiagnostics API 缺失而失败，接线后通过；覆盖首次创建、v1 迁移、普通重开、非空计数、scope 不直出、pragma 和只读行为。Windows 全模块 Go 测试/vet、WebUI 16 项、userscript 3 项及 Windows AMD64/Linux AMD64/Linux ARM64 无 CGO 构建通过。
+- ZIP 内 Windows AMD64 无百度凭证实际启动；认证 health 为 `waiting_authorization`，启动日志中 schema=2、jobs/events/序号=0、integrity=`ok`、journal=`delete`、synchronous=3、foreign keys=true、busy timeout=5000、迁移动作=`created`。ZIP 12 项，11 个 payload 哈希一致。
+- 全量 race 未验证：Windows cgo 工具退出码 2，Ubuntu-24.04 WSL 返回 `Wsl/Service/E_ACCESSDENIED`。真实百度、NAS/SMB 锁与刷盘、掉电、实机浏览器/油猴及长期容量仍待目标环境验收。
+- 独立包：[v0.8.28-preview.1.zip](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.28-preview.1.zip)，SHA256：`9BA885EE00C12F001EA1FFF3D512494B1530A0BCCB7AF9B7397399110B9F4ECF`；验证记录：[v0.8.28-preview.1-validation.md](D:/projects/Git-Projects/nas_baidupan_auto_downloader-releases/v0.8.28-preview.1-validation.md)。源码提交：`a59d58b8c094d3511d61dbe03a9a709823b1e834`。
+
 ## v0.8.27-preview.1（限制事件时间线的浏览器内存）
 
 - 修复事件页“更早事件”累积历史项的问题：前后翻页时替换当前 20 项，而不是把所有浏览过的事件加入同一 DOM；使用游标栈返回较新页面，点击刷新回到最新页。一次只保留一个展开任务的事件状态。
