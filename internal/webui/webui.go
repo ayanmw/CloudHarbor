@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"embed"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"web_browser_baidu_onekey_upload/internal/downloader"
+	"web_browser_baidu_onekey_upload/internal/management"
 )
 
 //go:embed index_ws.html
@@ -22,22 +24,43 @@ var indexPoll []byte
 //go:embed index_oauth.html
 var indexOAuth []byte
 
+//go:embed index_intake.html
+var indexIntake []byte
+
+//go:embed index_login.html
+var indexLogin []byte
+
+//go:embed index_cloud.html
+var indexCloud []byte
+
 //go:embed res/*
 var resFiles embed.FS
 
 type Server struct {
+	ctx      context.Context
 	dl       *downloader.Downloader
 	upgrader websocket.Upgrader
 }
 
+type wsMessage struct {
+	Type         string `json:"type"`
+	DownloadMode string `json:"download_mode,omitempty"`
+	Offset       int    `json:"offset,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+	SortBy       string `json:"sort_by,omitempty"`
+}
+
 func NewServer(dl *downloader.Downloader) *Server {
 	return &Server{
-		dl: dl,
+		ctx: context.Background(),
+		dl:  dl,
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin: management.CheckOrigin,
 		},
 	}
 }
+
+func (s *Server) WithContext(ctx context.Context) *Server { s.ctx = ctx; return s }
 
 // HandlePageWS 返回 WebSocket 版本页面（默认页面）
 func (s *Server) HandlePageWS(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +78,21 @@ func (s *Server) HandlePagePoll(w http.ResponseWriter, r *http.Request) {
 func (s *Server) HandlePageOAuth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(indexOAuth)
+}
+
+func (s *Server) HandlePageIntake(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexIntake)
+}
+
+func (s *Server) HandlePageLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexLogin)
+}
+
+func (s *Server) HandlePageCloud(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexCloud)
 }
 
 // HandleRes 静态资源文件服务
@@ -102,11 +140,6 @@ func (s *Server) HandleRes(w http.ResponseWriter, r *http.Request) {
 	w.Write(content)
 }
 
-type wsMessage struct {
-	Type         string `json:"type"`
-	DownloadMode string `json:"download_mode,omitempty"`
-}
-
 // HandleWS WebSocket 实时状态通道
 func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
@@ -117,6 +150,8 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	done := make(chan struct{})
+	pageRequests := make(chan wsMessage, 1)
+	offset, limit, sortBy := 0, 100, "name"
 
 	// 读取前端消息（设置更新）
 	go func() {
@@ -131,6 +166,16 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 			if msg.Type == "update_settings" && msg.DownloadMode != "" {
 				log.Printf("[WebUI] 更新下载模式为: %s", msg.DownloadMode)
 				s.dl.SetDownloadMode(downloader.DownloadMode(msg.DownloadMode))
+			} else if msg.Type == "status_page" && msg.Offset >= 0 && msg.Limit >= 1 && msg.Limit <= 200 && (msg.SortBy == "name" || msg.SortBy == "progress" || msg.SortBy == "size") {
+				select {
+				case pageRequests <- msg:
+				default:
+					select {
+					case <-pageRequests:
+					default:
+					}
+					pageRequests <- msg
+				}
 			}
 		}
 	}()
@@ -141,10 +186,18 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
+		case <-s.ctx.Done():
+			return
 		case <-done:
 			return
+		case request := <-pageRequests:
+			offset, limit, sortBy = request.Offset, request.Limit, request.SortBy
+			if err := s.sendStatus(conn, offset, limit, sortBy); err != nil {
+				log.Printf("[WebUI] 发送状态失败: %v", err)
+				return
+			}
 		case <-ticker.C:
-			if err := s.sendStatus(conn); err != nil {
+			if err := s.sendStatus(conn, offset, limit, sortBy); err != nil {
 				log.Printf("[WebUI] 发送状态失败: %v", err)
 				return
 			}
@@ -152,12 +205,16 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) sendStatus(conn *websocket.Conn) error {
-	tasks := s.dl.GetTasks()
+func (s *Server) sendStatus(conn *websocket.Conn, offset, limit int, sortBy string) error {
+	page := s.dl.GetTaskPage(offset, limit, sortBy)
+	tasks := page.Tasks
 
 	// 与 /status 类似的结构
 	type TaskStatus struct {
 		FsID           int64  `json:"fs_id"`
+		TaskID         string `json:"task_id"`
+		CanCancel      bool   `json:"can_cancel"`
+		CanRetry       bool   `json:"can_retry"`
 		Path           string `json:"path"`
 		ServerFilename string `json:"server_filename"`
 		Size           int64  `json:"size"`
@@ -168,12 +225,17 @@ func (s *Server) sendStatus(conn *websocket.Conn) error {
 		FinishTime     string `json:"finish_time,omitempty"`
 		Progress       int64  `json:"progress"`
 		Speed          int64  `json:"speed,omitempty"` // 添加速度信息
+		Attempts       int    `json:"attempts"`
+		NextAttempt    string `json:"next_attempt,omitempty"`
+		Root           bool   `json:"is_root"`
+		DownloadMode   string `json:"download_mode,omitempty"`
 	}
 
 	statuses := make([]TaskStatus, 0, len(tasks))
 	for _, t := range tasks {
 		ts := TaskStatus{
-			FsID:           t.FileInfo.FsID,
+			FsID:   t.FileInfo.FsID,
+			TaskID: t.TaskID, CanCancel: t.CanCancel, CanRetry: t.CanRetry,
 			Path:           t.FileInfo.Path,
 			ServerFilename: t.FileInfo.ServerFilename,
 			Size:           t.FileInfo.Size,
@@ -182,10 +244,15 @@ func (s *Server) sendStatus(conn *websocket.Conn) error {
 			Error:          t.Error,
 			Progress:       t.Progress,
 			Speed:          t.Speed, // 添加速度信息
+			Attempts:       t.Attempts,
+			Root:           t.Root, DownloadMode: string(t.DownloadMode),
 		}
 
 		if !t.StartTime.IsZero() {
 			ts.StartTime = t.StartTime.Format(time.RFC3339)
+		}
+		if !t.NextAttempt.IsZero() {
+			ts.NextAttempt = t.NextAttempt.Format(time.RFC3339)
 		}
 		if !t.FinishTime.IsZero() {
 			ts.FinishTime = t.FinishTime.Format(time.RFC3339)
@@ -195,8 +262,16 @@ func (s *Server) sendStatus(conn *websocket.Conn) error {
 	}
 
 	payload := map[string]interface{}{
-		"type":  "status",
-		"tasks": statuses,
+		"type": "status", "tasks": statuses,
+		"total_tasks": page.Total, "status_counts": page.Counts,
+		"offset": page.Offset, "limit": page.Limit, "has_more": page.HasMore,
+		"next_offset": func() *int {
+			if !page.HasMore {
+				return nil
+			}
+			next := page.Offset + page.Limit
+			return &next
+		}(),
 		"settings": map[string]interface{}{
 			"download_mode": string(s.dl.GetDownloadMode()),
 		},

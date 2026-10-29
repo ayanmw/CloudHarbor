@@ -1,18 +1,107 @@
 package baiduapi
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
-	"strings"
+	"time"
 )
+
+// ErrRangeIgnored means the server returned a full body for a resume request.
+// The caller must restart from zero instead of appending that body.
+var ErrRangeIgnored = errors.New("server ignored Range; restart required")
+
+var ErrFileMetadataMissing = errors.New("file metadata missing")
+
+// net/http wraps failures in url.Error, whose Error string includes credentials
+// in the request URL. Preserve the cause without putting that URL in task/logs.
+func requestError(err error) error {
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) {
+		return fmt.Errorf("%s: %w", requestErr.Op, requestErr.Err)
+	}
+	return err
+}
 
 // Client 百度网盘 API 客户端
 type Client struct {
-	AccessToken string
-	AppKey      string
+	AccessToken  string
+	AppKey       string
+	ctx          context.Context
+	idleTimeout  time.Duration
+	requestPacer RequestPacer
+}
+
+// RequestPacer may be shared by clients that use the same provider quota.
+type RequestPacer interface{ Wait(context.Context) error }
+
+func (c *Client) WithRequestPacer(pacer RequestPacer) *Client {
+	copy := *c
+	copy.requestPacer = pacer
+	return &copy
+}
+
+// Copies keep each worker's cancellation scope independent from token updates.
+func (c *Client) WithContext(ctx context.Context) *Client { copy := *c; copy.ctx = ctx; return &copy }
+func (c *Client) context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+var metadataHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+func (c *Client) get(address string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(c.context(), http.MethodGet, address, nil)
+	if err != nil {
+		return nil, err
+	}
+	return metadataHTTPClient.Do(req)
+}
+
+type APIError struct {
+	Operation        string
+	Status           int
+	Code             int
+	tokenFingerprint string
+	// Preserve the JSON namespace: xpan errno=111 means async work is running,
+	// whereas OAuth error_code=111 means the access token has expired.
+	businessErrno bool
+}
+
+// Fingerprint identifies the credential used by a request without exposing it.
+func (c *Client) Fingerprint() string {
+	if c.AccessToken == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(c.AccessToken))
+	return hex.EncodeToString(sum[:])
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s failed: HTTP=%d code=%d", e.Operation, e.Status, e.Code)
+}
+func IsRetryable(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var api *APIError
+	if errors.As(err, &api) {
+		return api.Status == 429 || api.Status >= 500 || api.Code == 31034
+	}
+	var network net.Error
+	return errors.As(err, &network)
 }
 
 // FileInfo 文件信息
@@ -22,7 +111,7 @@ type FileInfo struct {
 	ServerFilename string `json:"server_filename"`
 	Size           int64  `json:"size"`
 	IsDir          int    `json:"isdir"` // 1=目录，0=文件
-	Mtime          int64  `json:"mtime"`
+	Mtime          int64  `json:"server_mtime"`
 	MD5            string `json:"md5"` // 添加MD5字段
 }
 
@@ -43,35 +132,151 @@ func NewClient(accessToken, appKey string) *Client {
 // ListDir 列出指定目录内容
 // dir: 网盘路径，如 /NAS_Download_Queue
 func (c *Client) ListDir(dir string) ([]FileInfo, error) {
-	apiURL := "https://pan.baidu.com/rest/2.0/xpan/file"
+	const limit = 1000
+	files := make([]FileInfo, 0)
+	seen := make(map[int64]bool)
+	for start := 0; ; start += limit {
+		page, err := c.listDirPage(dir, start, limit)
+		if err != nil {
+			return nil, err
+		}
+		for _, file := range page {
+			if seen[file.FsID] {
+				return nil, fmt.Errorf("分页目录发生重复，等待下一次扫描: fs_id=%d", file.FsID)
+			}
+			seen[file.FsID] = true
+			files = append(files, file)
+		}
+		if len(page) < limit {
+			return files, nil
+		}
+	}
+}
+
+// ListDirPage returns one bounded page and whether another item exists.
+func (c *Client) ListDirPage(dir string, start, limit int) ([]FileInfo, bool, error) {
+	if start < 0 || start > 1000000 || limit < 1 || limit >= 1000 {
+		return nil, false, fmt.Errorf("invalid directory page")
+	}
+	page, err := c.listDirPage(dir, start, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	seen := make(map[int64]bool, len(page))
+	for _, file := range page {
+		if seen[file.FsID] {
+			return nil, false, fmt.Errorf("分页目录发生重复，等待下一次扫描: fs_id=%d", file.FsID)
+		}
+		seen[file.FsID] = true
+	}
+	hasMore := len(page) > limit
+	if hasMore {
+		page = page[:limit]
+	}
+	return page, hasMore, nil
+}
+
+func (c *Client) listDirPage(dir string, start, limit int) ([]FileInfo, error) {
+	if c.requestPacer != nil {
+		if err := c.requestPacer.Wait(c.context()); err != nil {
+			return nil, err
+		}
+	}
+	const responseLimit = 16 * 1024 * 1024
 	params := url.Values{}
 	params.Set("method", "list")
 	params.Set("access_token", c.AccessToken)
 	params.Set("dir", dir)
-	params.Set("order", "time")
-	params.Set("desc", "1")
-	params.Set("limit", "1000")
-
-	fullURL := apiURL + "?" + params.Encode()
-	fmt.Printf("[BaiduAPI] 列目录请求: dir=%s, url=%s\n", dir, fullURL)
-	resp, err := http.Get(fullURL)
+	params.Set("order", "name")
+	params.Set("desc", "0")
+	params.Set("start", fmt.Sprint(start))
+	params.Set("limit", fmt.Sprint(limit))
+	resp, err := c.get("https://pan.baidu.com/rest/2.0/xpan/file?" + params.Encode())
 	if err != nil {
-		return nil, fmt.Errorf("列目录请求失败: %w", err)
+		return nil, fmt.Errorf("列目录请求失败: %w", requestError(err))
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode}
+	}
+	if len(body) > responseLimit {
+		return nil, fmt.Errorf("目录响应超过大小限制")
+	}
+	var result struct {
+		Errno     *int            `json:"errno"`
+		ErrorCode int             `json:"error_code"`
+		List      json.RawMessage `json:"list"`
+	}
+	if err = json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("解析目录响应失败: %w", err)
+	}
+	if result.ErrorCode != 0 {
+		return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: result.ErrorCode}
+	}
+	if result.Errno == nil {
+		return nil, fmt.Errorf("目录响应缺失 errno")
+	}
+	if *result.Errno != 0 {
+		return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
+	}
+	if len(result.List) == 0 || result.List[0] != '[' {
+		return nil, fmt.Errorf("目录响应缺失文件列表")
+	}
+	var page []FileInfo
+	if err = json.Unmarshal(result.List, &page); err != nil {
+		return nil, err
+	}
+	return page, nil
+}
+
+// GetFileInfo fetches current cloud metadata for a file ID.
+func (c *Client) GetFileInfo(fsid int64) (FileInfo, error) {
+	params := url.Values{}
+	params.Set("method", "filemetas")
+	params.Set("access_token", c.AccessToken)
+	params.Set("fsids", fmt.Sprintf("[%d]", fsid))
+	params.Set("dlink", "0")
+	resp, err := c.get("https://pan.baidu.com/rest/2.0/xpan/multimedia?" + params.Encode())
+	if err != nil {
+		return FileInfo{}, fmt.Errorf("获取文件元数据请求失败: %w", requestError(err))
 	}
 	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	fmt.Printf("[BaiduAPI] 列目录响应: %s\n", string(body))
-	var result ListResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("解析列目录响应失败: %w, body=%s", err, string(body))
+	const responseLimit = 16 * 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
+	if err != nil {
+		return FileInfo{}, err
 	}
-
-	if result.Errno != 0 {
-		return nil, fmt.Errorf("列目录失败 errno=%d, body=%s", result.Errno, string(body))
+	if resp.StatusCode != http.StatusOK {
+		return FileInfo{}, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode}
 	}
-
-	return result.List, nil
+	if len(body) > responseLimit {
+		return FileInfo{}, fmt.Errorf("文件元数据响应超过大小限制")
+	}
+	var result struct {
+		Errno     *int       `json:"errno"`
+		ErrorCode int        `json:"error_code"`
+		List      []FileInfo `json:"list"`
+	}
+	if err = json.Unmarshal(body, &result); err != nil {
+		return FileInfo{}, fmt.Errorf("解析文件元数据失败: %w", err)
+	}
+	if result.ErrorCode != 0 {
+		return FileInfo{}, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.ErrorCode}
+	}
+	if result.Errno == nil {
+		return FileInfo{}, fmt.Errorf("文件元数据响应缺失 errno")
+	}
+	if *result.Errno != 0 {
+		return FileInfo{}, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
+	}
+	if len(result.List) != 1 || result.List[0].FsID != fsid {
+		return FileInfo{}, ErrFileMetadataMissing
+	}
+	return result.List[0], nil
 }
 
 // GetDownloadLink 获取文件下载链接
@@ -87,14 +292,24 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 
 	fullURL := apiURL + "?" + params.Encode()
 	fmt.Printf("[BaiduAPI] 获取下载链接请求(multimedia): fsid=%d\n", fsid)
-	resp, err := http.Get(fullURL)
+	resp, err := c.get(fullURL)
 	if err != nil {
-		return "", fmt.Errorf("获取下载链接请求失败: %w", err)
+		return "", fmt.Errorf("获取下载链接请求失败: %w", requestError(err))
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode}
+	}
 
-	body, _ := io.ReadAll(resp.Body)
-	fmt.Printf("[BaiduAPI] 获取下载链接响应: %s\n", string(body))
+	const responseLimit = 1024 * 1024
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
+	if readErr != nil {
+		return "", readErr
+	}
+	if len(body) > responseLimit {
+		return "", fmt.Errorf("下载链接响应超过大小限制")
+	}
+	// Temporary download URLs must not be written into logs.
 
 	var result struct {
 		Errno     int    `json:"errno"`
@@ -106,20 +321,20 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("解析下载链接响应失败: %w, body=%s", err, string(body))
+		return "", fmt.Errorf("解析下载链接响应失败: %w", err)
 	}
 
 	// 检查错误
 	if result.ErrorCode != 0 {
-		return "", fmt.Errorf("获取下载链接失败 error_code=%d, error_msg=%s", result.ErrorCode, result.ErrorMsg)
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.ErrorCode}
 	}
 
 	if result.Errno != 0 {
-		return "", fmt.Errorf("获取下载链接失败 errno=%d", result.Errno)
+		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.Errno, businessErrno: true}
 	}
 
 	if len(result.List) == 0 || result.List[0].Dlink == "" {
-		return "", fmt.Errorf("下载链接为空, body=%s", string(body))
+		return "", fmt.Errorf("下载链接为空")
 	}
 
 	return result.List[0].Dlink, nil
@@ -127,64 +342,50 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 
 // DownloadFile 下载文件内容
 func (c *Client) DownloadFile(dlink string) (io.ReadCloser, int64, error) {
-	// 在 dlink 中添加 access_token 参数
-	if !strings.Contains(dlink, "access_token=") {
-		separator := "&"
-		if !strings.Contains(dlink, "?") {
-			separator = "?"
-		}
-		dlink = dlink + separator + "access_token=" + c.AccessToken
-	}
-
-	// 创建支持跳转的客户端
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// 允许跳转，但保持必要的头部
-			req.Header.Set("User-Agent", "pan.baidu.com")
-			return nil
-		},
-	}
-
-	req, err := http.NewRequest("GET", dlink, nil)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// 设置必要的请求头（根据百度官方文档要求）
-	req.Header.Set("User-Agent", "pan.baidu.com")
-	req.Header.Set("Host", "d.pcs.baidu.com")
-
-	fmt.Printf("[BaiduAPI] 开始下载文件（已添加 access_token）\n")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, 0, fmt.Errorf("下载文件请求失败: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		// 读取错误响应体
-		body, _ := io.ReadAll(resp.Body)
-		return nil, 0, fmt.Errorf("下载文件失败 status=%d, body=%s", resp.StatusCode, string(body))
-	}
-
-	fmt.Printf("[BaiduAPI] 下载响应成功，Content-Length=%d\n", resp.ContentLength)
-	return resp.Body, resp.ContentLength, nil
+	return c.DownloadFileWithRange(dlink, 0)
 }
 
 // DownloadFileWithRange 支持断点续传的下载文件内容
 func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.ReadCloser, int64, error) {
-	// 在 dlink 中添加 access_token 参数
-	if !strings.Contains(dlink, "access_token=") {
-		separator := "&"
-		if !strings.Contains(dlink, "?") {
-			separator = "?"
-		}
-		dlink = dlink + separator + "access_token=" + c.AccessToken
+	if startOffset < 0 {
+		return nil, 0, fmt.Errorf("invalid negative offset")
 	}
+	ctx, cancel := context.WithCancelCause(c.context())
+	timeout := c.idleTimeout
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	timer := time.AfterFunc(timeout, func() { cancel(errDownloadIdleTimeout) })
+	accepted := false
+	defer func() {
+		if !accepted {
+			timer.Stop()
+			cancel(nil)
+		}
+	}()
+	// The local HTTP regression found that substring checks confuse paths and
+	// similarly named parameters with the credential; raw concatenation also
+	// puts it after fragments and changes tokens containing query delimiters.
+	link, err := url.Parse(dlink)
+	if err != nil {
+		return nil, 0, requestError(err)
+	}
+	if _, present := link.Query()["access_token"]; !present {
+		if link.RawQuery != "" {
+			link.RawQuery += "&"
+		}
+		// Append only the new parameter: re-encoding the existing query can
+		// change provider signatures or its spelling of percent escapes.
+		link.RawQuery += url.Values{"access_token": {c.AccessToken}}.Encode()
+	}
+	dlink = link.String()
 
 	// 创建支持跳转的客户端
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
 			// 允许跳转，但保持必要的头部
 			req.Header.Set("User-Agent", "pan.baidu.com")
 			if startOffset > 0 {
@@ -194,9 +395,9 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 		},
 	}
 
-	req, err := http.NewRequest("GET", dlink, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", dlink, nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, requestError(err)
 	}
 
 	// 设置 Range 头部支持断点续传
@@ -211,110 +412,49 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 	fmt.Printf("[BaiduAPI] 开始下载文件（支持断点续传，偏移量: %d）\n", startOffset)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("下载文件请求失败: %w", err)
+		if context.Cause(ctx) == errDownloadIdleTimeout {
+			return nil, 0, errDownloadIdleTimeout
+		}
+		return nil, 0, fmt.Errorf("下载文件请求失败: %w", requestError(err))
 	}
+	resp.Body = &idleBody{ReadCloser: resp.Body, ctx: ctx, cancel: cancel, timer: timer, timeout: timeout}
+	accepted = true
 
 	// 检查响应状态码
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+	if startOffset > 0 && resp.StatusCode == http.StatusOK {
 		resp.Body.Close()
-		// 读取错误响应体
-		body, _ := io.ReadAll(resp.Body)
-		return nil, 0, fmt.Errorf("下载文件失败 status=%d, body=%s", resp.StatusCode, string(body))
+		return nil, 0, ErrRangeIgnored
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		_ = body
+		return nil, 0, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "download", Status: resp.StatusCode}
+	}
+	// 接受 206 前验证完整后缀，不能仅根据状态码追加，否则会损坏本地文件。
+	if resp.StatusCode == http.StatusPartialContent {
+		var start, end, total int64
+		value := resp.Header.Get("Content-Range")
+		n, parseErr := fmt.Sscanf(value, "bytes %d-%d/%d", &start, &end, &total)
+		if parseErr != nil || n != 3 || value != fmt.Sprintf("bytes %d-%d/%d", start, end, total) ||
+			start != startOffset || end < start || total <= end || end != total-1 ||
+			(resp.ContentLength >= 0 && resp.ContentLength != end-start+1) {
+			resp.Body.Close()
+			return nil, 0, fmt.Errorf("invalid Content-Range %q for offset %d", value, startOffset)
+		}
+		return resp.Body, total - start, nil
 	}
 
 	fmt.Printf("[BaiduAPI] 下载响应成功，Content-Length=%d, StatusCode=%d\n", resp.ContentLength, resp.StatusCode)
 	return resp.Body, resp.ContentLength, nil
 }
 
-// RenameFile 重命名文件
+// RenameFile requests a strictly confirmed synchronous rename.
 func (c *Client) RenameFile(path, newName string) error {
-	apiURL := "https://pan.baidu.com/rest/2.0/xpan/file"
-	params := url.Values{}
-	params.Set("method", "filemanager")
-	params.Set("access_token", c.AccessToken)
-	params.Set("opera", "rename")
-
-	opList := []map[string]string{
-		{
-			"path":    path,
-			"newname": newName,
-		},
-	}
-	opListJSON, _ := json.Marshal(opList)
-
-	data := url.Values{}
-	data.Set("async", "0")
-	data.Set("filelist", string(opListJSON))
-
-	req, err := http.NewRequest("POST", apiURL+"?"+params.Encode(), strings.NewReader(data.Encode()))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("重命名请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Errno int `json:"errno"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("解析重命名响应失败: %w, body=%s", err, string(body))
-	}
-
-	if result.Errno != 0 {
-		return fmt.Errorf("重命名失败 errno=%d, body=%s", result.Errno, string(body))
-	}
-
-	return nil
+	return c.sourceOperation("rename", map[string]string{"path": path, "newname": newName})
 }
 
-// DeleteFile 删除单个文件或空目录
+// DeleteFile requests a strictly confirmed synchronous delete.
 func (c *Client) DeleteFile(path string) error {
-	apiURL := "https://pan.baidu.com/rest/2.0/xpan/file"
-	params := url.Values{}
-	params.Set("method", "filemanager")
-	params.Set("access_token", c.AccessToken)
-	params.Set("opera", "delete")
-
-	opList := []map[string]string{
-		{
-			"path": path,
-		},
-	}
-	opListJSON, _ := json.Marshal(opList)
-
-	data := url.Values{}
-	data.Set("async", "0")
-	data.Set("filelist", string(opListJSON))
-
-	req, err := http.NewRequest("POST", apiURL+"?"+params.Encode(), strings.NewReader(data.Encode()))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("删除请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Errno int `json:"errno"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("解析删除响应失败: %w, body=%s", err, string(body))
-	}
-
-	if result.Errno != 0 {
-		return fmt.Errorf("删除失败 errno=%d, body=%s", result.Errno, string(body))
-	}
-
-	return nil
+	return c.sourceOperation("delete", map[string]string{"path": path})
 }

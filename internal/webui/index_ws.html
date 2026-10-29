@@ -12,17 +12,23 @@
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
             <h1>📦 百度网盘 NAS 自动下载监控（WebSocket 实时版）</h1>
             <div id="auth-status" style="font-size: 14px;">
-                <span id="token-status">Token状态: <span id="token-status-text">检查中...</span></span>
+                <span id="token-status">账号状态: <span id="token-status-text">检查中...</span></span>
                 <a href="/oauth" target="_blank" style="margin-left: 10px; color: #667eea; text-decoration: none;">🔑 OAuth管理</a>
+                <a href="/intake" style="margin-left: 10px; color: #667eea; text-decoration: none;">添加网盘项目</a>
+                <a href="/cloud" style="margin-left: 10px; color: #667eea; text-decoration: none;">网盘管理</a>
+                <button type="button" onclick="logoutAdmin()">退出登录</button>
             </div>
         </div>
         <p style="color:#666;margin-top:10px;">实时监控下载队列状态</p>
         <div class="ws-status" id="ws-status">WebSocket 状态：<span>连接中...</span></div>
         <div class="link-poll">如果 WebSocket 不可用，可尝试 <a href="/poll" target="_blank">兼容模式（轮询版）</a></div>
+        <button type="button" id="scan-button" onclick="triggerScan()">立即扫描网盘队列</button>
+        <p id="task-feedback" class="task-feedback" role="status" aria-live="polite"></p>
         <div class="settings">
             <strong>下载后处理策略：</strong>
             <label><input type="radio" name="mode" value="keep" checked> 保留网盘文件并标记为 .可删除</label>
             <label><input type="radio" name="mode" value="delete"> 下载完成后删除网盘文件</label>
+            <p>设置会保存，只影响以后新加入的根任务；已排队任务保持原策略。</p>
         </div>
         <div style="margin: 8px 0;">
             <span style="font-size: 13px; color: #666; margin-right: 10px;">排序:</span>
@@ -43,6 +49,11 @@
         <div class="tasks-header">
             <h2>📋 下载任务列表</h2>
         </div>
+        <div class="task-pagination" style="display:flex;gap:12px;align-items:center;justify-content:center;padding:10px;">
+            <button type="button" id="tasks-prev">上一页</button>
+            <span id="tasks-page">第 1 页</span>
+            <button type="button" id="tasks-next">下一页</button>
+        </div>
         <div id="tasks-list" class="empty-state">正在等待任务...</div>
     </div>
 </div>
@@ -52,11 +63,46 @@
     let currentMode = 'keep';
     // 添加全局变量存储排序方式，默认为文件名排序
     let currentSort = 'name';
+    const taskPageSize = 100;
+    let taskOffset = 0;
+    let taskHasMore = false;
+    let taskNextOffset = null;
+
+    function requestTaskPage() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({type:'status_page', offset:taskOffset, limit:taskPageSize, sort_by:currentSort}));
+    }
+
+    function refreshCurrentPage() {
+        const query = new URLSearchParams({offset:String(taskOffset), limit:String(taskPageSize), sort_by:currentSort});
+        return fetch('/api/status?' + query.toString()).then(response => {
+            if (!response.ok) throw new Error('获取任务状态失败');
+            return response.json();
+        }).then(renderTasks);
+    }
+
+    function updateTaskPageControls(data) {
+        const page = Math.floor((data.offset || 0) / (data.limit || taskPageSize)) + 1;
+        document.getElementById('tasks-page').textContent = `第 ${page} 页 · 共 ${data.total_tasks ?? (data.tasks || []).length} 项`;
+        document.getElementById('tasks-prev').disabled = (data.offset || 0) === 0;
+        document.getElementById('tasks-next').disabled = !data.has_more;
+        taskHasMore = data.has_more === true;
+        taskNextOffset = data.next_offset;
+    }
+
+    function changeTaskPage(direction) {
+        if (direction < 0) taskOffset = Math.max(0, taskOffset - taskPageSize);
+        else if (taskHasMore && Number.isInteger(taskNextOffset)) taskOffset = taskNextOffset;
+        else return;
+        requestTaskPage();
+    }
     
     // 添加改变排序方式的函数
     function changeSort() {
         const select = document.getElementById('sort-select');
         currentSort = select.value;
+        taskOffset = 0;
+        requestTaskPage();
     }
 
     // 检查 Token 状态
@@ -65,9 +111,9 @@
             const response = await fetch('/api/health');
             if (response.ok) {
                 const data = await response.json();
-                // 如果 health 接口能正常返回，说明服务正常运行
-                document.getElementById('token-status-text').textContent = '已连接';
-                document.getElementById('token-status-text').style.color = '#0f5132';
+                // HTTP connectivity and Baidu account readiness are distinct.
+                document.getElementById('token-status-text').textContent = credentialStatusText(data.authentication);
+                document.getElementById('token-status-text').style.color = data.authentication?.ready ? '#0f5132' : '#842029';
             } else {
                 document.getElementById('token-status-text').textContent = '连接异常';
                 document.getElementById('token-status-text').style.color = '#842029';
@@ -80,14 +126,15 @@
 
     function renderTasks(data) {
         const tasks = data.tasks || [];
+        // The server selects a globally sorted page before sending it.
+        const sortedTasks = tasks;
         
-        // 对任务进行排序
-        const sortedTasks = sortTasks(tasks, currentSort);
-        
-        document.getElementById('total-tasks').textContent = sortedTasks.length;
-        document.getElementById('downloading-tasks').textContent = sortedTasks.filter(t=>t.status==='downloading').length;
-        document.getElementById('done-tasks').textContent = sortedTasks.filter(t=>t.status==='done').length;
-        document.getElementById('failed-tasks').textContent = sortedTasks.filter(t=>t.status==='failed').length;
+        const counts = data.status_counts || {};
+        document.getElementById('total-tasks').textContent = data.total_tasks ?? sortedTasks.length;
+        document.getElementById('downloading-tasks').textContent = counts.downloading ?? sortedTasks.filter(t=>t.status==='downloading').length;
+        document.getElementById('done-tasks').textContent = counts.done ?? sortedTasks.filter(t=>t.status==='done').length;
+        document.getElementById('failed-tasks').textContent = counts.failed ?? sortedTasks.filter(t=>t.status==='failed').length;
+        updateTaskPageControls(data);
 
         const list = document.getElementById('tasks-list');
         if (sortedTasks.length === 0) {
@@ -98,8 +145,8 @@
             const progress = t.size > 0 ? (t.progress / t.size * 100) : 0;
             const progressText = `${formatBytes(t.progress)} / ${formatBytes(t.size)}`;
             return `
-<div class="task-item ${t.status}">
-  <div class="task-name">${getStatusBadge(t.status)} ${t.path || t.server_filename}</div>
+<div class="task-item ${escapeHTML(t.status)}">
+  <div class="task-name">${getStatusBadge(t.status)} ${escapeHTML(t.path || t.server_filename)}</div>
   ${t.status === 'downloading' ? `
   <div class="progress-bar"><div class="progress-fill" style="width:${progress.toFixed(1)}%"></div></div>
   <div style="font-size:13px;color:#666;margin-top:5px;">${progressText} (${progress.toFixed(1)}%)${t.speed ? ` @ ${formatSpeed(t.speed)}` : ''}</div>
@@ -108,9 +155,11 @@
     <div class="task-info-item"><strong>文件大小:</strong> ${formatBytes(t.size)}</div>
     <div class="task-info-item"><strong>开始时间:</strong> ${formatTime(t.start_time)}</div>
     ${t.finish_time ? `<div class="task-info-item"><strong>完成时间:</strong> ${formatTime(t.finish_time)}</div>` : ''}
-    ${t.local_path ? `<div class="task-info-item" style="grid-column:1/-1;"><strong>本地路径:</strong> ${t.local_path}</div>` : ''}
+    ${t.local_path ? `<div class="task-info-item" style="grid-column:1/-1;"><strong>本地路径:</strong> ${escapeHTML(t.local_path)}</div>` : ''}
   </div>
-  ${t.error ? `<div class="error-msg">❌ ${t.error}</div>` : ''}
+  ${t.error ? `<div class="error-msg">❌ ${escapeHTML(t.error)}</div>` : ''}
+  ${taskControls(t)}
+  ${taskEventsControl(t)}
 </div>`;
         }).join('');
     }
@@ -136,6 +185,7 @@
             statusEl.style.color = '#0f5132';
             // WebSocket 连接成功后检查 Token 状态
             checkTokenStatus();
+            requestTaskPage();
         };
         ws.onclose = () => {
             statusEl.textContent = '已断开，3秒后重连...';
@@ -164,6 +214,11 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        bindTaskControls(async () => {
+            await refreshCurrentPage();
+        });
+        document.getElementById('tasks-prev').addEventListener('click', () => changeTaskPage(-1));
+        document.getElementById('tasks-next').addEventListener('click', () => changeTaskPage(1));
         connectWS();
         document.querySelectorAll('input[name="mode"]').forEach(r => {
             r.addEventListener('change', () => {
@@ -174,6 +229,7 @@
             });
         });
     });
+    setInterval(checkTokenStatus, 5000);
 </script>
 </body>
 </html>

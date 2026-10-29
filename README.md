@@ -1,5 +1,7 @@
 # 百度网盘 NAS 一键下载系统
 
+> 持续优化分支已提供可靠性预览版的构建与测试说明：[独立版本测试](release/TESTING.md)、[设计](docs/ai/reliability-design.md)、[进度](docs/ai/progress.md)。持久化队列、网页授权应用/保存/续期、管理员表单登录和管理页入队已实现；油猴提供选中路径衔接，需真实页面适配验收。真实百度/NAS 验收仍待进行，以进度文档与当前代码为准。原生宿主程序默认仅监听 `127.0.0.1`；容器内监听 `0.0.0.0`，示例只将端口发布到宿主回环。管理员用户名为 `admin`，密码来自 `ADMIN_PASSWORD` 或下载目录 `.nas-downloader/queue/admin-key.json`；网页使用登录表单，CLI 使用 Bearer。可不带百度应用凭证启动，再在网页首次配置并授权。
+
 ## 项目简介
 
 百度网盘 NAS 一键下载系统是一个自动化文件下载解决方案，专为 NAS 用户设计。通过油猴脚本和 Go 服务端的协同工作，实现从百度网盘到本地 NAS 的自动文件传输。
@@ -7,7 +9,7 @@
 ## 核心功能
 
 ### 🔄 双端协同自动化
-- **油猴脚本端**：在百度网盘网页端操作，将选中的文件/文件夹移动到指定协同目录
+- **油猴脚本端**：读取百度网页明确选中的路径，交给管理页登录、核对和预检；确认后由服务端移动到固定队列
 - **Go 服务端**：监控协同目录，自动下载文件到本地 NAS 存储
 
 ### ⚡ 断点续传与速度展示
@@ -81,31 +83,32 @@
 ## 部署指南
 
 ### 环境准备
-1. 获取百度网盘 API App Key 和 Secret Key（可选，用于 OAuth）
-2. 配置环境变量：
+1. 在[百度网盘开发者平台](https://yun.baidu.com/union)创建应用，复制 AppID、AppKey、SecretKey、SignKey。
+2. 可将四项配置写入项目 `.env`，也可启动后在 `/oauth` 页首次填写：
    ```
+   BAIDU_APP_ID=your_app_id
    BAIDU_APP_KEY=your_app_key
    BAIDU_SECRET_KEY=your_secret_key
-   QUEUE_DIR=/NAS_Download_Queue
-   LOCAL_DOWN_DIR=/下载
-   SCAN_INTERVAL=30
-   SERVER_PORT=8080
+   BAIDU_SIGN_KEY=your_sign_key
    ```
+   对四项应用凭证，非空进程环境变量优先于 `.env`；四项最终值都为空时，程序回退到下载目录 `.nas-downloader/queue/baidu-app.json`。四项须成组提供，部分设置会报错。网页首次保存到私有 sidecar 并立即生效，刷新后仅显示掩码，之后网页不再允许修改。该 sidecar 与 OAuth 用户 Token、任务和事件数据库分开；改配置时请停止服务并按需编辑 `.env` 或删除 sidecar。扫描间隔、下载目录等其余运行配置仍通过进程环境变量或 Docker Compose `.env` 传入。
+
+   本工具使用 OAuth 设备码流程，不需要 OAuth 回调页地址。若百度控制台针对所选应用类型强制要求回调地址，请先核对应用类型；当前工具没有授权码回调处理端点，不能用普通管理页地址代替。宿主程序默认只监听 `127.0.0.1`，管理员密码可通过 `ADMIN_PASSWORD` 设置，否则首次启动会生成随机密码并写入下载目录的私有状态文件。浏览器会话不自动过期，点击“退出登录”撤销当前会话；若设备丢失，可停服后运行 `baidu-nas-downloader -revoke-admin-sessions` 撤销全部网页会话。通过 HTTPS 反向代理时配置 `PUBLIC_ORIGIN`。
 
 ### Access Token 获取方式
 
 #### 方式一：通过网页 OAuth（推荐）
 1. 启动服务后访问 `http://localhost:8080/oauth`
-2. 点击"获取授权码"
-3. 扫描二维码或点击链接进行授权
-4. 授权完成后点击"获取 Token"
-5. 系统会自动使用获取的 Token
+2. 使用管理员账号登录，点击“获取授权码”
+3. 在百度授权页面输入用户码，或扫描二维码并授权
+4. 返回管理页，点击“已完成百度授权，开始验证”
+5. 验证成功后凭证会安全保存并应用于后台任务；页面不显示完整 Token
 
 #### 方式二：命令行工具
 项目提供了一个便捷的命令行工具用于获取百度网盘的 Access Token：
 
 ```bash
-# 进入 get_token 目录
+# 进入命令行工具目录
 cd cmd/get_token
 
 # 设置必要的环境变量
@@ -113,13 +116,13 @@ export BAIDU_APP_KEY=your_app_key
 export BAIDU_SECRET_KEY=your_secret_key
 
 # 编译工具
-go build -o get_token main.go
+go build -o get_token .
 
 # 运行工具获取 Token
 ./get_token
 ```
 
-运行后，工具会显示授权链接和二维码，您需要：
+命令行工具会显示授权链接和二维码，并在完成后输出 Token。命令行输出不会自动保存到服务端凭证文件；需谨慎保管，生产使用优先选择网页授权。授权步骤：
 1. 在浏览器中打开链接或扫描二维码
 2. 登录百度账号并授权
 3. 工具会自动获取并显示 Access Token 和 Refresh Token
@@ -129,115 +132,55 @@ go build -o get_token main.go
 #### 使用 Docker 命令直接运行
 ```bash
 # 构建镜像
-docker build -t baidu-nas-downloader .
+docker build \
+  --build-arg BUILD_VERSION="$(git describe --tags --always 2>/dev/null || echo dev)" \
+  --build-arg BUILD_REVISION="$(git rev-parse HEAD)" \
+  -t baidu-nas-downloader .
 
 # 运行容器
 docker run -d \
   --name baidu-nas-downloader \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -e BAIDU_APP_ID=your_app_id \
   -e BAIDU_APP_KEY=your_app_key \
   -e BAIDU_SECRET_KEY=your_secret_key \
+  -e BAIDU_SIGN_KEY=your_sign_key \
+  -e ADMIN_PASSWORD=replace_with_a_password_of_at_least_16_bytes \
   -v $(pwd)/downloads:/下载 \
-  -v $(pwd)/queue:/NAS_Download_Queue \
   baidu-nas-downloader
 ```
+
+容器内监听 `0.0.0.0:8080` 以接收 Docker 端口转发；示例只发布到宿主机回环地址。远程访问请使用 SSH 转发或按 HTTPS 反向代理章节配置，不要把未受保护的管理端口直接发布到公网。
 
 #### 使用 Docker Compose（推荐）
 项目提供了 `docker-compose.yml` 文件，可以更方便地部署：
 
 ```bash
-# 设置环境变量
-export BAIDU_APP_KEY=your_app_key
-export BAIDU_SECRET_KEY=your_secret_key
+# 复制并编辑 Compose 配置；QUEUE_DIR 是百度网盘远端目录，HOST_PORT 是宿主机端口。
+cp .env.example .env
+# 源码构建时写入版本和 revision；不设置时显示 dev/unknown。
+export BUILD_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
+export BUILD_REVISION=$(git rev-parse HEAD)
+
+# 构建时将版本与源码 revision 写入镜像；以后启动不需要重新构建
+docker compose build
 
 # 启动服务
-docker-compose up -d
+docker compose up -d
 ```
 
 ### Kubernetes 部署
 
-#### 创建 Deployment 和 Service
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: baidu-nas-downloader
-  labels:
-    app: baidu-nas-downloader
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: baidu-nas-downloader
-  template:
-    metadata:
-      labels:
-        app: baidu-nas-downloader
-    spec:
-      containers:
-      - name: baidu-nas-downloader
-        image: your-registry/baidu-nas-downloader:latest
-        ports:
-        - containerPort: 8080
-        env:
-        - name: BAIDU_APP_KEY
-          valueFrom:
-            secretKeyRef:
-              name: baidu-secrets
-              key: app-key
-        - name: BAIDU_SECRET_KEY
-          valueFrom:
-            secretKeyRef:
-              name: baidu-secrets
-              key: secret-key
-        volumeMounts:
-        - name: downloads-volume
-          mountPath: /下载
-        - name: queue-volume
-          mountPath: /NAS_Download_Queue
-      volumes:
-      - name: downloads-volume
-        persistentVolumeClaim:
-          claimName: downloads-pvc
-      - name: queue-volume
-        persistentVolumeClaim:
-          claimName: queue-pvc
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: baidu-nas-downloader
-spec:
-  selector:
-    app: baidu-nas-downloader
-  ports:
-    - protocol: TCP
-      port: 8080
-      targetPort: 8080
-  type: LoadBalancer
-```
-
-#### 创建 Secrets
-```bash
-kubectl create secret generic baidu-secrets \
-  --from-literal=app-key=your_app_key \
-  --from-literal=secret-key=your_secret_key
-```
-
-#### 应用配置
-```bash
-kubectl apply -f deployment.yaml
-```
+项目目前没有维护 Kubernetes manifest、持久卷权限迁移或集群网络验证。旧版示例使用公网 `LoadBalancer`，还把百度网盘远端队列路径误当成本地容器卷，不应继续照此部署。当前经过验证的容器方式见上方 Docker Compose；Kubernetes 部署需要按集群自行配置持久化下载目录、单实例写入和仅内网/受控代理访问。
 
 ## 使用流程
 
-1. 在百度网盘网页端安装油猴脚本
-2. 选中需要下载的文件/文件夹
-3. 点击油猴脚本按钮，文件将被移动到协同目录
-4. 如果尚未配置 Access Token，通过网页 OAuth 或命令行工具获取
-5. Go 服务端自动检测并开始下载
-6. 通过 Web 界面实时监控下载进度
+1. 在百度网盘网页端安装油猴脚本并明确选中文件或文件夹
+2. 从脚本打开管理页，登录管理员账号；也可直接在管理页浏览选择云端项目
+3. 核对百度授权账号、源路径、固定队列目标和下载后处理策略；需要授权时先完成网页设备授权
+4. 预检并明确确认后，服务端才会把项目移动到下载队列
+5. 后台扫描并下载；默认 keep 会在完成后将队列顶层项目改名为 `.可删除`，delete 模式会删除顶层项目
+6. 通过管理页面查看进度、失败和需要人工核对的状态
 
 ## 项目结构
 

@@ -11,7 +11,9 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o baidu-downloader .
+ARG BUILD_VERSION=dev
+ARG BUILD_REVISION=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags "-X main.version=${BUILD_VERSION} -X main.revision=${BUILD_REVISION}" -o baidu-downloader .
 
 
 
@@ -22,7 +24,7 @@ FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/alpine:latest
 # 安装 ca-certificates 以支持 HTTPS 请求
 RUN apk --no-cache add ca-certificates
 # 创建工作目录
-WORKDIR /root/
+WORKDIR /app
 # 从构建阶段复制二进制文件
 COPY --from=builder /app/baidu-downloader .
 # 创建必要的目录
@@ -34,9 +36,10 @@ ENV BAIDU_ACCESS_TOKEN=""
 ENV BAIDU_APP_KEY=""
 ENV BAIDU_SECRET_KEY=""
 ENV QUEUE_DIR="/NAS_Download_Queue"
-ENV LOCAL_DOWN_DIR="/下载"
+ENV LOCAL_DOWNLOAD_DIR="/下载"
+ENV SERVER_HOST="0.0.0.0"
 ENV SCAN_INTERVAL="30"
 ENV SERVER_PORT="8080"
 
 # 启动应用
-CMD ["./baidu-downloader"]
+CMD ["/app/baidu-downloader"]

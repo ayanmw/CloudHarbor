@@ -20,8 +20,11 @@
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
             <h1>百度网盘 NAS 下载监控（轮询兼容版）</h1>
             <div style="font-size: 14px;">
-                <span id="token-status">Token状态: <span id="token-status-text">检查中...</span></span>
+                <span id="token-status">账号状态: <span id="token-status-text">检查中...</span></span>
                 <a href="/oauth" target="_blank" style="margin-left: 10px; color: #667eea; text-decoration: none;">🔑 OAuth管理</a>
+                <a href="/intake" style="margin-left: 10px; color: #667eea; text-decoration: none;">添加网盘项目</a>
+                <a href="/cloud" style="margin-left: 10px; color: #667eea; text-decoration: none;">网盘管理</a>
+                <button type="button" onclick="logoutAdmin()">退出登录</button>
             </div>
         </div>
         <p style="font-size:13px;color:#666;">每 2 秒请求一次 /api/status 接口获取任务列表。</p>
@@ -34,8 +37,15 @@
             </select>
         </div>
         <p style="font-size:13px;color:#666;">主站点（WebSocket 实时版）：<a href="/" target="_blank">/</a></p>
+        <button type="button" id="scan-button" onclick="triggerScan()">立即扫描网盘队列</button>
+        <p id="task-feedback" class="task-feedback" role="status" aria-live="polite"></p>
     </div>
     <div class="tasks-container">
+        <div class="task-pagination" style="display:flex;gap:12px;align-items:center;justify-content:center;padding:10px;">
+            <button type="button" id="tasks-prev">上一页</button>
+            <span id="tasks-page">第 1 页</span>
+            <button type="button" id="tasks-next">下一页</button>
+        </div>
         <div id="tasks-list" class="empty">正在加载...</div>
     </div>
 </div>
@@ -43,11 +53,33 @@
 <script>
     // 添加全局变量存储排序方式，默认为文件名排序
     let currentSort = 'name';
+    const taskPageSize = 100;
+    let taskOffset = 0;
+    let taskHasMore = false;
+    let taskNextOffset = null;
+
+    function updateTaskPageControls(data) {
+        const page = Math.floor((data.offset || 0) / (data.limit || taskPageSize)) + 1;
+        document.getElementById('tasks-page').textContent = `第 ${page} 页 · 共 ${data.total_tasks ?? (data.tasks || []).length} 项`;
+        document.getElementById('tasks-prev').disabled = (data.offset || 0) === 0;
+        document.getElementById('tasks-next').disabled = !data.has_more;
+        taskHasMore = data.has_more === true;
+        taskNextOffset = data.next_offset;
+    }
+
+    function changeTaskPage(direction) {
+        if (direction < 0) taskOffset = Math.max(0, taskOffset - taskPageSize);
+        else if (taskHasMore && Number.isInteger(taskNextOffset)) taskOffset = taskNextOffset;
+        else return;
+        fetchStatus();
+    }
     
     // 添加改变排序方式的函数
     function changeSort() {
         const select = document.getElementById('sort-select');
         currentSort = select.value;
+        taskOffset = 0;
+        fetchStatus();
     }
     
     // 检查 Token 状态
@@ -56,9 +88,9 @@
             const response = await fetch('/api/health');
             if (response.ok) {
                 const data = await response.json();
-                // 如果 health 接口能正常返回，说明服务正常运行
-                document.getElementById('token-status-text').textContent = '已连接';
-                document.getElementById('token-status-text').style.color = '#0f5132';
+                // HTTP connectivity and Baidu account readiness are distinct.
+                document.getElementById('token-status-text').textContent = credentialStatusText(data.authentication);
+                document.getElementById('token-status-text').style.color = data.authentication?.ready ? '#0f5132' : '#842029';
             } else {
                 document.getElementById('token-status-text').textContent = '连接异常';
                 document.getElementById('token-status-text').style.color = '#842029';
@@ -71,25 +103,30 @@
     
     async function fetchStatus() {
         try {
-            const res = await fetch('/api/status');
+            const query = new URLSearchParams({offset:String(taskOffset), limit:String(taskPageSize), sort_by:currentSort});
+            const res = await fetch('/api/status?' + query.toString());
+            if (!res.ok) throw new Error('获取任务状态失败');
             const data = await res.json();
             const tasks = data.tasks || [];
             
-            // 对任务进行排序
-            const sortedTasks = sortTasks(tasks, currentSort);
+            // The server selects a globally sorted page before sending it.
+            const sortedTasks = tasks;
+            updateTaskPageControls(data);
             
             const list = document.getElementById('tasks-list');
             if (sortedTasks.length===0){ list.innerHTML='<div class="empty">暂无任务</div>'; return; }
             list.innerHTML = sortedTasks.map(t=>`
-<div class="task-item ${t.status}">
-  <div class="task-name">${getStatusBadge(t.status)} ${t.path || t.server_filename}</div>
+<div class="task-item ${escapeHTML(t.status)}">
+  <div class="task-name">${getStatusBadge(t.status)} ${escapeHTML(t.path || t.server_filename)}</div>
   <div class="task-info">
     <div>大小：${formatBytes(t.size)}</div>
     <div>开始：${formatTime(t.start_time)}${t.finish_time?`， 完成：${formatTime(t.finish_time)}`:''}</div>
     ${t.speed && t.status === 'downloading' ? `<div>速度：${formatSpeed(t.speed)}</div>` : ''}
-    ${t.local_path?`<div>本地：${t.local_path}</div>`:''}
-    ${t.error?`<div style="color:#f5576c;">错误：${t.error}</div>`:''}
+    ${t.local_path?`<div>本地：${escapeHTML(t.local_path)}</div>`:''}
+    ${t.error?`<div style="color:#f5576c;">错误：${escapeHTML(t.error)}</div>`:''}
+    ${taskControls(t)}
   </div>
+  ${taskEventsControl(t)}
 </div>`).join('');
         } catch (e) {
             document.getElementById('tasks-list').innerHTML = '<div class="empty" style="color:#f5576c;">获取状态失败</div>';
@@ -98,8 +135,12 @@
     
     // 页面加载时检查 Token 状态
     checkTokenStatus();
+    bindTaskControls(fetchStatus);
+    document.getElementById('tasks-prev').addEventListener('click', () => changeTaskPage(-1));
+    document.getElementById('tasks-next').addEventListener('click', () => changeTaskPage(1));
     fetchStatus();
     setInterval(fetchStatus, 2000);
+    setInterval(checkTokenStatus, 5000);
 </script>
 </body>
 </html>

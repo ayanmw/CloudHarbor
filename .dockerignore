@@ -1,0 +1,10 @@
+# Keep local credentials, runtime state and outputs out of COPY . . layers.
+**/.git
+**/.env
+**/.env.*
+!.env.example
+**/.nas-downloader
+downloads
+bin
+**/*.exe
+**/*.log
