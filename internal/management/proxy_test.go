@@ -30,7 +30,7 @@ func TestConfiguredHTTPSOriginThroughHTTPProxy(t *testing.T) {
 		{"", 204},
 	} {
 		r := httptest.NewRequest("POST", "http://backend.internal:8080/api/scan", nil)
-		r.SetBasicAuth("admin", "private-preview-password")
+		r.Header.Set("Authorization", "Bearer private-preview-password")
 		r.Header.Set("Origin", tc.origin)
 		r.Header.Set("X-Forwarded-Proto", "https")
 		r.Header.Set("X-Forwarded-Host", "evil.example")
@@ -70,7 +70,7 @@ func TestPublicOriginCanonicalPort(t *testing.T) {
 			t.Fatal(err)
 		}
 		r := httptest.NewRequest("POST", "http://backend.internal/api/scan", nil)
-		r.SetBasicAuth("admin", "private-preview-password")
+		r.Header.Set("Authorization", "Bearer private-preview-password")
 		r.Header.Set("Origin", tc.browser)
 		w := httptest.NewRecorder()
 		gate.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })).ServeHTTP(w, r)

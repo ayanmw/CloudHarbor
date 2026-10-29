@@ -1,5 +1,173 @@
 # 持续优化进度
 
+## v0.8.30-preview.53（只读网盘错误诊断与真实账号续扫）
+
+- 修复只读目录列表、入队预检和重新核对共用“不要盲目重发移动”错误提示的问题。只读请求现在返回可安全重试的说明；百度 API 错误只展示 HTTP 状态与错误码，不回传任意网络错误文本。Move/Delete 结果未知时继续维持隔离，不自动重发。
+- `TestReadOnlyCloudFailuresShowSafeRetryableDiagnostics` 覆盖 `errno=-9` 诊断、只读可重试提示和模拟 `access_token` 错误文本不泄漏；intakeapi 全套及 WebUI 22 项、userscript 3 项通过。
+- 真实账号实测：根目录只读分页 50 项成功；HTTP 列目录与入队预检在目录错误时均显示 `HTTP=200`、百度错误码 `-9` 和可重试读取提示。扫描进度暂停时为 5,079 项/230 个待扫目录；迁移状态目录并重启 preview.53 后读回相同检查点，续扫 12 秒推进到 5,161 项/227 个目录。SQLite schema 15、integrity `ok`；下载任务数始终为 0。
+- 当前持久化自动监控目录 `/NAS_Download_Queue` 与此前指定的 `/NAS_Download_Queue_preview` 都返回百度错误码 `-9`。没有通过创建、移动或改名网盘内容绕过错误；目录路径问题仍需在管理页选择账号可列出的实际目录。
+- `go test ./...`、`go vet ./...`、WebUI/userscript 测试、Windows/Linux AMD64/Linux ARM64 构建通过。ZIP SHA-256：`FDD5BDD549EF36278DEA9B28396F01C71C94A9C1DE3E2268BD6E513B36862D70`；12 个发布载荷清单哈希与 ZIP 条目逐项匹配，Windows 二进制报告 preview.53。
+- 运行状态目录仅位于 preview.53；从 preview.52 移动的 8 个文件逐项 SHA-256 一致。扫描仍在运行，完整盘点、重复项扫描/清理、真实 CRUD、NAS/SMB 尚未验收。
+
+## v0.8.30-preview.52（后台扫描请求生命周期与首轮真实账号）
+
+- 全盘缓存和重复文件后台扫描从 HTTP 请求 context 改为由 Downloader 生命周期管理，防止收到 `202 Accepted` 后浏览器请求结束即取消 worker；加入请求 context 取消后的全盘扫描回归。
+- ZIP SHA-256：`03AB649C63A2E7584E5FC9177B5D804C9265A2C4A263CF6B5C6ED3F9C65C3BCA`。该版本首轮真实账号验证确认 OAuth 账号绑定、根目录分页及扫描持续运行；详细的跨进程续扫证据见 preview.53。
+
+## v0.8.30-preview.51（全盘库存页批量写入）
+
+- 对连续文件项改用最多 80 行的多值 SQLite upsert，单句最多 880 个绑定参数；目录项仍按原页序处理身份变更和旧路径子树裁剪。页内重复 `fs_id` 仍按原先顺序逐项写入，保留 last-write-wins。整个批次、目录状态、清理、扫描队列和 generation 共用原事务。
+- 回归覆盖 81 项拆批、重复 ID 顺序、目录状态路径重叠，以及第二批触发器失败时库存、已有 generation、持久化/内存扫描进度和队列整体回滚。taskstore 和全项目测试、`go vet` 通过；独立复审未发现阻塞问题。
+- Windows AMD64 成对合成 benchmark（7 轮，每轮 30 次）：批量写入中位数 4.86 ms、99,433 B、688 allocs；旧顺序路径中位数 9.87 ms、79,857 B、1,738 allocs。该样本显示中位时间约降 50.8%、分配数降 60.4%，但分配字节增 24.5% 且耗时波动；不外推到 NAS/SMB。
+- WebUI 22 项、userscript 3 项、全模块 Go 测试、vet、Windows/Linux AMD64/Linux ARM64 发布门禁通过；独立预览包全部载荷哈希匹配，ZIP 解压校验和 Windows 版本命令通过。ZIP SHA-256：`55646A0730C4A8844E6C22EB66FBADBED354C53B5707D51216FC4F7A9100E922`。
+- 按用户此前授权，更新 preview.51 文件到 `D:\projects\Git-Projects\nas_baidupan_auto_downloader-releases\v0.8.30-preview.24`；清单载荷哈希和目标程序版本已复核。目标目录其他文件保留。
+- 本地 synthetic benchmark 和 mock SQLite 不证明百度限流、真实网盘目录或 NAS/SMB 长扫描表现。
+
+## v0.8.30-preview.50（目录移动后的缓存身份修复）
+
+- 修复全盘清单刷新时目录 `fs_id` 移动后旧路径子树仍留在缓存、同路径新目录可能被旧目录清理逻辑误删的问题。目录路径身份变化会在同一 SQLite 页面事务中清理旧/目标子树并将目标目录标记为待扫描；旧目录按 `fs_id` 删除，避免误删本页新身份。
+- 新增移动、同路径替换及 SQLite 触发器注入失败回滚回归。taskstore 套件、WebUI 22 项、userscript 3 项、Go 全模块测试及 `go vet ./...` 通过。
+- 包内 SHA-256 清单所有载荷与 ZIP 解压文件匹配；Windows 程序报告 v0.8.30-preview.50。ZIP SHA-256：`9295672D0C3873EB15E1A87AC52987D9C69AA8809CCB76DB984D9A941F259B97`。
+- 按用户此前授权，将 preview.50 同名文件更新至 `D:\projects\Git-Projects\nas_baidupan_auto_downloader-releases\v0.8.30-preview.24`；清单载荷哈希全部匹配，目标 Windows 程序报告 preview.50。未删除目标目录中的其他文件。
+- 本修复验证来自本地 SQLite 合成数据；百度真实目录移动、NAS/SMB 行为和长时间扫描仍需用户环境验收。
+
+## v0.8.30-preview.49（持久化目录大小聚合缓存）
+
+- 网盘管理中的目录大小此前每次刷新都会按目录路径扫描全部后代文件与目录。本版增加账号级库存代次和 `(账号,路径)` SQLite 尺寸结果缓存：首次/失效后从本地全盘清单重算；同代次请求直接读缓存，服务重启后仍能命中。
+- 每个扫描页提交和显式远端缓存失效同事务推进代次；页面失败则连同版本推进一起回滚。当前使用账号级失效，任一库存变动会让此账号其余目录尺寸在下次查询时重算。返回云端观测时间与本地计算时间，网页分别显示。
+- SQLite v14→v15 迁移创建代次和目录尺寸缓存表，并测试现有目录数据保留及数据库版本已提交、manifest 未发布时的恢复。
+- Windows 本机 SQLite 合成 50,000 文件、三轮每轮 5 次：聚合并持久化 53.4–61.2 ms / 6,579–7,398 B / 169–171 allocs；缓存命中 0.172–0.196 ms / 2,824–3,924 B / 72–75 allocs。该对照不代表 NAS/SMB 性能。
+- WebUI 22 项、userscript 3 项、Go 全模块测试、vet、Windows/Linux AMD64/Linux ARM64 构建通过；12 项发行载荷及 ZIP 解压后哈希、Windows 版本检查通过。ZIP SHA-256：`0DE5DB5314B1887258016E8295C529F3693D6BC565E44126A18B8B8007401D84`。
+- 按用户此前授权，将 preview.49 文件更新到 `D:\projects\Git-Projects\nas_baidupan_auto_downloader-releases\v0.8.30-preview.24`；目标 12 项载荷哈希匹配，目标程序报告 preview.49。未删除目录里的其他文件。
+- 真实百度目录变更、NAS/SMB I/O 与长时间扫描尚未在用户环境验证。
+
+## v0.8.30-preview.48（重复文件预览复用 SQL 排序）
+
+- 已验证哈希预览结果本来按 `sha256,path,fs_id` 排序；移除 Go 对每组删除候选的二次排序，保留项仍是路径字典序最小项，删除列表顺序不变。
+- 乱序插入回归确认保留/删除次序；3,000 组、每组 3 个文件的基准显示分配字节约减少 6.7%、分配次数约减少 4.2%。墙钟时间波动，未宣称稳定提速。
+- WebUI 22 项、userscript 3 项、Go 全模块测试、vet、Windows/Linux AMD64/Linux ARM64 构建通过；12 项载荷 SHA-256 与 ZIP 解压文件哈希匹配，Windows 版本命令通过。ZIP SHA-256：`6F7D357C53DF0D47DCD66903D208868BAA6F13992F78E4CE03E60FA30F3F4E60`。
+- 按用户此前授权，将 preview.48 文件更新到 `D:\projects\Git-Projects\nas_baidupan_auto_downloader-releases\v0.8.30-preview.24`；目标目录 12 项载荷哈希与发行清单一致，目标程序报告 preview.48。未删除目录中的其他文件。
+- 真实百度网盘、NAS/SMB、浏览器实机和长时间限流/重启场景仍待用户环境验收。
+
+## v0.8.30-preview.47（扫描子目录队列插入复用语句）
+
+- 全盘扫描最终目录页原先对每个子目录分别执行 `tx.Exec`；现在每页准备一次 INSERT 语句并在事务内复用。仍逐项读取 `RowsAffected`，保持重复路径忽略、pending_count 准确和页面失败整体回滚。
+- 增加 101 子目录回归，覆盖队列顺序、重复路径不重复计数和失败事务回滚。SQLite 对照基准对比 100 个单条插入：重复准备约 34,698–34,822 B / 1,131 allocs，复用预编译语句约 33,378–33,406 B / 1,036 allocs；耗时均约 4.5–5.0 ms，不能据此宣称扫描墙钟时间提升。
+- WebUI 22 项、userscript 3 项、Go 全模块测试、vet、Windows/Linux AMD64/Linux ARM64 构建通过；12 项包内 SHA-256 和 ZIP 解压后哈希匹配，Windows 版本命令通过。ZIP SHA-256：`AE1BA97EB3F143B875D038441418F908F08456C0CDC45915BD254251C1EA4BA5`。
+- 按用户此前授权，更新发行文件到 `D:\projects\Git-Projects\nas_baidupan_auto_downloader-releases\v0.8.30-preview.24`；目标程序报告 preview.47，二进制哈希与发布目录一致。
+- 百度限流与 NAS/SMB 的长时间扫描耗时仍需真实环境测量。
+
+## v0.8.30-preview.46（减少目录大小刷新重复查询）
+
+- `CloudDirectorySize` 原本需要 5 条 SQL 分别读取目录状态、后代覆盖情况、文件大小/数量、子目录数量和观测时间。现在把目录状态、后代目录数、不完整目录数和最旧完整观测时间合并为一次索引范围聚合，文件统计单独保留，总查询降为 2 条。
+- 新增 SQLite 查询计划回归，要求元数据聚合按 `(account_fingerprint,path)` 有界索引范围读取。现有测试继续覆盖目录完整性、账号隔离、重启读回、时间和相邻路径前缀。
+- Windows 合成缓存包含 50,000 个子目录与 50,000 个文件。三轮每项 10 次的对照：旧查询约 71–77 ms、3,328–3,329 B、103 allocs；新查询约 52–53 ms、2,440–2,448 B、58 allocs。这是本机 SQLite 对照，不代表目标 NAS/SMB 性能。
+- WebUI 22 项、userscript 3 项、Go 全模块测试、vet、Windows/Linux AMD64/Linux ARM64 构建通过；12 项 payload SHA-256、ZIP 解压后文件哈希和 Windows 版本检查通过。ZIP SHA-256：`EB07E398FA4353FFC0662C336FA07B56B5433320E0FB60A90C64450879AE016E`。
+- 按用户此前授权，更新发行文件到 `D:\projects\Git-Projects\nas_baidupan_auto_downloader-releases\v0.8.30-preview.24`；目标程序报告 preview.46，二进制哈希与发布目录一致。未覆盖目录中的其他文件。
+- 目标 NAS/SMB 的目录大小刷新速度和实际百度数据一致性仍待用户实测；未进行真实百度删除/移动操作。
+
+## v0.8.30-preview.45（网盘管理与路径设置整合验证）
+
+- 汇总网页配置自动监控目录/本地下载目录及安全迁移、远端网盘 CRUD、全盘缓存与目录大小、重复内容和空目录清理的实施路线，见 [路线文档](cloud-management-roadmap.zh-CN.md)；详细设计与分项计划沿用现有 cloud-management-cache 文档。
+- WebUI 22 项、userscript 3 项、Go 全模块测试、vet、Windows/Linux AMD64/Linux ARM64 构建通过；12 项包内 SHA-256 清单逐项匹配，Windows 二进制版本检查通过。ZIP SHA-256：`2A79E3B604E9C3BFAF39B94898BE6E0F6ABA7FB20F9819550C5FCBC57945AB8D`。
+- 按用户此前授权，更新发行文件到 `D:\projects\Git-Projects\nas_baidupan_auto_downloader-releases\v0.8.30-preview.24`；目标 Windows 二进制复核显示 preview.45，且与发布目录二进制 SHA-256 一致。没有复制或修改授权/队列数据。
+- 百度真实账号、NAS/SMB、长时间限流、浏览器实机及远端清理尚未验收；本地 API/mock 和包校验不能替代这些证据。
+
+## v0.8.30-preview.44（扫描待办计数常数时间读取）
+
+- 修复 preview.43 的剩余 O(N) 状态轮询：`LoadCloudScanState` 现在经扫描状态主键直接读持久化 `pending_count`，不再对待办表 `COUNT(*)`。SQLite 查询计划回归确认只检索状态行，不触碰队列表。
+- 每页清单提交在同一事务中按出队 1 项和实际插入的子目录行更新计数；计数与队头缺失/多余不一致时回滚，避免错误标记 complete。
+- v13→v14 迁移回填旧队列计数；迁移提交后、manifest 发布前重启会验证状态计数与队列表相符，不一致时失败关闭。
+- taskstore、downloader、intakeapi 全量测试、WebUI 22 项、userscript 3 项、全模块 Go 测试、vet、Windows/Linux AMD64/Linux ARM64 构建通过；12 项包内哈希和 Windows 版本命令通过。ZIP SHA256：`13CEADB41E787FBC05F79A171E9C9A76D8803ADE50C1284187FD2CA84DA716FF`。
+- 状态轮询的数据库读取现为固定行查询；目标 NAS 实测延迟、百度限流和长扫描耗时仍待验收。本预览未更新当前运行目录。
+
+## D27：扫描待办计数常数时间读取（已交付 preview.44）
+
+- preview.43 的返回体已固定大小，但数据库仍执行全队列 `COUNT(*)`；preview.44 将计数持久化到状态行并维护在事务中。
+- v13→v14 迁移、查询计划、大队列、回滚及不一致失败关闭回归通过。
+- 真实大队列 NAS 轮询延迟仍需用户环境测量。
+
+## v0.8.30-preview.43（大目录队列状态回归）
+
+- 在 preview.42 的持久化扫描队列实现上补充 10,000 项队列回归：SQLite 返回准确的 10,001 待扫计数；JSON 状态小于 1 KiB，且不包含待扫路径清单。
+- 完整发布门禁（WebUI 22 项、userscript 3 项、Go 全模块测试、vet、Windows/Linux AMD64/Linux ARM64 构建）、12 项 payload SHA256 和 Windows 版本命令通过。ZIP SHA256：`AFAF341E96E45A07F38E2C6C5F450C60EAC755C8D21CE80F04E57A1BDB01B1E0`。
+- 本版确认了大队列状态接口和持久化结构；真实百度请求频率、目标 NAS 写入性能和长扫描耗时仍待实测，未更新当前运行目录。
+
+## v0.8.30-preview.42（全盘扫描持久化目录队列）
+
+- 扫描目录待办从完整 `pending_json` 数组改为 SQLite FIFO 队列表；每页状态只保存当前目录、游标和计数，状态 API 不再返回云端路径数组，管理页按 `pending_count` 展示。
+- 最终目录页、清单陈旧项清理、移除当前目录、加入子目录和更新页/条目计数都在一个 SQLite 事务内提交。中途页的清单写入与 offset 一起提交；失败时队列和进度不前移。
+- v12→v13 原子回填旧 worklist 顺序；manifest 发布前重启会核对队列表与旧 JSON，错序或不一致失败关闭。暂停/续跑继续使用原目录和分页 offset；修正用户暂停恰逢 API 取消时被记为 failed 的状态。
+- taskstore/downloader/intakeapi 定向与全量测试、WebUI 22 项、userscript 3 项、完整 Go 全模块测试、vet、Windows/Linux AMD64/Linux ARM64 构建通过；12 项包内哈希及 Windows 版本命令通过。ZIP SHA256：`F490F1B27B215C5FAA8BDF0BAF65BFFD9F3300983E48800E95BF838CE21E3827`。
+- 大队列状态返回由路径数组变为固定大小计数；目标 NAS 数据库写入和百度长扫描耗时仍需在真实环境测量。本预览未更新当前运行目录。
+
+## v0.8.30-preview.41（重复大小计数缓存）
+
+- SQLite `cloud_inventory_file_sizes` 按账号/大小维护文件计数；INSERT、DELETE 及文件类型/大小改变的触发器与目录清单同事务提交，目录本身不计为文件。
+- v11→v12 原子迁移回填计数并安装触发器；提交窗口恢复会比对派生计数与源库存，完全一致才发布 manifest。
+- 重复扫描在启动或恢复时计算一次候选总数，执行中的每个 100 项批次只按 fs_id 索引读取候选页，不再反复对全盘文件分组和计数。逐项身份复核、哈希验证与游标提交不变。
+- 触发器、迁移恢复、分页和相关定向回归通过；完整发布门禁（Node、Go 全模块测试、vet、Windows/Linux AMD64/Linux ARM64 构建）通过，12 项包内 SHA256 与 Windows 包内版本命令通过。ZIP SHA256：`1E0AE5A4D94A0E75B563E9694463A5A2C690AE727A9A36B57C2A1052D961915E`。
+- v0.8.30-preview.41 位于 releases 目录；本预览未更新当前运行目录。百度真实账号、NAS/SMB 大型缓存性能仍需用户环境验收。
+
+## v0.8.30-preview.40（空文件夹预览使用路径范围）
+
+- 空目录候选计算从递归物化全盘目录的祖先/后代组合，改为按现有 `(account_fingerprint,path)` B-tree 子树范围查找后代文件和未完成/未登记的后代目录，避免为整棵树创建递归闭包。
+- 候选仍要求目录本身及全部后代缓存完整、子树没有文件，保留叶到根排序；远端操作仍逐个重新核验目录身份与实时空状态。
+- 查询计划、完整/非空子树、缓存缺失/失效、相邻路径前缀边界回归通过；完整门禁（Node 25 项、Go 全模块测试、vet、三平台构建）、12 项 payload SHA256 和 Windows 包内版本命令通过。ZIP SHA256：`C389A0BCA466CA036E83EDBCDDA315C3E6121CCA4F8D5A93481B50B726C0B826`。
+- 大型深层目录树在目标 NAS 上的预览时延仍待实测；没有更新当前运行目录。
+
+## v0.8.30-preview.39（已验证重复组查询索引）
+
+- 哈希扫描完成后展示重复组的 SQLite 查询原先需要临时 `GROUP BY` 排序。增加 `(account_fingerprint,sha256,size_bytes,fs_id)` 索引，并以哈希索引顺序连接当前文件身份和 complete 目录再分组。
+- 新增 SQLite v10→v11 原子迁移与提交后 manifest 恢复；迁移前后保护哈希记录，当前身份与完整目录校验仍决定候选是否属于重复组。
+- 原查询计划失败回归确认存在 `TEMP B-TREE FOR GROUP BY`；新计划验证、重复组内容和 v8/v9/v10 迁移定向测试通过。完整发布门禁（Node 25 项、Go 全模块测试、vet、三平台构建）、12 项包内 SHA256 与 Windows 版本命令通过。ZIP SHA256：`5E1EAE56647A5FDB94F4ABC64247AD3563EDD0331B951F3A39CCBF1BB1CADEED`。
+- 大规模哈希集的目标 NAS 查询耗时仍需实测；未更新当前运行目录。
+
+## v0.8.30-preview.38（重复候选查询复用大小分组）
+
+- 将重复候选总数与 fs_id 分页合并为一条 SQLite 查询，MATERIALIZED 大小分组 CTE 同时供总数与候选页读取，避免每批重复 GROUP BY。
+- EXPLAIN 回归确认一次分组物化、使用专用大小索引且没有临时分组 B-tree；现有完整目录约束、稳定分页、空页总数、批次重试与逐项进度语义保持不变。
+- 完整门禁（Node 25 项、Go 全模块测试、vet、三平台构建）、12 项包内 SHA256 和 Windows 版本命令通过。ZIP SHA256：`CE8AB8E3E36AEAA9B89C9D9D2B46B69BA6D7E2ED200ECB8B1D8102E8662F959A`。
+- 目标 NAS/SMB 上大缓存实测仍待验收；未更新当前运行目录。
+
+## v0.8.30-preview.37（重复内容扫描分批获取候选）
+
+- 重复内容扫描按 `fs_id` 每次读取最多 100 个候选，只在当前缓存批次耗尽后重跑全盘大小分组查询；减少每个文件重复统计全盘的数据库工作。
+- 批次仅在内存中缓存。每个文件仍需在线身份复核、完整下载内容哈希验证，并在成功后单独耐久提交扫描游标；限流退避保留当前候选，重启从最后提交的 `fs_id` 重新取数。
+- 235 个候选 100/100/35 边界、限流重试、持久化退避恢复和重复项远端删除复核相关测试通过；完整门禁（Node 25 项、Go 全模块测试、vet、三平台构建）、12 项包内 SHA256 和 Windows 版本命令通过。ZIP SHA256：`2E45F3DF4FA369EE9654A8B249BFCB17E43BE954D548F439C35315F728621856`。
+- 目标 NAS/SMB 查询次数与真实百度长扫描耗时仍待验收；未更新当前运行目录。
+
+## v0.8.30-preview.36（重复内容扫描大小分组索引）
+
+- 全盘缓存增加 `(account_fingerprint,is_dir,size_bytes,fs_id)` 索引，重复内容候选分组不再需要为大小列建立临时排序树；扫描仍只处理完整目录，并按 fs_id 稳定分页。
+- 新增 SQLite v9→v10 事务迁移、旧版迁移链以及提交后 manifest 更新前重启恢复；修正 schema 必需对象计数，避免新索引接入后存储启动误报 schema incomplete。
+- EXPLAIN、候选分页、v9 数据保留、提交窗口恢复和 v6/v8 迁移定向回归通过；完整发布门禁（Node 25 项、Go 全模块测试、vet、三平台构建）、12 项包内 SHA256 和 Windows 包内版本命令均通过。ZIP SHA256：`6A1C254B0D9717EA0D8EA823FAB589E4E151ABA1F9EC7B9E1E098360A7070B4C`。
+- 目标 NAS/SMB 上全盘分组耗时仍需实测；预览包位于发布目录，未更新当前运行目录。
+
+## v0.8.30-preview.35（复用全盘缓存页 SQLite 写入语句）
+
+- 每个云端目录页仍在一个事务中原子写入；文件记录和子目录状态改为事务内复用预编译语句，减少重复 statement 准备成本，不改变分页、提交点和断点恢复粒度。
+- Windows AMD64 Go 1.27.1 `BenchmarkUpsertCloudInventoryPage100` 2 秒样本：修改前约 11.85 ms/op、75,261 B/op、1,621 allocs/op；修改后约 9.90 ms/op、74,238 B/op、1,531 allocs/op。一次本机前后测量约快 16.5%，SQLite 同步写与文件系统波动仍主导，不能外推目标 NAS。
+- `go test ./internal/taskstore -count=1` 通过；完整发布门禁、三平台构建与包内清单校验见发布目录 `v0.8.30-preview.35`。
+
+## v0.8.30-preview.34（网盘目录分页复合索引与 v9 迁移）
+
+- 将缓存父目录索引升级为 `(account_fingerprint,parent_path,name,fs_id)`，与 `ListCloudInventory` 的过滤和稳定排序一致；SQLite 查询计划回归确认直接使用该索引且没有临时排序树。
+- 新增 v8→v9 SQLite 事务迁移。若进程在数据库提交之后、manifest 发布之前退出，重启会校验 scope 与新旧索引状态后完成 manifest；不符合已提交状态时失败关闭。迁移集成用例确认目录缓存仍可读取。
+- 真实大目录/NAS 查询时延需在目标设备测量。独立预览包：`v0.8.30-preview.34.zip`；全模块测试、vet、三平台构建与包内清单校验见发布目录 `v0.8.30-preview.34`。
+
+## v0.8.30-preview.33（网盘目录大小使用 SQLite 路径范围索引）
+
+- 目录大小统计、完整性/时间查询、缓存失效与失效子树清理改用路径前缀范围条件，复用既有 `(account_fingerprint,path)` 索引；避免在大账号缓存中因 `substr(path,...)` 条件扫描全部路径记录。
+- 新增 SQLite `EXPLAIN QUERY PLAN` 回归确认文件大小聚合按路径索引范围查找，并覆盖 `/docs` 不匹配相邻 `/docs0`、失效 `/docs` 不会污染 `/docs0` 的边界。
+- 无需新增数据库迁移。独立预览包：`v0.8.30-preview.33.zip`；全模块测试、vet、三平台构建与包内载荷校验见发布目录 `v0.8.30-preview.33`。
+
+## v0.8.30-preview.32（串行化网盘缓存页提交与远端修改）
+
+- 修复目录扫描与网页远端改名/移动/删除/新建之间的缓存竞态：单页数据提交 SQLite 前继续持有网盘读锁，远端写操作的独占锁只有在该页提交后才能执行，随后失效受影响目录缓存。旧扫描结果不再能覆盖较新的 stale 标记。
+- 新增确定性交错回归：暂停扫描页提交并发起远端改名，证明改名在页提交前不能发送，操作完成后的目录缓存保持 stale。真实百度、NAS/SMB 并发时延仍待实测。
+- 独立预览包：`v0.8.30-preview.32.zip`；全模块测试、vet、三平台构建与包内载荷校验见发布目录 `v0.8.30-preview.32`。
+
 ## v0.8.30-preview.21（认证恢复取消过期重试截止时间）
 
 - 任务从 `pending`/`retry_wait` 进入 `auth_wait` 时，清除原退避截止时间；通过新凭证和成功云端扫描恢复为 `pending` 时，也清理旧版本可能留存的截止时间，避免已授权任务仍被旧退避计划延迟。

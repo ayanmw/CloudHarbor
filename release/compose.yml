@@ -8,17 +8,21 @@ services:
     environment:
       BAIDU_ACCESS_TOKEN: ${BAIDU_ACCESS_TOKEN:-}
       BAIDU_REFRESH_TOKEN: ${BAIDU_REFRESH_TOKEN:-}
+      BAIDU_APP_ID: ${BAIDU_APP_ID:-}
       BAIDU_APP_KEY: ${BAIDU_APP_KEY:-}
       BAIDU_SECRET_KEY: ${BAIDU_SECRET_KEY:-}
+      BAIDU_SIGN_KEY: ${BAIDU_SIGN_KEY:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
-      QUEUE_DIR: ${QUEUE_DIR:-/NAS_Download_Queue_preview}
-      LOCAL_DOWNLOAD_DIR: /downloads
+      QUEUE_DIR: ${QUEUE_DIR:-}
+      QUEUE_DIR_DEFAULT: ${QUEUE_DIR_DEFAULT:-/NAS_Download_Queue_preview}
+      LOCAL_DOWNLOAD_DIR: ${LOCAL_DOWNLOAD_DIR:-}
       SCAN_INTERVAL: ${SCAN_INTERVAL:-30}
       MAX_PARALLEL: ${MAX_PARALLEL:-2}
       MAX_RETRIES: ${MAX_RETRIES:-3}
       RETRY_BACKOFF_SECONDS: ${RETRY_BACKOFF_SECONDS:-5}
       SERVER_HOST: 0.0.0.0
     volumes:
-      - ./downloads:/downloads
+      - ./downloads:/app/downloads
+      - ./state:/app/.nas-downloader
     restart: unless-stopped

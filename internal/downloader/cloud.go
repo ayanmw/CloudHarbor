@@ -7,10 +7,13 @@ import (
 
 type CloudEntry struct {
 	ID         string `json:"id"`
+	FsID       int64  `json:"fs_id"`
 	Path       string `json:"path"`
 	Name       string `json:"name"`
 	Directory  bool   `json:"directory"`
 	Size       int64  `json:"size"`
+	Mtime      int64  `json:"server_mtime"`
+	MD5        string `json:"md5,omitempty"`
 	CanEnqueue bool   `json:"can_enqueue"`
 }
 type CloudListing struct {
@@ -50,7 +53,8 @@ func (d *Downloader) ListCloud(ctx context.Context, directory string, offset, li
 	if _, err = d.intakeClient(ctx, epoch); err != nil {
 		return CloudListing{}, err
 	}
-	result := CloudListing{Directory: directory, QueueDir: d.cfg.QueueDir, Entries: []CloudEntry{}, Offset: offset}
+	queueDir := d.QueueDirectory()
+	result := CloudListing{Directory: directory, QueueDir: queueDir, Entries: []CloudEntry{}, Offset: offset}
 	if hasMore {
 		next := offset + len(files)
 		result.NextOffset = &next
@@ -58,9 +62,9 @@ func (d *Downloader) ListCloud(ctx context.Context, directory string, offset, li
 	d.queue.mu.Lock()
 	defer d.queue.mu.Unlock()
 	for _, f := range files {
-		target := intakeTarget(d.cfg.QueueDir, f.Path)
-		allowed := validateIntakePaths([]string{f.Path}, d.cfg.QueueDir) == nil && d.queue.jobs[f.FsID] == nil && !d.queue.blockedIntakes[target] && !d.queue.blockedSources[target]
-		result.Entries = append(result.Entries, CloudEntry{ID: fmt.Sprint(f.FsID), Path: f.Path, Name: f.ServerFilename, Directory: f.IsDir == 1, Size: f.Size, CanEnqueue: allowed})
+		target := intakeTarget(queueDir, f.Path)
+		allowed := validateIntakePaths([]string{f.Path}, queueDir) == nil && d.queue.jobs[f.FsID] == nil && !d.queue.isRemoteBlocked(f.FsID, f.Path) && !d.queue.blockedIntakes[target] && !d.queue.blockedSources[target]
+		result.Entries = append(result.Entries, CloudEntry{ID: fmt.Sprint(f.FsID), FsID: f.FsID, Path: f.Path, Name: f.ServerFilename, Directory: f.IsDir == 1, Size: f.Size, Mtime: f.Mtime, MD5: f.MD5, CanEnqueue: allowed})
 	}
 	return result, nil
 }

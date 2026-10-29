@@ -76,7 +76,7 @@ func TestTLSProxyManagementAndWebSocket(t *testing.T) {
 		r, _ := http.NewRequest(http.MethodPost, frontend.URL+"/api/scan", nil)
 		r.Header.Set("Origin", tc.origin)
 		if tc.auth {
-			r.SetBasicAuth("admin", "private-proxy-fixture-password")
+			r.Header.Set("Authorization", "Bearer private-proxy-fixture-password")
 		}
 		response, err := frontend.Client().Do(r)
 		if err != nil {

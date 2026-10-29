@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
-    [string]$OutputRoot = ''
+    [string]$OutputRoot = '',
+    [switch]$AllowDirty
 )
 $ErrorActionPreference = 'Stop'
 if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid version.' }
@@ -16,9 +17,30 @@ $savedGoarch = $env:GOARCH
 $savedCgo = $env:CGO_ENABLED
 try {
     Set-Location $repoRoot
-    $sourceRevision = (git rev-parse HEAD).Trim()
+    $baseRevision = (git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read source revision.' }
-    if (git status --porcelain) { throw 'Commit source before packaging so the revision identifies the exact source.' }
+    $status = @(git status --porcelain)
+    if ($status.Count -gt 0 -and !$AllowDirty) { throw 'Working tree is dirty. Pass -AllowDirty to package a content-addressed source snapshot.' }
+    $sourceRevision = $baseRevision
+    $snapshotText = ''
+    $sourceManifest = @("Base revision: $baseRevision")
+    if ($status.Count -gt 0) {
+        $sourceManifest = @()
+        $sourceFiles = @(git -c core.quotepath=false ls-files --cached --others --exclude-standard)
+        if ($LASTEXITCODE -ne 0 -or $sourceFiles.Count -eq 0) { throw 'Cannot enumerate source snapshot files.' }
+        foreach ($relative in ($sourceFiles | Sort-Object -Unique)) {
+            if (!(Test-Path -LiteralPath $relative -PathType Leaf)) { continue }
+            $hash = (Get-FileHash -LiteralPath $relative -Algorithm SHA256).Hash.ToLowerInvariant()
+            $sourceManifest += "$hash  $($relative.Replace('\', '/'))"
+        }
+        $manifestText = [string]::Join("`n", $sourceManifest) + "`n"
+        $manifestBytes = [Text.Encoding]::UTF8.GetBytes($manifestText)
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try { $treeHash = ([BitConverter]::ToString($sha256.ComputeHash($manifestBytes))).Replace('-', '').ToLowerInvariant() }
+        finally { $sha256.Dispose() }
+        $sourceRevision = "$baseRevision-dirty-$($treeHash.Substring(0, 16))"
+        $snapshotText = "Base revision: $baseRevision`nSnapshot SHA256: $treeHash`n`n$manifestText"
+    }
     # Run each node:test file as its own process; the multi-file runner in recent Node versions spawns workers that are denied in the Windows package environment.
     node scripts/webui.test.cjs
     if ($LASTEXITCODE -ne 0) { throw 'Web UI tests failed.' }
@@ -30,6 +52,7 @@ try {
     go vet ./...
     if ($LASTEXITCODE -ne 0) { throw 'Vet failed.' }
     New-Item -ItemType Directory -Path $releasePath -Force | Out-Null
+    if ($snapshotText) { [IO.File]::WriteAllText((Join-Path $releasePath 'SOURCE-SNAPSHOT.txt'), $snapshotText, [Text.UTF8Encoding]::new($false)) }
     foreach ($target in @('windows-amd64', 'linux-amd64', 'linux-arm64')) {
         $parts = $target.Split('-')
         $env:GOOS = $parts[0]; $env:GOARCH = $parts[1]
@@ -44,7 +67,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $repoRoot "release/$name") -Destination $releasePath
     }
     Copy-Item -LiteralPath (Join-Path $repoRoot 'tampermonkey_baidupan_nas_queue.user.js') -Destination $releasePath
-    $buildInfo = "Version: $Version`nRevision: $sourceRevision`nToolchain: $(go version)`n"
+    $buildInfo = "Version: $Version`nRevision: $sourceRevision`nBase revision: $baseRevision`nDirty snapshot: $($status.Count -gt 0)`nToolchain: $(go version)`n"
     [IO.File]::WriteAllText((Join-Path $releasePath 'BUILD-INFO.txt'), $buildInfo, [Text.UTF8Encoding]::new($false))
     $checksums = Get-ChildItem -LiteralPath $releasePath -File -Recurse | Sort-Object FullName | ForEach-Object {
         $relative = $_.FullName.Substring($releasePath.Length + 1).Replace('\', '/')

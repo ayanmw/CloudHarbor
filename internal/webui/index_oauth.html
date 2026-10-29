@@ -4,20 +4,28 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>百度账号授权</title>
 <style>
-body{font-family:system-ui,sans-serif;background:#f4f6fa;color:#243047;margin:0;padding:32px 16px}.container{max-width:720px;margin:auto}a{color:#2465d7}.card{background:white;border-radius:12px;padding:24px;margin:20px 0;box-shadow:0 3px 18px #2030520d}h1{font-size:26px}h2{font-size:18px}button{padding:10px 16px;border:0;border-radius:6px;background:#2465d7;color:white;cursor:pointer;margin:4px}button:disabled{opacity:.5;cursor:wait}.muted{color:#647087;font-size:14px;line-height:1.7}#message{white-space:pre-wrap;line-height:1.7}#qr{max-width:220px;display:block;margin:16px 0}code{font-size:22px;letter-spacing:3px}dl{display:grid;grid-template-columns:120px 1fr;gap:10px}dd{margin:0;overflow-wrap:anywhere}.setup-guide{margin:16px 0;padding:14px;background:#f6f8fc;border-radius:8px;line-height:1.8}.setup-guide summary{cursor:pointer;color:#2465d7;font-weight:600}.setup-guide ol{padding-left:24px}.setup-guide p{margin:8px 0}.setup-guide code{font-size:inherit;letter-spacing:normal}
+body{font-family:system-ui,sans-serif;background:#f4f6fa;color:#243047;margin:0;padding:32px 16px}.container{max-width:720px;margin:auto}a{color:#2465d7}.card{background:white;border-radius:12px;padding:24px;margin:20px 0;box-shadow:0 3px 18px #2030520d}h1{font-size:26px}h2{font-size:18px}button{padding:10px 16px;border:0;border-radius:6px;background:#2465d7;color:white;cursor:pointer;margin:4px}button:disabled{opacity:.5;cursor:wait}.muted{color:#647087;font-size:14px;line-height:1.7}#message{white-space:pre-wrap;line-height:1.7}#qr{max-width:220px;display:block;margin:16px 0}code{font-size:22px;letter-spacing:3px}dl{display:grid;grid-template-columns:120px 1fr;gap:10px}dd{margin:0;overflow-wrap:anywhere}.setup-guide{margin:16px 0;padding:14px;background:#f6f8fc;border-radius:8px;line-height:1.8}.setup-guide summary{cursor:pointer;color:#2465d7;font-weight:600}.setup-guide ol{padding-left:24px}.setup-guide p{margin:8px 0}.setup-guide code{font-size:inherit;letter-spacing:normal}label{display:block;margin:12px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccd4e0;border-radius:6px;font:inherit}
 </style>
 <script src="/res/shared.js"></script>
 </head>
 <body><main class="container">
-<a href="/">← 返回下载任务</a><h1>百度账号授权</h1>
+<a href="/">← 返回下载任务</a> · <button type="button" onclick="logoutAdmin()">退出登录</button><h1>百度账号授权</h1>
 <p class="muted">管理员登录保护本工具，百度授权允许工具访问网盘。授权成功后，凭证会保存到当前下载目录并应用于后台任务。</p>
+<section class="card" id="app-config-card"><h2>百度网盘应用凭证</h2><p class="muted" id="app-config-note">检查配置中…</p>
+<form id="app-config-form" hidden>
+<label for="app-id">AppID</label><input id="app-id" name="app_id" autocomplete="off" required maxlength="4096">
+<label for="app-key">AppKey</label><input id="app-key" name="app_key" autocomplete="off" required maxlength="4096">
+<label for="secret-key">SecretKey</label><input id="secret-key" name="secret_key" type="password" autocomplete="new-password" required maxlength="4096">
+<label for="sign-key">SignKey</label><input id="sign-key" name="sign_key" type="password" autocomplete="new-password" required maxlength="4096">
+<button id="save-app-config" type="submit">保存并立即启用</button>
+</form><dl id="app-config-masks" hidden><dt>AppID</dt><dd id="app-id-mask"></dd><dt>AppKey</dt><dd id="app-key-mask"></dd><dt>SecretKey</dt><dd id="secret-key-mask"></dd><dt>SignKey</dt><dd id="sign-key-mask"></dd><dt>配置来源</dt><dd id="app-config-source"></dd></dl></section>
 <section class="card"><h2>账号状态</h2><dl><dt>当前状态</dt><dd id="state">检查中</dd><dt>凭证到期</dt><dd id="expiry">—</dd><dt>自动续期</dt><dd id="renewal">—</dd><dt>最近错误</dt><dd id="error">—</dd></dl><button id="refresh" onclick="refreshCredential()">立即续期</button></section>
-<section class="card"><h2>授权或重新授权</h2><p class="muted">网页授权需要启动时设置 BAIDU_APP_KEY 和 BAIDU_SECRET_KEY。同一下载目录绑定一个百度账号，更换账号请使用新的下载目录。</p>
+<section class="card"><h2>授权或重新授权</h2><p class="muted">请使用为本工具创建的百度网盘应用。同一下载目录绑定一个百度账号，更换账号请使用新的下载目录。</p>
 <details class="setup-guide"><summary>还没有 AppKey？去哪里申请</summary><ol>
-<li>登录<a href="https://yun.baidu.com/open/platform" target="_blank" rel="noopener noreferrer">百度网盘开放平台（官方入口）</a>，按页面要求申请开发者接入。</li>
-<li>在<a href="https://pan.baidu.com/union/apply" target="_blank" rel="noopener noreferrer">百度网盘应用申请</a>创建网盘应用；之后可从<a href="https://developer.baidu.com/console" target="_blank" rel="noopener noreferrer">百度开发者控制台</a>进入应用管理。</li>
-<li>打开应用详情，复制 <strong>AppKey</strong>（OAuth 的 <code>client_id</code>）和 <strong>SecretKey</strong>（OAuth 的 <code>client_secret</code>）。请使用网盘应用的密钥，不要拿百度地图等其他产品的 AK 代替。</li>
-</ol><p class="muted">开发者认证或应用资格以百度平台当前要求为准。SecretKey 等同密码，请勿发给他人、贴到公开问题或提交进代码仓库。</p></details>
+<li>登录<a href="https://yun.baidu.com/union" target="_blank" rel="noopener noreferrer">百度网盘开发者平台（官方入口）</a>，按页面要求申请开发者接入并创建自己的应用。</li>
+<li>在应用详情中复制 <strong>AppID</strong>、<strong>AppKey</strong>、<strong>SecretKey</strong> 和 <strong>SignKey</strong>，再填写到上方表单。本工具当前设备码 OAuth 使用 AppKey 和 SecretKey；其余凭证也会安全保存供应用配置核对。</li>
+<li>本工具使用百度 OAuth 设备码授权，不会把用户重定向回本工具，因此当前流程不需要 OAuth 授权回调地址。若百度平台把回调地址设为必填，请先确认应用类型/授权模式；不要把普通管理页地址冒充为已实现的 OAuth 回调处理器。</li>
+</ol><p class="muted">开发者认证或应用资格以百度平台当前要求为准。SecretKey 和 SignKey 等同密码，请勿发给他人、贴到公开问题或提交进代码仓库。</p></details>
 <button id="device" onclick="getDeviceCode()">获取授权码</button>
 <div id="authorization" hidden><p>授权码：<code id="user-code"></code></p><img id="qr" alt="百度授权二维码" hidden><p><a id="auth-link" target="_blank" rel="noopener noreferrer">打开百度授权页面</a></p><p class="muted" id="deadline"></p><button id="poll" onclick="applyAuthorization()">已完成百度授权，开始验证</button><button id="cancel" onclick="cancelPolling()" disabled>停止等待</button></div>
 <p id="message" role="status"></p></section>
@@ -73,4 +81,41 @@ async function refreshCredential() {
     try { await request('/api/oauth/refresh'); message('续期完成，后台将重新扫描任务。'); } catch (error) { message(error.message); } finally { updateStatus(); }
 }
 updateStatus(); setInterval(updateStatus, 5000);
+async function loadAppConfig() {
+    const note = document.getElementById('app-config-note');
+    const form = document.getElementById('app-config-form');
+    const masks = document.getElementById('app-config-masks');
+    try {
+        const response = await fetch('/api/app-config');
+        if (!response.ok) throw new Error('读取应用配置状态失败');
+        const value = await response.json();
+        form.hidden = !value.editable;
+        masks.hidden = !value.configured;
+        if (value.configured) {
+            for (const field of ['app-id','app-key','secret-key','sign-key']) document.getElementById(field+'-mask').textContent = value[field.replaceAll('-', '_')+'_mask'] || '';
+            document.getElementById('app-config-source').textContent = value.source === 'env' ? '进程环境变量 / .env' : 'nas-downloader/queue';
+            note.textContent = '配置已保存。明文不会再次显示；需要核对时请确认掩码。';
+        } else if (value.editable) {
+            note.textContent = '尚未配置。填写开发者平台中的四项应用凭证，保存后立即启用且网页不再允许修改。';
+        } else {
+            note.textContent = '应用凭证尚未配置，请检查 .env 或 queue 配置文件。';
+        }
+        document.getElementById('device').disabled = !value.configured;
+    } catch (_) { note.textContent = '无法读取应用配置状态'; }
+}
+document.getElementById('app-config-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form).entries());
+    const button = document.getElementById('save-app-config'); button.disabled = true;
+    try {
+        const response = await fetch('/api/app-config', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});
+        if (!response.ok) throw new Error(await response.text());
+        form.reset();
+        message('应用凭证已安全保存并立即启用。');
+        await loadAppConfig();
+    } catch (error) { message(error.message); }
+    finally { button.disabled = false; }
+});
+loadAppConfig();
 </script></body></html>

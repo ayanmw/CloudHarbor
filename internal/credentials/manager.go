@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -218,6 +219,43 @@ func (m *Manager) acquire(ctx context.Context) error {
 	return nil
 }
 func (m *Manager) release() { m.gate <- struct{}{} }
+
+// ConfigureApp serializes first-time application-key activation with every
+// credential operation. persist runs while the credential gate is held so no
+// refresh or account verification can observe a partial key transition.
+func (m *Manager) ConfigureApp(ctx context.Context, appKey, secretKey string, persist func() error) error {
+	if strings.TrimSpace(appKey) == "" || strings.TrimSpace(secretKey) == "" || len(appKey) > 4096 || len(secretKey) > 4096 || persist == nil {
+		return fmt.Errorf("invalid Baidu application config")
+	}
+	if err := m.acquire(ctx); err != nil {
+		return err
+	}
+	defer m.release()
+	m.mu.RLock()
+	currentKey := m.options.AppKey
+	boundKey := m.record.AppKey
+	m.mu.RUnlock()
+	if (currentKey != "" && currentKey != appKey) || (boundKey != "" && boundKey != appKey) {
+		return fmt.Errorf("credential store belongs to a different Baidu application")
+	}
+	if err := persist(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.options.AppKey = appKey
+	m.options.SecretKey = secretKey
+	if m.record.AppKey == "" {
+		m.record.AppKey = appKey
+	}
+	m.updated = time.Now()
+	m.mu.Unlock()
+	return nil
+}
+
+// Wake schedules credential work after all related runtime components have
+// completed their application-key switch.
+func (m *Manager) Wake() { m.signal() }
+
 func (m *Manager) failure(err error, code string, keepOld, retry, block bool) error {
 	failure := &operationError{code: code, cause: err}
 	m.mu.Lock()

@@ -27,6 +27,12 @@ var indexOAuth []byte
 //go:embed index_intake.html
 var indexIntake []byte
 
+//go:embed index_login.html
+var indexLogin []byte
+
+//go:embed index_cloud.html
+var indexCloud []byte
+
 //go:embed res/*
 var resFiles embed.FS
 
@@ -77,6 +83,16 @@ func (s *Server) HandlePageOAuth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) HandlePageIntake(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(indexIntake)
+}
+
+func (s *Server) HandlePageLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexLogin)
+}
+
+func (s *Server) HandlePageCloud(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexCloud)
 }
 
 // HandleRes 静态资源文件服务

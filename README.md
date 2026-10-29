@@ -1,6 +1,6 @@
 # 百度网盘 NAS 一键下载系统
 
-> 持续优化分支已提供可靠性预览版的构建与测试说明：[独立版本测试](release/TESTING.md)、[设计](docs/ai/reliability-design.md)、[进度](docs/ai/progress.md)。持久化队列、网页授权应用/保存/续期、管理认证和管理页入队已实现；油猴提供选中路径衔接，需真实页面适配验收。真实百度/NAS 验收仍待进行，以进度文档与当前代码为准。原生宿主程序默认仅监听 `127.0.0.1`；容器内监听 `0.0.0.0`，示例只将端口发布到宿主回环。管理员用户名为 `admin`，密码来自 `ADMIN_PASSWORD` 或下载目录 `.nas-downloader/queue/admin-key.json`。可不带 Token 启动，再按测试说明配置应用并网页授权。
+> 持续优化分支已提供可靠性预览版的构建与测试说明：[独立版本测试](release/TESTING.md)、[设计](docs/ai/reliability-design.md)、[进度](docs/ai/progress.md)。持久化队列、网页授权应用/保存/续期、管理员表单登录和管理页入队已实现；油猴提供选中路径衔接，需真实页面适配验收。真实百度/NAS 验收仍待进行，以进度文档与当前代码为准。原生宿主程序默认仅监听 `127.0.0.1`；容器内监听 `0.0.0.0`，示例只将端口发布到宿主回环。管理员用户名为 `admin`，密码来自 `ADMIN_PASSWORD` 或下载目录 `.nas-downloader/queue/admin-key.json`；网页使用登录表单，CLI 使用 Bearer。可不带百度应用凭证启动，再在网页首次配置并授权。
 
 ## 项目简介
 
@@ -83,17 +83,17 @@
 ## 部署指南
 
 ### 环境准备
-1. 获取百度网盘 API App Key 和 Secret Key（可选，用于 OAuth）
-2. 配置环境变量：
+1. 在[百度网盘开发者平台](https://yun.baidu.com/union)创建应用，复制 AppID、AppKey、SecretKey、SignKey。
+2. 可将四项配置写入项目 `.env`，也可启动后在 `/oauth` 页首次填写：
    ```
+   BAIDU_APP_ID=your_app_id
    BAIDU_APP_KEY=your_app_key
    BAIDU_SECRET_KEY=your_secret_key
-   QUEUE_DIR=/NAS_Download_Queue
-   LOCAL_DOWNLOAD_DIR=./downloads
-   SCAN_INTERVAL=300
-   SERVER_PORT=8080
+   BAIDU_SIGN_KEY=your_sign_key
    ```
-   原生启动时需在当前 shell 设置这些变量；程序不会自动读取 `.env`，Docker Compose 会读取 `.env`。没有 Access Token 时也可以启动管理页；如需网页设备授权，必须提供 App Key 和 Secret Key。宿主程序默认只监听 `127.0.0.1`，管理员密码可通过 `ADMIN_PASSWORD` 设置，否则首次启动会生成随机密码并写入下载目录的私有状态文件。
+   对四项应用凭证，非空进程环境变量优先于 `.env`；四项最终值都为空时，程序回退到下载目录 `.nas-downloader/queue/baidu-app.json`。四项须成组提供，部分设置会报错。网页首次保存到私有 sidecar 并立即生效，刷新后仅显示掩码，之后网页不再允许修改。该 sidecar 与 OAuth 用户 Token、任务和事件数据库分开；改配置时请停止服务并按需编辑 `.env` 或删除 sidecar。扫描间隔、下载目录等其余运行配置仍通过进程环境变量或 Docker Compose `.env` 传入。
+
+   本工具使用 OAuth 设备码流程，不需要 OAuth 回调页地址。若百度控制台针对所选应用类型强制要求回调地址，请先核对应用类型；当前工具没有授权码回调处理端点，不能用普通管理页地址代替。宿主程序默认只监听 `127.0.0.1`，管理员密码可通过 `ADMIN_PASSWORD` 设置，否则首次启动会生成随机密码并写入下载目录的私有状态文件。浏览器会话不自动过期，点击“退出登录”撤销当前会话；若设备丢失，可停服后运行 `baidu-nas-downloader -revoke-admin-sessions` 撤销全部网页会话。通过 HTTPS 反向代理时配置 `PUBLIC_ORIGIN`。
 
 ### Access Token 获取方式
 
@@ -144,6 +144,7 @@ docker run -d \
   -e BAIDU_APP_ID=your_app_id \
   -e BAIDU_APP_KEY=your_app_key \
   -e BAIDU_SECRET_KEY=your_secret_key \
+  -e BAIDU_SIGN_KEY=your_sign_key \
   -e ADMIN_PASSWORD=replace_with_a_password_of_at_least_16_bytes \
   -v $(pwd)/downloads:/下载 \
   baidu-nas-downloader

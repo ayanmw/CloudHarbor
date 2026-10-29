@@ -5,6 +5,37 @@ const path = require('node:path');
 const vm = require('node:vm');
 const root = path.join(__dirname, '..', 'internal', 'webui');
 
+test('OAuth page provides first-time four-field app setup and masked read-only status',()=>{
+ const html=fs.readFileSync(path.join(root,'index_oauth.html'),'utf8');
+ assert.ok(html.includes('id="app-id"'));
+ assert.ok(html.includes('id="app-key"'));
+ assert.ok(html.includes('id="secret-key"'));
+ assert.ok(html.includes('id="sign-key"'));
+ assert.ok(html.includes('async function loadAppConfig()'));
+ assert.ok(html.includes("fetch('/api/app-config'"));
+ assert.ok(!html.includes('localStorage')&&!html.includes('sessionStorage'));
+});
+
+test('OAuth page shows only server masks after configuration and disables authorization while empty',async()=>{
+ const p=page('index_oauth.html');await new Promise(resolve=>setImmediate(resolve));
+ p.context.fetch=async url=>({ok:true,json:async()=>({configured:true,editable:false,source:'queue',app_id_mask:'ap***12',app_key_mask:'ke***34',secret_key_mask:'se***56',sign_key_mask:'si***78'})});
+ await vm.runInContext('loadAppConfig()',p.context);
+ assert.equal(p.get('app-config-form').hidden,true);assert.equal(p.get('app-config-masks').hidden,false);
+ assert.equal(p.get('secret-key-mask').textContent,'se***56');assert.equal(p.get('sign-key-mask').textContent,'si***78');
+ p.context.fetch=async url=>({ok:true,json:async()=>({configured:false,editable:true,source:''})});
+ await vm.runInContext('loadAppConfig()',p.context);
+ assert.equal(p.get('app-config-form').hidden,false);assert.equal(p.get('app-config-masks').hidden,true);assert.equal(p.get('device').disabled,true);
+});
+
+test('login page and management pages expose explicit logout without Basic auth',()=>{
+ const login=fs.readFileSync(path.join(root,'index_login.html'),'utf8');
+ assert.match(login,/id="password"/);assert.match(login,/fetch\('\/api\/login'/);assert.match(login,/new URL\(destination,location\.origin\)/);
+ for(const name of ['index_ws.html','index_poll.html','index_intake.html','index_oauth.html']){
+  const html=fs.readFileSync(path.join(root,name),'utf8');assert.match(html,/logoutAdmin\(\)/,name);
+ }
+ const shared=fs.readFileSync(path.join(root,'res','shared.js'),'utf8');assert.match(shared,/fetch\('\/api\/logout'/);
+});
+
 function page(name, tasks = []) {
     const nodes = new Map();
     const get = id => {
@@ -128,10 +159,13 @@ test('OAuth page only accepts HTTPS Baidu authorization links',()=>{
 
 test('OAuth page tells new users where to create a Baidu Netdisk app and configure its keys',()=>{
     const html=fs.readFileSync(path.join(root,'index_oauth.html'),'utf8');
-    assert.match(html,/https:\/\/yun\.baidu\.com\/open\/platform/);
-    assert.match(html,/https:\/\/pan\.baidu\.com\/union\/apply/);
-    assert.match(html,/AppKey.*client_id/);
-    assert.match(html,/SecretKey.*client_secret/);
+    assert.match(html,/https:\/\/yun\.baidu\.com\/union/);
+    assert.match(html,/AppID/);
+    assert.match(html,/AppKey/);
+    assert.match(html,/SecretKey/);
+    assert.match(html,/SignKey/);
+    assert.match(html,/设备码 OAuth/);
+    assert.match(html,/不需要 OAuth 授权回调地址/);
     assert.match(html,/百度网盘应用/);
     assert.match(html,/请勿发给他人/);
 });
@@ -251,4 +285,46 @@ test('uncertain source operation is visible and has no root action controls',()=
  assert.ok(vm.runInContext("getStatusBadge('source_unknown')",p.context).includes('禁止重发'));
  const controls=vm.runInContext('taskControls(task)',p.context);
  assert.ok(!controls.includes('data-action='));
+});
+
+test('cloud management page exposes live browsing, cache sizing, scan controls and remote CRUD without upload',()=>{
+ const html=fs.readFileSync(path.join(root,'index_cloud.html'),'utf8');
+ const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match=>match[1]);
+ assert.equal(scripts.length,1);
+ new vm.Script(scripts[0]);
+ assert.ok(html.includes('/api/cloud-inventory/size?dir='));
+ assert.ok(html.includes('d.cached_at_utc'));
+ assert.ok(html.includes('云端最近观测'));
+ assert.ok(html.includes('/api/cloud-inventory/scan'));
+	assert.ok(html.includes('/api/cloud-cleanup/empty-directories'));
+	assert.ok(html.includes('require_empty_directory:true'));
+	assert.ok(html.includes('已确认删除'));
+ assert.ok(html.includes('/api/cloud/mutations'));
+ assert.ok(html.includes("mutate('delete',x)"));
+ assert.ok(html.includes("mutate('move',x"));
+ assert.ok(html.includes("mutate('rename',x"));
+ assert.ok(!/<input[^>]+type=["']file/i.test(html));
+ assert.ok(html.includes('id="scan-start"'));
+	assert.ok(html.includes('s.pending_count'));
+	assert.ok(html.includes('/api/cloud-cleanup/duplicate-scan'));
+	assert.ok(html.includes('/api/cloud-cleanup/duplicates'));
+	assert.ok(html.includes('expected_content_sha256'));
+	assert.ok(html.includes('id="duplicate-delete-all"'));
+	assert.ok(html.includes('/api/cloud-cleanup/duplicate-scan'));
+	assert.ok(html.includes('/api/cloud-cleanup/duplicates'));
+	assert.ok(html.includes('expected_content_sha256'));
+	assert.ok(html.includes('id="duplicate-start"'));
+ assert.ok(html.includes('id="directory"'));
+});
+
+test('cloud page exposes persisted monitor and local download path settings',()=>{
+	const cloudPage=fs.readFileSync(path.join(root,'index_cloud.html'),'utf8');
+	assert.match(cloudPage,/id="path-form"/);
+	assert.match(cloudPage,/id="queue-path"/);
+	assert.match(cloudPage,/id="local-path"/);
+	assert.match(cloudPage,/id="migrate-local-files"/);
+	assert.match(cloudPage,/\/api\/settings\/local-migration/);
+	assert.match(cloudPage,/核对内容/);
+	assert.match(cloudPage,/\/api\/settings\/paths/);
+	assert.match(cloudPage,/由 \.env 或启动参数显式设置的路径在网页中只读/);
 });

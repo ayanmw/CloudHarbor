@@ -75,6 +75,41 @@ func TestApplyPersistsBeforePublishingAndRejectsAccountSwitch(t *testing.T) {
 	}
 }
 
+func TestConfigureAppPersistsThenUsesNewKeysForAuthorization(t *testing.T) {
+	store := newStore(t)
+	var sawKey string
+	p := provider{account: func(_ context.Context, _, key string) (string, error) { sawKey = key; return "123", nil }}
+	manager, err := Open(store, Options{}, p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := false
+	if err = manager.ConfigureApp(context.Background(), "new-app", "new-secret", func() error { persisted = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !persisted {
+		t.Fatal("configuration was not persisted")
+	}
+	if err = manager.Apply(context.Background(), &oauth.TokenResponse{AccessToken: "access", RefreshToken: "refresh", ExpiresIn: 3600}); err != nil {
+		t.Fatal(err)
+	}
+	if sawKey != "new-app" {
+		t.Fatalf("authorization used app key %q", sawKey)
+	}
+}
+
+func TestConfigureAppRejectsMismatchBeforePersisting(t *testing.T) {
+	manager, err := Open(newStore(t), Options{AppKey: "old-app", SecretKey: "old-secret"}, provider{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := false
+	err = manager.ConfigureApp(context.Background(), "new-app", "new-secret", func() error { persisted = true; return nil })
+	if err == nil || persisted {
+		t.Fatal("configuration mismatch must be rejected before persistence")
+	}
+}
+
 func TestSavedRotationWinsOverStaleEnvironmentAndRefreshesOnlyOnce(t *testing.T) {
 	store := newStore(t)
 	var refreshes atomic.Int32

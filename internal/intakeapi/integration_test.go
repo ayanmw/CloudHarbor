@@ -118,7 +118,7 @@ func TestHTTPIntakePersistsOnceAndSurvivesRestart(t *testing.T) {
 		t.Helper()
 		r, _ := http.NewRequest(method, server.URL+endpoint, strings.NewReader(body))
 		if authorized {
-			r.SetBasicAuth("admin", "local-test-administrator")
+			r.Header.Set("Authorization", "Bearer local-test-administrator")
 		}
 		response, err := http.DefaultClient.Do(r)
 		if err != nil {

@@ -92,6 +92,28 @@ func TestReconcileDoesNotPublishJobsWhenBatchPersistenceFails(t *testing.T) {
 	}
 }
 
+func TestReconcileQuarantinesIdentityWithUnknownRemoteMutation(t *testing.T) {
+	root := t.TempDir()
+	d := NewDownloader(&config.Config{LocalDownDir: root, QueueDir: "/queue", MaxParallel: 1}, baiduapi.NewClient("token", "app"))
+	defer d.cancel()
+	store, err := taskstore.Open(filepath.Join(root, stateDirectory, "queue"), "/queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	d.queue.store = store
+	d.queue.started = true
+	d.SetAuthentication(baiduapi.NewClient("token", "app"), true, time.Now().Add(time.Hour))
+	info := file(881, "uncertain.bin", 10)
+	d.queue.blockedRemoteIDs[info.FsID] = true
+	if err = d.queue.reconcileObserved([]baiduapi.FileInfo{info}, d.authEpoch, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if d.queue.jobs[info.FsID] != nil || d.queue.eligible[info.FsID] != nil {
+		t.Fatalf("unknown remote identity entered the download queue: job=%+v eligible=%+v", d.queue.jobs[info.FsID], d.queue.eligible[info.FsID])
+	}
+}
+
 func TestCloudScanEvidenceSeparatesObservationFromProviderMtime(t *testing.T) {
 	root := t.TempDir()
 	d := NewDownloader(&config.Config{LocalDownDir: root, QueueDir: "/queue"}, baiduapi.NewClient("token", "app"))

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理员登录</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#f4f6fa;color:#243047;margin:0;padding:10vh 16px}.container{max-width:420px;margin:auto}.card{background:white;border-radius:12px;padding:28px;box-shadow:0 3px 18px #2030520d}h1{font-size:24px;margin-top:0}label{display:block;margin:18px 0 6px}input{box-sizing:border-box;width:100%;padding:12px;border:1px solid #ccd4e0;border-radius:6px;font:inherit}button{width:100%;padding:12px;border:0;border-radius:6px;background:#2465d7;color:white;font:inherit;cursor:pointer;margin-top:20px}button:disabled{opacity:.5;cursor:wait}#message{min-height:1.5em;color:#a3332a;white-space:pre-wrap}
+</style>
+</head>
+<body><main class="container"><section class="card"><h1>管理员登录</h1><p>输入现有 admin-key 或 ADMIN_PASSWORD。</p>
+<form id="login-form"><label for="password">管理员密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096"><button id="submit" type="submit">登录</button></form><p id="message" role="status"></p>
+</section></main>
+<script>
+document.getElementById('login-form').addEventListener('submit',async event=>{
+ event.preventDefault();const input=document.getElementById('password');const button=document.getElementById('submit');const message=document.getElementById('message');button.disabled=true;message.textContent='';
+ try{const response=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:input.value})});if(!response.ok)throw new Error(response.status===429?'登录尝试过多，请稍后再试。':'密码错误或登录服务不可用。');input.value='';let target='/';const destination=new URLSearchParams(location.search).get('next');if(destination){try{const resolved=new URL(destination,location.origin);if(resolved.origin===location.origin)target=resolved.href;}catch{}}location.replace(target);}
+ catch(error){message.textContent=error.message;input.value='';input.focus();}
+ finally{button.disabled=false;}
+});
+</script></body></html>

@@ -185,9 +185,274 @@ func Open(dir, scope string) (*Store, error) {
 			if err = migrateV1(s, scope); err != nil {
 				return nil, err
 			}
+		case 2:
+			migrationAction = "migrated_v2"
+			if err = migrateV2(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV3(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV4(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV5(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV6(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV7(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV8(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV9(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV10(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV11(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 3:
+			migrationAction = "migrated_v3"
+			if err = migrateV3(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV4(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV5(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV6(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV7(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV8(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV9(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV10(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV11(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 4:
+			migrationAction = "migrated_v4"
+			if err = migrateV4(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV5(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV6(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV7(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV8(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV9(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV10(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV11(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 5:
+			migrationAction = "migrated_v5"
+			if err = migrateV5(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV6(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV7(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV8(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV9(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV10(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV11(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 6:
+			migrationAction = "migrated_v6"
+			if err = migrateV6(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV7(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV8(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV9(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV10(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV11(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 7:
+			migrationAction = "migrated_v7"
+			if err = migrateV7(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV8(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV9(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV10(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV11(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 8:
+			migrationAction = "migrated_v8"
+			if err = migrateV8(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV9(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV10(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV11(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 9:
+			migrationAction = "migrated_v9"
+			if err = migrateV9(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV10(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV11(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 10:
+			migrationAction = "migrated_v10"
+			if err = migrateV10(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV11(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 11:
+			migrationAction = "migrated_v11"
+			if err = migrateV11(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 12:
+			migrationAction = "migrated_v12"
+			if err = migrateV12(s, scope); err != nil {
+				return nil, err
+			}
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 13:
+			migrationAction = "migrated_v13"
+			if err = migrateV13(s, scope); err != nil {
+				return nil, err
+			}
+		case 14:
+			migrationAction = "migrated_v14"
 		case sqliteSchemaVersion:
 		default:
 			return nil, fmt.Errorf("unsupported queue format version %d", m.Version)
+		}
+		if m.Version < sqliteSchemaVersion {
+			if err = migrateV14(s, scope); err != nil {
+				return nil, err
+			}
 		}
 	}
 	s.migrationAction = migrationAction
@@ -204,8 +469,42 @@ func Open(dir, scope string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = s.recoverRemoteOperations(); err != nil {
+		return nil, err
+	}
 	success = true
 	return s, nil
+}
+
+// OpenUsingExistingScope keeps historical task storage bound to its original
+// monitor path when an operator changes that path through persisted settings.
+func OpenUsingExistingScope(dir, fallbackScope string) (*Store, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	manifestPath := filepath.Join(abs, "manifest.json")
+	if err = safePath(filepath.Dir(abs)); err != nil {
+		return nil, err
+	}
+	if err = safePath(abs); err != nil {
+		return nil, err
+	}
+	if err = safePath(manifestPath); err != nil {
+		return nil, err
+	}
+	body, err := os.ReadFile(manifestPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return Open(dir, fallbackScope)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var existing manifest
+	if err = json.Unmarshal(body, &existing); err != nil || existing.Scope == "" {
+		return nil, fmt.Errorf("queue manifest corrupt or unsupported")
+	}
+	return Open(dir, existing.Scope)
 }
 
 // StartupDiagnostics returns a read-only summary of the queue opened by this
@@ -533,6 +832,34 @@ func (s *Store) LoadSettings() ([]byte, error) {
 	}
 	name := filepath.Join(s.dir, "settings.json")
 	if err := safePath(name); err != nil {
+		return nil, err
+	}
+	body, err := os.ReadFile(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > 4096 || !json.Valid(body) {
+		return nil, fmt.Errorf("corrupt settings")
+	}
+	return body, nil
+}
+
+func ReadSettingsFile(dir string) ([]byte, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	if err = safePath(filepath.Dir(abs)); err != nil {
+		return nil, err
+	}
+	if err = safePath(abs); err != nil {
+		return nil, err
+	}
+	name := filepath.Join(abs, "settings.json")
+	if err = safePath(name); err != nil {
 		return nil, err
 	}
 	body, err := os.ReadFile(name)

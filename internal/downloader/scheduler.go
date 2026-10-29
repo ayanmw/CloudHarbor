@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,22 +52,26 @@ type scheduler struct {
 	delayed candidateHeap
 	// eligible points into jobs when scan metadata matches, and owns a separate
 	// snapshot only while a changed identity conflicts with an active/unknown job.
-	eligible       map[int64]*baiduapi.FileInfo
-	blockedIntakes map[string]bool
-	blockedSources map[string]bool
-	active         map[int64]context.CancelFunc
-	wake           chan struct{}
-	done           chan struct{}
-	wg             sync.WaitGroup
-	started        bool
-	stopping       bool
-	err            error
-	closeErr       error
-	shutdownOnce   sync.Once
-	statsCache     taskStatsCache
-	nameIndex      taskOrderIndex
-	sizeIndex      taskOrderIndex
-	progressIndex  progressTaskIndex
+	eligible           map[int64]*baiduapi.FileInfo
+	blockedIntakes     map[string]bool
+	blockedSources     map[string]bool
+	blockedRemoteIDs   map[int64]bool
+	blockedRemotePaths map[string]bool
+	active             map[int64]context.CancelFunc
+	wake               chan struct{}
+	done               chan struct{}
+	wg                 sync.WaitGroup
+	started            bool
+	maintenance        bool
+	activeChanged      chan struct{}
+	stopping           bool
+	err                error
+	closeErr           error
+	shutdownOnce       sync.Once
+	statsCache         taskStatsCache
+	nameIndex          taskOrderIndex
+	sizeIndex          taskOrderIndex
+	progressIndex      progressTaskIndex
 }
 
 type taskStatsCache struct {
@@ -90,7 +95,19 @@ type progressTaskIndex struct {
 }
 
 func newScheduler(d *Downloader) *scheduler {
-	return &scheduler{owner: d, jobs: make(map[int64]*queueJob), eligible: make(map[int64]*baiduapi.FileInfo), blockedIntakes: make(map[string]bool), active: make(map[int64]context.CancelFunc), wake: make(chan struct{}, 32), done: make(chan struct{})}
+	return &scheduler{owner: d, jobs: make(map[int64]*queueJob), eligible: make(map[int64]*baiduapi.FileInfo), blockedIntakes: make(map[string]bool), blockedRemoteIDs: make(map[int64]bool), blockedRemotePaths: make(map[string]bool), active: make(map[int64]context.CancelFunc), activeChanged: make(chan struct{}), wake: make(chan struct{}, 32), done: make(chan struct{})}
+}
+
+func (q *scheduler) isRemoteBlocked(id int64, cloudPath string) bool {
+	if q.blockedRemoteIDs[id] || q.blockedRemotePaths[cloudPath] {
+		return true
+	}
+	for blocked := range q.blockedRemotePaths {
+		if insideCloud(cloudPath, blocked) {
+			return true
+		}
+	}
+	return false
 }
 func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, error) {
 	if cfg.MaxParallel < 0 || cfg.MaxParallel > 32 || cfg.MaxRetries < 0 || cfg.MaxRetries > 20 || cfg.RetryBackoffSeconds < 0 {
@@ -100,21 +117,50 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		return nil, fmt.Errorf("QUEUE_DIR must be an absolute cloud path")
 	}
 	d := NewDownloader(cfg, client)
-	root, err := filepath.Abs(cfg.LocalDownDir)
+	stateRoot := cfg.StateDir
+	if stateRoot == "" {
+		stateRoot = filepath.Join(cfg.LocalDownDir, stateDirectory)
+	}
+	root, err := filepath.Abs(stateRoot)
 	if err == nil {
-		err = rejectSymlinks(root, filepath.Join(stateDirectory, "queue"))
+		err = rejectSymlinks(filepath.Dir(root), filepath.Base(root))
 	}
 	if err != nil {
 		d.cancel()
 		return nil, err
 	}
-	store, err := taskstore.Open(filepath.Join(root, stateDirectory, "queue"), path.Clean(cfg.QueueDir))
+	queueStateDir := filepath.Join(root, "queue")
+	var store *taskstore.Store
+	if cfg.StateDir != "" {
+		store, err = taskstore.OpenUsingExistingScope(queueStateDir, path.Clean(cfg.QueueDir))
+	} else {
+		store, err = taskstore.Open(queueStateDir, path.Clean(cfg.QueueDir))
+	}
 	if err != nil {
 		d.cancel()
 		return nil, err
 	}
 	d.queue.store = store
 	d.intakeJournal = store
+	remoteOperations, err := store.LoadRemoteOperations()
+	if err != nil {
+		store.Close()
+		d.cancel()
+		return nil, err
+	}
+	for _, operation := range remoteOperations {
+		if operation.Status == "unknown" && client != nil && operation.AccountFingerprint == client.Fingerprint() {
+			if operation.ObjectID > 0 {
+				d.queue.blockedRemoteIDs[operation.ObjectID] = true
+			}
+			if operation.SourcePath != "" {
+				d.queue.blockedRemotePaths[operation.SourcePath] = true
+			}
+			if operation.DestinationPath != "" {
+				d.queue.blockedRemotePaths[operation.DestinationPath] = true
+			}
+		}
+	}
 	settings, err := store.LoadSettings()
 	if err != nil {
 		store.Close()
@@ -123,14 +169,40 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 	}
 	if len(settings) > 0 {
 		var saved struct {
-			Mode DownloadMode `json:"download_mode"`
+			Mode         DownloadMode `json:"download_mode"`
+			QueueDir     string       `json:"managed_queue_dir,omitempty"`
+			LocalDownDir string       `json:"managed_local_download_dir,omitempty"`
 		}
-		if err = json.Unmarshal(settings, &saved); err != nil || (saved.Mode != DownloadModeKeep && saved.Mode != DownloadModeDelete) {
+		if err = json.Unmarshal(settings, &saved); err != nil || (saved.Mode != "" && saved.Mode != DownloadModeKeep && saved.Mode != DownloadModeDelete) {
 			store.Close()
 			d.cancel()
-			return nil, fmt.Errorf("invalid persisted download mode")
+			return nil, fmt.Errorf("invalid persisted settings")
 		}
-		d.downloadMode = saved.Mode
+		if saved.Mode != "" {
+			d.downloadMode = saved.Mode
+		}
+		if saved.QueueDir != "" && !cfg.QueueDirExplicit {
+			if !validCloudPath(saved.QueueDir) || saved.QueueDir == "/" {
+				store.Close()
+				d.cancel()
+				return nil, fmt.Errorf("invalid persisted cloud monitor path")
+			}
+			d.queueDir = saved.QueueDir
+		}
+		if saved.LocalDownDir != "" && !cfg.LocalDownDirExplicit {
+			local, pathErr := filepath.Abs(saved.LocalDownDir)
+			if pathErr != nil || (cfg.StateDir != "" && pathsOverlap(local, cfg.StateDir)) {
+				store.Close()
+				d.cancel()
+				return nil, fmt.Errorf("invalid persisted local download path")
+			}
+			d.localDownDir = local
+		}
+	}
+	if cfg.StateDir != "" && pathsOverlap(d.localDownDir, cfg.StateDir) {
+		store.Close()
+		d.cancel()
+		return nil, fmt.Errorf("local download path overlaps application state directory")
 	}
 	var recoveredJobs []*queueJob
 	var recoveryEvents []taskstore.Event
@@ -183,6 +255,14 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 	}
 	d.queue.rebuildSourceBlocks()
 	if err = d.loadIntakes(); err != nil {
+		store.Close()
+		d.cancel()
+		return nil, err
+	}
+	if _, err = store.LoadActiveLocalDirectoryMigration(); err == nil {
+		d.queue.maintenance = true
+		d.localMigrationPending = true
+	} else if err != sql.ErrNoRows {
 		store.Close()
 		d.cancel()
 		return nil, err
@@ -393,7 +473,7 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 	seen := make(map[int64]struct{}, len(files))
 	for _, f := range files {
 		f = shareFileInfoStrings(f)
-		if q.blockedIntakes[f.Path] || q.blockedSources[f.Path] {
+		if q.isRemoteBlocked(f.FsID, f.Path) || q.blockedIntakes[f.Path] || q.blockedSources[f.Path] {
 			continue
 		}
 		if strings.HasSuffix(f.ServerFilename, ".可删除") {
@@ -439,7 +519,7 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 	q.clearCandidates()
 	for id, job := range q.jobs {
 		// A quarantined target was deliberately excluded above, not missing.
-		if q.blockedIntakes[job.Info.Path] || q.blockedSources[job.Info.Path] {
+		if q.isRemoteBlocked(job.Info.FsID, job.Info.Path) || q.blockedIntakes[job.Info.Path] || q.blockedSources[job.Info.Path] {
 			continue
 		}
 		if job.Status == "auth_wait" && eligible[id] != nil && *eligible[id] == job.Info && q.active[id] == nil {
@@ -511,7 +591,7 @@ func (q *scheduler) claim() (*queueJob, context.Context, time.Duration) {
 func (q *scheduler) claimAt(now time.Time) (*queueJob, context.Context, time.Duration) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.stopping || q.err != nil || q.owner.ctx.Err() != nil {
+	if q.stopping || q.maintenance || q.err != nil || q.owner.ctx.Err() != nil {
 		return nil, nil, 0
 	}
 	if !q.owner.AuthenticationReady() {
@@ -600,6 +680,8 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 		cancel()
 	}
 	delete(q.active, id)
+	close(q.activeChanged)
+	q.activeChanged = make(chan struct{})
 	q.owner.taskMutex.Lock()
 	delete(q.owner.inFlight, id)
 	q.owner.taskMutex.Unlock()
@@ -694,6 +776,47 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 	q.reflect(job)
 	q.enqueueCandidate(job)
 	q.signal()
+}
+
+// BeginMaintenance stops new claims and waits for active tasks to finish.
+// The caller must call EndMaintenance after its external operation.
+func (d *Downloader) BeginMaintenance(ctx context.Context) error {
+	q := d.queue
+	q.mu.Lock()
+	if q.stopping || q.err != nil {
+		q.mu.Unlock()
+		return fmt.Errorf("download queue is unavailable")
+	}
+	if q.maintenance {
+		q.mu.Unlock()
+		return fmt.Errorf("download queue is already under maintenance")
+	}
+	q.maintenance = true
+	q.signal()
+	q.mu.Unlock()
+	for {
+		q.mu.Lock()
+		if len(q.active) == 0 {
+			q.mu.Unlock()
+			return nil
+		}
+		changed := q.activeChanged
+		q.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			d.EndMaintenance()
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (d *Downloader) EndMaintenance() {
+	q := d.queue
+	q.mu.Lock()
+	q.maintenance = false
+	q.signal()
+	q.mu.Unlock()
 }
 
 func downloadOutcomeClass(job *queueJob, err error, stopping bool) string {

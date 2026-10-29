@@ -29,17 +29,19 @@ func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 // Fake only the remote provider; exercise the real API client, downloader and disk.
 type provider struct {
-	lists      map[string][]baiduapi.FileInfo
-	actions    []string
-	failAction bool
-	mu         sync.Mutex
+	lists            map[string][]baiduapi.FileInfo
+	metadataFailures map[int64]int
+	metadataCalls    map[int64]int
+	actions          []string
+	failAction       bool
+	mu               sync.Mutex
 }
 
 func setup(t testing.TB, content http.HandlerFunc) (*Downloader, *provider) {
 	t.Helper()
 	srv := httptest.NewServer(content)
 	t.Cleanup(srv.Close)
-	p := &provider{lists: map[string][]baiduapi.FileInfo{}}
+	p := &provider{lists: map[string][]baiduapi.FileInfo{}, metadataFailures: map[int64]int{}, metadataCalls: map[int64]int{}}
 	original := http.DefaultTransport
 	http.DefaultTransport = transportFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host != "pan.baidu.com" {
@@ -55,6 +57,12 @@ func setup(t testing.TB, content http.HandlerFunc) (*Downloader, *provider) {
 				fmt.Sscanf(r.URL.Query().Get("fsids"), "[%d]", &id)
 				var found []baiduapi.FileInfo
 				p.mu.Lock()
+				p.metadataCalls[id]++
+				if p.metadataFailures[id] > 0 {
+					p.metadataFailures[id]--
+					p.mu.Unlock()
+					return &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"errno":1}`)), Request: r}, nil
+				}
 				for _, items := range p.lists {
 					for _, item := range items {
 						if item.FsID == id {

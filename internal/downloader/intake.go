@@ -90,10 +90,11 @@ func validListingFile(dir string, f baiduapi.FileInfo) bool {
 	return f.FsID > 0 && f.Size >= 0 && validName(f.ServerFilename) && f.Path == path.Join(dir, f.ServerFilename) && (f.IsDir == 0 || f.IsDir == 1)
 }
 func (d *Downloader) previewIntakeItems(client *baiduapi.Client, paths []string) ([]IntakeItem, error) {
-	if err := validateIntakePaths(paths, d.cfg.QueueDir); err != nil {
+	queueDir := d.QueueDirectory()
+	if err := validateIntakePaths(paths, queueDir); err != nil {
 		return nil, err
 	}
-	queued, err := checkedListing(client, d.cfg.QueueDir)
+	queued, err := checkedListing(client, queueDir)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +102,7 @@ func (d *Downloader) previewIntakeItems(client *baiduapi.Client, paths []string)
 	ids := make(map[int64]bool)
 	result := make([]IntakeItem, 0, len(paths))
 	for _, source := range paths {
-		target := intakeTarget(d.cfg.QueueDir, source)
+		target := intakeTarget(queueDir, source)
 		for _, f := range queued {
 			if strings.EqualFold(f.ServerFilename, path.Base(target)) {
 				return nil, ErrIntakeConflict
@@ -129,7 +130,7 @@ func (d *Downloader) previewIntakeItems(client *baiduapi.Client, paths []string)
 		}
 		ids[found.FsID] = true
 		d.queue.mu.Lock()
-		conflict := d.queue.blockedIntakes[target] || d.queue.blockedSources[target] || d.queue.jobs[found.FsID] != nil
+		conflict := d.queue.isRemoteBlocked(found.FsID, found.Path) || d.queue.blockedIntakes[target] || d.queue.blockedSources[target] || d.queue.jobs[found.FsID] != nil
 		d.queue.mu.Unlock()
 		if conflict {
 			return nil, ErrIntakeConflict
@@ -155,12 +156,13 @@ func (d *Downloader) PreviewIntake(ctx context.Context, paths []string) (Intake,
 		d.reportAuthenticationFailure(err)
 		return Intake{}, err
 	}
+	queueDir := d.QueueDirectory()
 	id, err := newIntakeID()
 	if err != nil {
 		return Intake{}, err
 	}
 	now := time.Now()
-	r := intakeRecord{Version: 1, Epoch: epoch, Boot: d.intakeBoot, Intake: Intake{ID: id, State: "preview", QueueDir: d.cfg.QueueDir, Mode: d.GetDownloadMode(), Created: now, Expires: now.Add(2 * time.Minute), Items: items}}
+	r := intakeRecord{Version: 1, Epoch: epoch, Boot: d.intakeBoot, Intake: Intake{ID: id, State: "preview", QueueDir: queueDir, Mode: d.GetDownloadMode(), Created: now, Expires: now.Add(2 * time.Minute), Items: items}}
 	if err = d.saveIntake(r); err != nil {
 		return Intake{}, err
 	}
@@ -225,7 +227,8 @@ func (d *Downloader) checkIntakeOutcome(client *baiduapi.Client, item IntakeItem
 	if err != nil {
 		return baiduapi.FileInfo{}, false, false, err
 	}
-	targets, err := checkedListing(client, d.cfg.QueueDir)
+	queueDir := d.QueueDirectory()
+	targets, err := checkedListing(client, queueDir)
 	if err != nil {
 		return baiduapi.FileInfo{}, false, false, err
 	}
@@ -275,6 +278,7 @@ func (d *Downloader) CommitIntake(ctx context.Context, id string) (Intake, error
 	for i, item := range r.Items {
 		paths[i] = item.Source.Path
 	}
+	queueDir := d.QueueDirectory()
 	fresh, err := d.previewIntakeItems(client, paths)
 	if err != nil {
 		d.reportAuthenticationFailure(err)
@@ -310,7 +314,7 @@ func (d *Downloader) CommitIntake(ctx context.Context, id string) (Intake, error
 			item.Error = "authorization_changed_or_cancelled"
 			break
 		}
-		moveErr := client.MoveFile(item.Source.Path, d.cfg.QueueDir, path.Base(item.Target))
+		moveErr := client.MoveFile(item.Source.Path, queueDir, path.Base(item.Target))
 		var async *baiduapi.AsyncMoveError
 		if moveErr == nil {
 			item.SyncConfirmed = true

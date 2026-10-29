@@ -3,8 +3,10 @@ package authorization
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 	"web_browser_baidu_onekey_upload/internal/credentials"
@@ -31,6 +33,8 @@ func (baiduProvider) Poll(ctx context.Context, key, secret, code string, interva
 
 type session struct {
 	code     string
+	key      string
+	secret   string
 	interval int
 	deadline time.Time
 	ctx      context.Context
@@ -52,6 +56,21 @@ func New(ctx context.Context, key, secret string, manager Manager, provider Prov
 		provider = baiduProvider{}
 	}
 	return &Server{ctx: ctx, key: key, secret: secret, manager: manager, provider: provider}
+}
+
+func (s *Server) ConfigureApp(key, secret string) error {
+	if strings.TrimSpace(key) == "" || strings.TrimSpace(secret) == "" || len(key) > 4096 || len(secret) > 4096 {
+		return fmt.Errorf("invalid Baidu application config")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.generation++
+	if s.session != nil {
+		s.session.cancel()
+		s.session = nil
+	}
+	s.key, s.secret = key, secret
+	return nil
 }
 func postOnly(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != "POST" {
@@ -76,11 +95,8 @@ func (s *Server) HandleDeviceCode(w http.ResponseWriter, r *http.Request) {
 	if !postOnly(w, r) {
 		return
 	}
-	if s.key == "" || s.secret == "" {
-		http.Error(w, "BAIDU_APP_KEY / BAIDU_SECRET_KEY 未配置", 400)
-		return
-	}
 	s.mu.Lock()
+	key, secret := s.key, s.secret
 	s.generation++
 	generation := s.generation
 	if s.session != nil {
@@ -88,7 +104,11 @@ func (s *Server) HandleDeviceCode(w http.ResponseWriter, r *http.Request) {
 		s.session = nil
 	}
 	s.mu.Unlock()
-	device, err := s.provider.Device(r.Context(), s.key)
+	if key == "" || secret == "" {
+		http.Error(w, "BAIDU_APP_KEY / BAIDU_SECRET_KEY 未配置", 400)
+		return
+	}
+	device, err := s.provider.Device(r.Context(), key)
 	if err != nil {
 		http.Error(w, "device authorization request failed", 502)
 		return
@@ -100,7 +120,7 @@ func (s *Server) HandleDeviceCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, cancel := context.WithDeadline(s.ctx, time.Now().Add(time.Duration(device.ExpiresIn)*time.Second))
-	s.session = &session{code: device.DeviceCode, interval: device.Interval, deadline: time.Now().Add(time.Duration(device.ExpiresIn) * time.Second), ctx: ctx, cancel: cancel}
+	s.session = &session{code: device.DeviceCode, key: key, secret: secret, interval: device.Interval, deadline: time.Now().Add(time.Duration(device.ExpiresIn) * time.Second), ctx: ctx, cancel: cancel}
 	respond(w, device)
 }
 func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +160,7 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 	if remaining < 1 {
 		remaining = 1
 	}
-	token, err := s.provider.Poll(ctx, s.key, s.secret, current.code, current.interval, remaining)
+	token, err := s.provider.Poll(ctx, current.key, current.secret, current.code, current.interval, remaining)
 	if err != nil {
 		http.Error(w, "device authorization incomplete, cancelled or failed", 502)
 		return

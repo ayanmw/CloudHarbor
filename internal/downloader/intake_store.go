@@ -135,20 +135,20 @@ func (d *Downloader) loadIntakes() error {
 	}
 	for id, body := range records {
 		var r intakeRecord
-		if json.Unmarshal(body, &r) != nil || r.ID != id || !validIntakeID(r.ID) || r.Version != 1 || r.QueueDir != d.cfg.QueueDir || len(r.Items) < 1 || len(r.Items) > 20 || (r.Mode != DownloadModeKeep && r.Mode != DownloadModeDelete) || (r.State != "preview" && r.State != "running" && r.State != "finished") {
+		if json.Unmarshal(body, &r) != nil || r.ID != id || !validIntakeID(r.ID) || r.Version != 1 || r.QueueDir != d.QueueDirectory() || len(r.Items) < 1 || len(r.Items) > 20 || (r.Mode != DownloadModeKeep && r.Mode != DownloadModeDelete) || (r.State != "preview" && r.State != "running" && r.State != "finished") {
 			return fmt.Errorf("invalid intake record")
 		}
 		paths := make([]string, len(r.Items))
 		for i, item := range r.Items {
 			paths[i] = item.Source.Path
 		}
-		if validateIntakePaths(paths, d.cfg.QueueDir) != nil {
+		if validateIntakePaths(paths, d.QueueDirectory()) != nil {
 			return fmt.Errorf("invalid intake paths")
 		}
 		changed := r.State == "running"
 		for i := range r.Items {
 			item := &r.Items[i]
-			if item.Source.FsID <= 0 || item.Source.Size < 0 || (item.Source.IsDir != 0 && item.Source.IsDir != 1) || item.Source.ServerFilename != path.Base(item.Source.Path) || item.SourceID != fmt.Sprint(item.Source.FsID) || item.Target != intakeTarget(d.cfg.QueueDir, item.Source.Path) {
+			if item.Source.FsID <= 0 || item.Source.Size < 0 || (item.Source.IsDir != 0 && item.Source.IsDir != 1) || item.Source.ServerFilename != path.Base(item.Source.Path) || item.SourceID != fmt.Sprint(item.Source.FsID) || item.Target != intakeTarget(d.QueueDirectory(), item.Source.Path) {
 				return fmt.Errorf("invalid intake item identity")
 			}
 			switch item.State {

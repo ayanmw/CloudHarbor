@@ -66,6 +66,23 @@ func TestDeviceSessionOwnsPollingAndAppliesWithoutReturningTokens(t *testing.T) 
 	}
 }
 
+func TestConfigureAppImmediatelyEnablesDeviceAuthorization(t *testing.T) {
+	var gotKey string
+	p := fakeProvider{device: func(_ context.Context, key string) (*oauth.DeviceCodeResponse, error) {
+		gotKey = key
+		return &oauth.DeviceCodeResponse{DeviceCode: "configured-code", Interval: 1, ExpiresIn: 60}, nil
+	}}
+	server := New(context.Background(), "", "", &fakeManager{}, p)
+	if err := server.ConfigureApp("new-app", "new-secret"); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	server.HandleDeviceCode(w, httptest.NewRequest(http.MethodPost, "/api/oauth/device-code", nil))
+	if w.Code != http.StatusOK || gotKey != "new-app" {
+		t.Fatalf("status=%d key=%q body=%s", w.Code, gotKey, w.Body.String())
+	}
+}
+
 func TestNewDeviceSessionCancelsPreviousPoll(t *testing.T) {
 	started := make(chan struct{})
 	cancelled := make(chan struct{})

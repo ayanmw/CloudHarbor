@@ -242,7 +242,7 @@ func (d *Downloader) localPath(relative string) (string, error) {
 	if strings.EqualFold(components[0], stateDirectory) {
 		return "", fmt.Errorf("reserved local state directory")
 	}
-	root, err := filepath.Abs(d.cfg.LocalDownDir)
+	root, err := filepath.Abs(d.LocalDownloadDirectory())
 	if err != nil {
 		return "", err
 	}
@@ -361,7 +361,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	if err := ensureDirectory(filepath.Dir(local)); err != nil {
 		return err
 	}
-	root, err := filepath.Abs(d.cfg.LocalDownDir)
+	root, err := filepath.Abs(d.LocalDownloadDirectory())
 	if err != nil {
 		return err
 	}

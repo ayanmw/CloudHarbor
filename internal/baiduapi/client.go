@@ -32,10 +32,20 @@ func requestError(err error) error {
 
 // Client 百度网盘 API 客户端
 type Client struct {
-	AccessToken string
-	AppKey      string
-	ctx         context.Context
-	idleTimeout time.Duration
+	AccessToken  string
+	AppKey       string
+	ctx          context.Context
+	idleTimeout  time.Duration
+	requestPacer RequestPacer
+}
+
+// RequestPacer may be shared by clients that use the same provider quota.
+type RequestPacer interface{ Wait(context.Context) error }
+
+func (c *Client) WithRequestPacer(pacer RequestPacer) *Client {
+	copy := *c
+	copy.requestPacer = pacer
+	return &copy
 }
 
 // Copies keep each worker's cancellation scope independent from token updates.
@@ -167,6 +177,11 @@ func (c *Client) ListDirPage(dir string, start, limit int) ([]FileInfo, bool, er
 }
 
 func (c *Client) listDirPage(dir string, start, limit int) ([]FileInfo, error) {
+	if c.requestPacer != nil {
+		if err := c.requestPacer.Wait(c.context()); err != nil {
+			return nil, err
+		}
+	}
 	const responseLimit = 16 * 1024 * 1024
 	params := url.Values{}
 	params.Set("method", "list")

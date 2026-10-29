@@ -9,6 +9,10 @@ function credentialStatusText(auth) {
     return labels[auth.state] || '账号暂不可用';
 }
 
+async function logoutAdmin() {
+    try { await fetch('/api/logout', {method:'POST'}); } finally { location.replace('/login'); }
+}
+
 const pendingTaskActions = new Set();
 const taskEventPanels = new Map();
 const taskEventPageSize = 20;

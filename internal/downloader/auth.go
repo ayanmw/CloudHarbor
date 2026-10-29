@@ -63,7 +63,7 @@ func (d *Downloader) SetAuthentication(client *baiduapi.Client, ready bool, expi
 	d.authManaged = true
 	d.authReady = ready
 	d.authExpiry = expiry
-	d.client = client
+	d.client = client.WithRequestPacer(d.cloudAPIPacer)
 	if changed {
 		d.authEpoch++
 		q.eligible = make(map[int64]*baiduapi.FileInfo)

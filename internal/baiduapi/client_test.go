@@ -13,6 +13,26 @@ import (
 	"time"
 )
 
+type countingRequestPacer struct{ calls int }
+
+func (p *countingRequestPacer) Wait(ctx context.Context) error { p.calls++; return ctx.Err() }
+
+func TestClientUsesSharedRequestPacerForProviderCalls(t *testing.T) {
+	original := http.DefaultTransport
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"errno":0,"list":[]}`)), Request: r}, nil
+	})
+	defer func() { http.DefaultTransport = original }()
+	pacer := &countingRequestPacer{}
+	client := NewClient("token", "app").WithRequestPacer(pacer).WithContext(context.Background())
+	if _, _, err := client.ListDirPage("/", 0, 10); err != nil {
+		t.Fatal(err)
+	}
+	if pacer.calls != 1 {
+		t.Fatalf("pacer calls=%d, want one", pacer.calls)
+	}
+}
+
 type apiTransport func(*http.Request) (*http.Response, error)
 
 func (f apiTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

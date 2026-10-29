@@ -5,5 +5,5 @@ COPY bin/linux-${TARGETARCH}/baidu-downloader /app/baidu-downloader
 RUN chmod +x /app/baidu-downloader
 WORKDIR /app
 EXPOSE 8080
-ENV SERVER_HOST=0.0.0.0 SERVER_PORT=8080 LOCAL_DOWNLOAD_DIR=/downloads
+ENV SERVER_HOST=0.0.0.0 SERVER_PORT=8080
 ENTRYPOINT ["/app/baidu-downloader"]

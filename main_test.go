@@ -60,17 +60,73 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	}
 	ui = webui.NewServer(dl).WithContext(dl.Context())
 	gate, _ := management.New("private-administrator-password")
+	gate.SetSessionStore(dl)
 	srv := httptest.NewServer(applicationHandler(gate, authorization.New(dl.Context(), "", "", auth, nil)))
 	defer srv.Close()
+	noRedirectClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	for _, path := range []string{"/", "/oauth", "/intake", "/api/cloud", "/api/intakes", "/api/health", "/api/oauth/status", "/api/status", "/api/tasks/3400000000000000123/events", "/res/shared.js", "/res/intake.js", "/ws"} {
-		response, err := http.Get(srv.URL + path)
+		response, err := noRedirectClient.Get(srv.URL + path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		response.Body.Close()
-		if response.StatusCode != 401 {
-			t.Fatalf("anonymous %s status=%d", path, response.StatusCode)
+		want := 401
+		if !strings.HasPrefix(path, "/api/") && path != "/ws" {
+			want = 303
 		}
+		if response.StatusCode != want {
+			t.Fatalf("anonymous %s status=%d want=%d", path, response.StatusCode, want)
+		}
+	}
+	loginRequest, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/login", strings.NewReader(`{"password":"private-administrator-password"}`))
+	loginRequest.Header.Set("Content-Type", "application/json")
+	loginRequest.Header.Set("Origin", srv.URL)
+	loginResponse, err := http.DefaultClient.Do(loginRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginBody, _ := io.ReadAll(loginResponse.Body)
+	loginResponse.Body.Close()
+	if loginResponse.StatusCode != 200 || strings.Contains(string(loginBody), "private-administrator-password") {
+		t.Fatalf("login status=%d body=%s", loginResponse.StatusCode, loginBody)
+	}
+	cookies := loginResponse.Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("login cookies=%d", len(cookies))
+	}
+	statusRequest, _ := http.NewRequest("GET", srv.URL+"/api/status", nil)
+	statusRequest.AddCookie(cookies[0])
+	statusResponse, err := http.DefaultClient.Do(statusRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, statusResponse.Body)
+	statusResponse.Body.Close()
+	if statusResponse.StatusCode != 200 {
+		t.Fatalf("cookie session status=%d", statusResponse.StatusCode)
+	}
+	logoutRequest, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/logout", nil)
+	logoutRequest.AddCookie(cookies[0])
+	logoutRequest.Header.Set("Origin", srv.URL)
+	logoutResponse, err := http.DefaultClient.Do(logoutRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, logoutResponse.Body)
+	logoutResponse.Body.Close()
+	if logoutResponse.StatusCode != 200 {
+		t.Fatalf("logout status=%d", logoutResponse.StatusCode)
+	}
+	replayRequest, _ := http.NewRequest("GET", srv.URL+"/api/status", nil)
+	replayRequest.AddCookie(cookies[0])
+	replayResponse, err := noRedirectClient.Do(replayRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, replayResponse.Body)
+	replayResponse.Body.Close()
+	if replayResponse.StatusCode != 401 {
+		t.Fatalf("revoked session replay status=%d", replayResponse.StatusCode)
 	}
 	req, _ := http.NewRequest("GET", srv.URL+"/api/health", nil)
 	req.Header.Set("Authorization", "Bearer private-administrator-password")
@@ -84,7 +140,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		t.Fatalf("health invented account readiness: %s", body)
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/status", nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +158,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		t.Fatalf("incorrect action DTO: %s", body)
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/status?offset=0&limit=1&sort_by=name", nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +169,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		t.Fatalf("incorrect paged action DTO: %s", body)
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/tasks/3400000000000000123/events?limit=1", nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +184,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		t.Fatalf("task events were not returned in the authenticated response: status=%d body=%s", response.StatusCode, body)
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/tasks/3400000000000000123/events?limit=1&before_sequence="+strconv.FormatInt(*eventPage.NextBeforeSequence, 10), nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +195,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		t.Fatalf("older event page was not returned in sequence: status=%d body=%s", response.StatusCode, body)
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/tasks/43/events", nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +206,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	}
 	for _, target := range []string{"/api/tasks/not-a-number/events", "/api/tasks/3400000000000000123/events?before_sequence=bad"} {
 		req, _ = http.NewRequest("GET", srv.URL+target, nil)
-		req.SetBasicAuth("admin", "private-administrator-password")
+		req.Header.Set("Authorization", "Bearer private-administrator-password")
 		response, err = http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -161,7 +217,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		}
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/tasks/3400000000000000123/events?limit=51", nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +227,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		t.Fatalf("oversized event page accepted: %d", response.StatusCode)
 	}
 	req, _ = http.NewRequest("POST", srv.URL+"/api/tasks/3400000000000000123/events", nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +237,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		t.Fatalf("event mutation method status=%d, want 405", response.StatusCode)
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/status?offset=1&limit=1&sort_by=name", nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +255,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		t.Fatalf("incorrect paged status: %d %s", response.StatusCode, body)
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/status?limit=201", nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +265,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		t.Fatalf("oversized status page accepted: %d", response.StatusCode)
 	}
 	req, _ = http.NewRequest("POST", srv.URL+"/api/tasks/3400000000000000123/retry", nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +275,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 		t.Fatalf("large task ID did not identify existing ineligible task: %d", response.StatusCode)
 	}
 	req, _ = http.NewRequest("POST", srv.URL+"/api/scan", nil)
-	req.SetBasicAuth("admin", "private-administrator-password")
+	req.Header.Set("Authorization", "Bearer private-administrator-password")
 	req.Header.Set("Origin", "https://evil.example")
 	response, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -262,6 +318,45 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	}
 }
 
+func TestManagedPathsHTTPReadAndSave(t *testing.T) {
+	oldCfg, oldDL := cfg, dl
+	t.Cleanup(func() { cfg, dl = oldCfg, oldDL })
+	root := t.TempDir()
+	cfg = &config.Config{LocalDownDir: filepath.Join(root, "downloads"), QueueDir: "/old", StateDir: filepath.Join(root, "state"), MaxParallel: 1}
+	var err error
+	dl, err = downloader.OpenDownloader(cfg, baiduapi.NewClient("token", "app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dl.Shutdown(context.Background()) })
+	get := httptest.NewRecorder()
+	handleManagedPaths(get, httptest.NewRequest(http.MethodGet, "/api/settings/paths", nil))
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"queue_dir":"/old"`) {
+		t.Fatalf("path settings GET: %d %s", get.Code, get.Body.String())
+	}
+	requestBody, err := json.Marshal(downloader.ManagedPaths{QueueDir: "/new", LocalDownDir: filepath.Join(root, "new-downloads")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := httptest.NewRecorder()
+	handleManagedPaths(post, httptest.NewRequest(http.MethodPost, "/api/settings/paths", strings.NewReader(string(requestBody))))
+	if post.Code != http.StatusOK || !strings.Contains(post.Body.String(), `"queue_dir":"/new"`) {
+		t.Fatalf("path settings POST: %d %s", post.Code, post.Body.String())
+	}
+}
+
+func TestLoadMainConfigStoresPackageConfig(t *testing.T) {
+	previous := cfg
+	t.Cleanup(func() { cfg = previous })
+
+	if err := loadMainConfig(filepath.Join(t.TempDir(), "missing.env")); err != nil {
+		t.Fatal(err)
+	}
+	if cfg == nil {
+		t.Fatal("main config was not stored for credential callbacks")
+	}
+}
+
 type localAuthorizationProvider struct{}
 
 func (localAuthorizationProvider) Account(context.Context, string, string) (string, error) {
@@ -301,11 +396,12 @@ func TestWebAuthorizationAppliesDurableCredentialsToDownloader(t *testing.T) {
 	}
 	ui = webui.NewServer(dl).WithContext(dl.Context())
 	gate, _ := management.New("private-administrator-password")
+	gate.SetSessionStore(dl)
 	srv := httptest.NewServer(applicationHandler(gate, authorization.New(dl.Context(), "app", "private-secret", auth, p)))
 	defer srv.Close()
 	for _, path := range []string{"/api/oauth/device-code", "/api/oauth/token"} {
 		req, _ := http.NewRequest("POST", srv.URL+path, strings.NewReader(`{"device_code":"local-device-code"}`))
-		req.SetBasicAuth("admin", "private-administrator-password")
+		req.Header.Set("Authorization", "Bearer private-administrator-password")
 		response, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -322,5 +418,79 @@ func TestWebAuthorizationAppliesDurableCredentialsToDownloader(t *testing.T) {
 	body, err := dl.LoadCredentials()
 	if err != nil || !strings.Contains(string(body), "private-access") {
 		t.Fatal("web authorization was not durably saved")
+	}
+}
+
+func TestAppConfigCanBeSetOnceAndOnlyReturnsMasks(t *testing.T) {
+	priorConfig, priorDL, priorAuth, priorAuthorization := cfg, dl, auth, authorizationHTTP
+	defer func() { cfg, dl, auth, authorizationHTTP = priorConfig, priorDL, priorAuth, priorAuthorization }()
+	cfg = &config.Config{LocalDownDir: t.TempDir(), QueueDir: "/queue", ScanInterval: 30, MaxParallel: 1, MaxRetries: 2, RetryBackoffSeconds: 1}
+	var err error
+	dl, err = downloader.OpenDownloader(cfg, baiduapi.NewClient("", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := dl.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	auth, err = credentials.Open(dl, credentials.Options{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui = webui.NewServer(dl).WithContext(dl.Context())
+	authorizationHTTP = authorization.New(dl.Context(), "", "", auth, nil)
+	gate, err := management.New("private-config-test-admin-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.SetSessionStore(dl)
+	handler := applicationHandler(gate, authorizationHTTP)
+	request := httptest.NewRequest("GET", "http://example.test/api/app-config", nil)
+	request.Header.Set("Authorization", "Bearer private-config-test-admin-password")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var status map[string]any
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &status) != nil || status["editable"] != true || status["configured"] != false {
+		t.Fatalf("empty app config state: %d %s", response.Code, response.Body.String())
+	}
+	payload := `{"app_id":"app-id-private-4821","app_key":"app-key-private-4821","secret_key":"secret-private-4821","sign_key":"sign-private-4821"}`
+	request = httptest.NewRequest("POST", "http://example.test/api/app-config", strings.NewReader(payload))
+	request.Header.Set("Authorization", "Bearer private-config-test-admin-password")
+	request.Header.Set("Origin", "http://example.test")
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("save status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, secret := range []string{"secret-private-4821", "sign-private-4821"} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("response leaked %s", secret)
+		}
+	}
+	request = httptest.NewRequest("GET", "http://example.test/api/app-config", nil)
+	request.Header.Set("Authorization", "Bearer private-config-test-admin-password")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &status) != nil || status["configured"] != true || status["editable"] != false || status["source"] != "queue" {
+		t.Fatalf("saved app config state: %d %s", response.Code, response.Body.String())
+	}
+	for _, secret := range []string{"secret-private-4821", "sign-private-4821"} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("status leaked %s", secret)
+		}
+	}
+	request = httptest.NewRequest("POST", "http://example.test/api/app-config", strings.NewReader(payload))
+	request.Header.Set("Authorization", "Bearer private-config-test-admin-password")
+	request.Header.Set("Origin", "http://example.test")
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("duplicate save status=%d body=%s", response.Code, response.Body.String())
 	}
 }

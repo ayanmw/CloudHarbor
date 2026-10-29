@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestPublicOriginEnvironment(t *testing.T) {
 	t.Setenv("PUBLIC_ORIGIN", "https://nas.example:8443")
@@ -18,6 +22,44 @@ func TestDownloadDirectoryCompatibility(t *testing.T) {
 	t.Setenv("LOCAL_DOWNLOAD_DIR", "/preferred-mount")
 	if got := Load().LocalDownDir; got != "/preferred-mount" {
 		t.Fatalf("canonical value lost: %q", got)
+	}
+}
+
+func TestManagedPathsAreLockedOnlyWhenExplicitlyConfigured(t *testing.T) {
+	t.Setenv("QUEUE_DIR", "")
+	t.Setenv("QUEUE_DIR_DEFAULT", "/preview-default")
+	t.Setenv("LOCAL_DOWNLOAD_DIR", "")
+	t.Setenv("LOCAL_DOWN_DIR", "")
+	cfg, err := LoadFrom(t.TempDir() + "/absent.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.QueueDir != "/preview-default" || cfg.QueueDirExplicit || cfg.LocalDownDirExplicit {
+		t.Fatal("defaults must remain eligible for persisted web-managed paths")
+	}
+	t.Setenv("QUEUE_DIR", "/from-environment")
+	t.Setenv("LOCAL_DOWNLOAD_DIR", "/local-from-environment")
+	cfg, err = LoadFrom(t.TempDir() + "/absent.env")
+	if err != nil || !cfg.QueueDirExplicit || !cfg.LocalDownDirExplicit {
+		t.Fatalf("explicit process paths were not locked: %#v, %v", cfg, err)
+	}
+}
+
+func TestDotEnvPathsOverrideReleaseDefaultsAndLockWebEditing(t *testing.T) {
+	t.Setenv("QUEUE_DIR", "")
+	t.Setenv("QUEUE_DIR_DEFAULT", "/preview-default")
+	t.Setenv("LOCAL_DOWNLOAD_DIR", "")
+	t.Setenv("LOCAL_DOWN_DIR", "")
+	name := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(name, []byte("QUEUE_DIR=/from-dotenv\nLOCAL_DOWNLOAD_DIR=/downloads/from-dotenv\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.QueueDir != "/from-dotenv" || cfg.LocalDownDir != "/downloads/from-dotenv" || !cfg.QueueDirExplicit || !cfg.LocalDownDirExplicit {
+		t.Fatalf("dotenv paths lost priority or explicit state: %#v", cfg)
 	}
 }
 

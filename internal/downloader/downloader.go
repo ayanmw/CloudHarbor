@@ -2,7 +2,6 @@ package downloader
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -60,31 +59,49 @@ const (
 )
 
 type Downloader struct {
-	ctx                   context.Context
-	cancel                context.CancelFunc
-	queue                 *scheduler
-	cfg                   *config.Config
-	client                *baiduapi.Client
-	clientMutex           sync.RWMutex
-	authManaged           bool
-	authReady             bool
-	authExpiry            time.Time
-	authEpoch             uint64
-	onRejected            func(string)
-	tasks                 map[int64]*Task
-	taskMutex             sync.RWMutex
-	scanMutex             sync.Mutex
-	cloudMutex            sync.RWMutex
-	intakeMutex           sync.RWMutex
-	intakeBoot            string
-	intakeJournal         intakeJournal
-	intakes               map[string]intakeRecord
-	inFlight              map[int64]bool
-	transferSlots         chan struct{}
-	modeMutex             sync.RWMutex
-	downloadMode          DownloadMode
-	taskCatalogGeneration atomic.Uint64
-	taskStatsGeneration   atomic.Uint64
+	ctx                    context.Context
+	cancel                 context.CancelFunc
+	queue                  *scheduler
+	cfg                    *config.Config
+	client                 *baiduapi.Client
+	clientMutex            sync.RWMutex
+	authManaged            bool
+	authReady              bool
+	authExpiry             time.Time
+	authEpoch              uint64
+	onRejected             func(string)
+	tasks                  map[int64]*Task
+	taskMutex              sync.RWMutex
+	scanMutex              sync.Mutex
+	cloudMutex             sync.RWMutex
+	intakeMutex            sync.RWMutex
+	intakeBoot             string
+	intakeJournal          intakeJournal
+	intakes                map[string]intakeRecord
+	inFlight               map[int64]bool
+	transferSlots          chan struct{}
+	modeMutex              sync.RWMutex
+	downloadMode           DownloadMode
+	pathMu                 sync.RWMutex
+	queueDir               string
+	localDownDir           string
+	settingsMu             sync.Mutex
+	localMigrationMu       sync.Mutex
+	localMigrationRunning  bool
+	localMigrationPending  bool
+	localMigrationComplete func()
+	inventoryScanMutex     sync.Mutex
+	inventoryScanCancel    context.CancelFunc
+	inventoryScanStarting  bool
+	// inventoryPageCommitHook synchronizes the read/commit race regression test.
+	inventoryPageCommitHook func(string)
+	duplicateScanMutex      sync.Mutex
+	duplicateScanCancel     context.CancelFunc
+	duplicateScanStarting   bool
+	cloudAPIPacer           *cloudAPIPacer
+	duplicateScanRetryBase  time.Duration
+	taskCatalogGeneration   atomic.Uint64
+	taskStatsGeneration     atomic.Uint64
 }
 
 func NewDownloader(cfg *config.Config, client *baiduapi.Client) *Downloader {
@@ -93,14 +110,15 @@ func NewDownloader(cfg *config.Config, client *baiduapi.Client) *Downloader {
 	if parallel < 1 {
 		parallel = 2
 	}
-	d := &Downloader{cfg: cfg, client: client, tasks: make(map[int64]*Task), inFlight: make(map[int64]bool), transferSlots: make(chan struct{}, parallel), ctx: ctx, cancel: cancel, intakes: make(map[string]intakeRecord)}
+	pacer := newCloudAPIPacer(cloudAPIRequestInterval)
+	d := &Downloader{cfg: cfg, client: client.WithRequestPacer(pacer), cloudAPIPacer: pacer, duplicateScanRetryBase: 5 * time.Second, tasks: make(map[int64]*Task), inFlight: make(map[int64]bool), transferSlots: make(chan struct{}, parallel), ctx: ctx, cancel: cancel, intakes: make(map[string]intakeRecord), queueDir: cfg.QueueDir, localDownDir: cfg.LocalDownDir}
 	d.queue = newScheduler(d)
 	return d
 }
 func (d *Downloader) UpdateClient(client *baiduapi.Client) {
 	d.clientMutex.Lock()
 	defer d.clientMutex.Unlock()
-	d.client = client
+	d.client = client.WithRequestPacer(d.cloudAPIPacer)
 }
 func (d *Downloader) getClient() *baiduapi.Client {
 	d.clientMutex.RLock()
@@ -118,8 +136,7 @@ func (d *Downloader) SetDownloadMode(mode DownloadMode) {
 		return
 	}
 	if q.store != nil {
-		body, _ := json.Marshal(map[string]DownloadMode{"download_mode": mode})
-		if err := q.store.SaveSettings(body); err != nil {
+		if err := d.saveAppSettings(map[string]any{"download_mode": mode}); err != nil {
 			q.err = fmt.Errorf("设置保存失败: %w", err)
 			d.cancel()
 			return
@@ -143,6 +160,12 @@ func (d *Downloader) ScanAndDownload() error {
 		return nil
 	}
 	defer d.scanMutex.Unlock()
+	d.queue.mu.Lock()
+	paused := d.queue.maintenance
+	d.queue.mu.Unlock()
+	if paused {
+		return nil
+	}
 	d.cloudMutex.RLock()
 	defer d.cloudMutex.RUnlock()
 	if err := d.ctx.Err(); err != nil {
@@ -152,7 +175,7 @@ func (d *Downloader) ScanAndDownload() error {
 	if err != nil {
 		return err
 	}
-	files, err := client.ListDir(d.cfg.QueueDir)
+	files, err := client.ListDir(d.QueueDirectory())
 	if err != nil {
 		d.reportAuthenticationFailure(err)
 		return fmt.Errorf("列目录失败: %w", err)
@@ -239,7 +262,7 @@ func (d *Downloader) runRoot(ctx context.Context, info baiduapi.FileInfo, mode D
 		d.beginTask(info, "")
 		return fmt.Errorf("invalid cloud filename %q", info.ServerFilename)
 	}
-	if info.Path != path.Join(d.cfg.QueueDir, info.ServerFilename) {
+	if info.Path != path.Join(d.QueueDirectory(), info.ServerFilename) {
 		d.beginTask(info, "")
 		return fmt.Errorf("cloud root path does not match queue: %s", info.Path)
 	}

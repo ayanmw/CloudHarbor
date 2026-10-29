@@ -2,18 +2,23 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -25,17 +30,21 @@ import (
 	"web_browser_baidu_onekey_upload/internal/downloader"
 	"web_browser_baidu_onekey_upload/internal/intakeapi"
 	"web_browser_baidu_onekey_upload/internal/management"
+	"web_browser_baidu_onekey_upload/internal/taskstore"
 	"web_browser_baidu_onekey_upload/internal/webui"
 )
 
 var (
-	cfg            *config.Config
-	dl             *downloader.Downloader
-	ui             *webui.Server
-	lastScanUnix   atomic.Int64
-	auth           *credentials.Manager
-	lastScanResult atomic.Pointer[scanResult]
-	scanRequests   = make(chan struct{}, 1)
+	cfg               *config.Config
+	dl                *downloader.Downloader
+	ui                *webui.Server
+	lastScanUnix      atomic.Int64
+	auth              *credentials.Manager
+	authorizationHTTP *authorization.Server
+	appConfigMu       sync.RWMutex
+	appConfigSaveMu   sync.Mutex
+	lastScanResult    atomic.Pointer[scanResult]
+	scanRequests      = make(chan struct{}, 1)
 )
 
 var version = "dev"
@@ -86,8 +95,18 @@ func toTaskStatus(t *downloader.Task) taskStatusDTO {
 	return status
 }
 
+func loadMainConfig(dotenvPath string) error {
+	loaded, err := config.LoadFrom(dotenvPath)
+	if err != nil {
+		return err
+	}
+	cfg = loaded
+	return nil
+}
+
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
+	revokeAdminSessions := flag.Bool("revoke-admin-sessions", false, "revoke all persistent browser admin sessions and exit")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("baidu-nas-downloader " + version + " (" + revision + ")")
@@ -96,9 +115,44 @@ func main() {
 	log.Println("baidu-nas-downloader service starting...")
 
 	// 加载配置
-	cfg = config.Load()
+	var err error
+	if err = loadMainConfig(".env"); err != nil {
+		log.Fatal(err)
+	}
 	if err := cfg.Validate(); err != nil {
 		log.Fatal(err)
+	}
+	workDir, err := os.Getwd()
+	if err != nil {
+		log.Fatal(err)
+	}
+	localDir, err := filepath.Abs(cfg.LocalDownDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	cfg.StateDir = filepath.Join(workDir, ".nas-downloader")
+	if err = downloader.PrepareStateDirectory(filepath.Join(cfg.StateDir, "queue"), filepath.Join(localDir, ".nas-downloader", "queue")); err != nil {
+		log.Fatalf("cannot prepare stable application state: %v", err)
+	}
+	if *revokeAdminSessions {
+		queueStateDir := filepath.Join(cfg.StateDir, "queue")
+		if _, err := os.Stat(filepath.Join(queueStateDir, "manifest.json")); err != nil {
+			log.Fatalf("cannot revoke browser sessions: queue state is unavailable: %v", err)
+		}
+		store, err := taskstore.OpenUsingExistingScope(queueStateDir, path.Clean(cfg.QueueDir))
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = store.RevokeAllAdminSessions(time.Now().UTC())
+		closeErr := store.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if closeErr != nil {
+			log.Fatal(closeErr)
+		}
+		log.Println("All browser administrator sessions were revoked.")
+		return
 	}
 
 	log.Printf("配置加载完成: QueueDir=%s, LocalDownDir=%s, ScanInterval=%ds",
@@ -108,11 +162,31 @@ func main() {
 	client := baiduapi.NewClient(cfg.AccessToken, cfg.BaiduAppKey)
 
 	// 创建下载器
-	var err error
 	dl, err = downloader.OpenDownloader(cfg, client)
 	if err != nil {
 		log.Fatal(err)
 	}
+	dl.SetLocalMigrationCompletionHandler(func() {
+		select {
+		case scanRequests <- struct{}{}:
+		default:
+		}
+	})
+	if err = dl.ResumeLocalDirectoryMigration(); err != nil {
+		log.Fatal(err)
+	}
+	managedPaths := dl.GetManagedPaths()
+	log.Printf("当前生效路径: QueueDir=%s, LocalDownDir=%s", managedPaths.QueueDir, managedPaths.LocalDownDir)
+	queueAppID, queueAppKey, queueSecretKey, queueSignKey, err := dl.LoadBaiduAppConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+	cfg.BaiduAppID, cfg.BaiduAppKey, cfg.BaiduSecretKey, cfg.BaiduSignKey, cfg.BaiduAppSource, err = config.ResolveBaiduAppConfig(cfg.BaiduAppID, cfg.BaiduAppKey, cfg.BaiduSecretKey, cfg.BaiduSignKey, queueAppID, queueAppKey, queueSecretKey, queueSignKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	client = baiduapi.NewClient(cfg.AccessToken, cfg.BaiduAppKey)
+	dl.UpdateClient(client)
 	if diagnostic, diagnosticErr := dl.TaskStoreStartupDiagnostics(); diagnosticErr != nil {
 		log.Printf("SQLite startup diagnostics unavailable: %v", diagnosticErr)
 	} else if diagnosticJSON, marshalErr := json.Marshal(diagnostic); marshalErr != nil {
@@ -142,10 +216,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	gate.SetSessionStore(dl)
 	if cfg.AdminPassword == "" {
-		log.Printf("Administrator username: admin; password stored in %s", filepath.Join(cfg.LocalDownDir, ".nas-downloader", "queue", "admin-key.json"))
+		log.Printf("Administrator username: admin; password stored in %s", filepath.Join(cfg.StateDir, "queue", "admin-key.json"))
 	}
-	authorizationHTTP := authorization.New(dl.Context(), cfg.BaiduAppKey, cfg.BaiduSecretKey, auth, nil)
+	authorizationHTTP = authorization.New(dl.Context(), cfg.BaiduAppKey, cfg.BaiduSecretKey, auth, nil)
 
 	// 创建 WebUI 服务器
 	ui = webui.NewServer(dl).WithContext(dl.Context())
@@ -192,13 +267,192 @@ func main() {
 }
 
 func applyCredentialUpdate(update credentials.Update) {
-	dl.SetAuthentication(baiduapi.NewClient(update.AccessToken, cfg.BaiduAppKey), update.Ready, update.ExpiresAt)
+	appConfigMu.RLock()
+	appKey := cfg.BaiduAppKey
+	appConfigMu.RUnlock()
+	dl.SetAuthentication(baiduapi.NewClient(update.AccessToken, appKey), update.Ready, update.ExpiresAt)
 	if update.Ready {
 		select {
 		case scanRequests <- struct{}{}:
 		default:
 		}
 	}
+}
+
+func maskCredential(value string) string {
+	if value == "" {
+		return ""
+	}
+	if len(value) <= 4 {
+		return strings.Repeat("*", len(value))
+	}
+	left, right := 2, 2
+	if len(value) < 9 {
+		left, right = 1, 1
+	}
+	return value[:left] + "***" + value[len(value)-right:]
+}
+
+func handleAppConfig(w http.ResponseWriter, r *http.Request) {
+	appConfigSaveMu.Lock()
+	defer appConfigSaveMu.Unlock()
+	w.Header().Set("Cache-Control", "no-store")
+	switch r.Method {
+	case http.MethodGet:
+		appConfigMu.RLock()
+		configured := cfg.BaiduAppID != "" && cfg.BaiduAppKey != "" && cfg.BaiduSecretKey != "" && cfg.BaiduSignKey != ""
+		response := map[string]any{"configured": configured, "editable": !configured && cfg.BaiduAppSource == "", "source": cfg.BaiduAppSource}
+		if configured {
+			response["app_id_mask"] = maskCredential(cfg.BaiduAppID)
+			response["app_key_mask"] = maskCredential(cfg.BaiduAppKey)
+			response["secret_key_mask"] = maskCredential(cfg.BaiduSecretKey)
+			response["sign_key_mask"] = maskCredential(cfg.BaiduSignKey)
+		}
+		appConfigMu.RUnlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	case http.MethodPost:
+		var request struct {
+			AppID     string `json:"app_id"`
+			AppKey    string `json:"app_key"`
+			SecretKey string `json:"secret_key"`
+			SignKey   string `json:"sign_key"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			http.Error(w, "invalid application config request", http.StatusBadRequest)
+			return
+		}
+		request.AppID, request.AppKey = strings.TrimSpace(request.AppID), strings.TrimSpace(request.AppKey)
+		request.SecretKey, request.SignKey = strings.TrimSpace(request.SecretKey), strings.TrimSpace(request.SignKey)
+		if request.AppID == "" || request.AppKey == "" || request.SecretKey == "" || request.SignKey == "" || len(request.AppID) > 4096 || len(request.AppKey) > 4096 || len(request.SecretKey) > 4096 || len(request.SignKey) > 4096 {
+			http.Error(w, "all four application credentials are required", http.StatusBadRequest)
+			return
+		}
+		appConfigMu.RLock()
+		alreadyConfigured := cfg.BaiduAppSource != "" || cfg.BaiduAppID != "" || cfg.BaiduAppKey != "" || cfg.BaiduSecretKey != "" || cfg.BaiduSignKey != ""
+		appConfigMu.RUnlock()
+		if alreadyConfigured {
+			http.Error(w, "application config is already set", http.StatusConflict)
+			return
+		}
+		if err := auth.ConfigureApp(r.Context(), request.AppKey, request.SecretKey, func() error {
+			return dl.SaveBaiduAppConfigIfEmpty(request.AppID, request.AppKey, request.SecretKey, request.SignKey)
+		}); err != nil {
+			if errors.Is(err, taskstore.ErrBaiduAppConfigExists) {
+				http.Error(w, "application config is already set", http.StatusConflict)
+				return
+			}
+			http.Error(w, "application config could not be enabled", http.StatusConflict)
+			return
+		}
+		if err := authorizationHTTP.ConfigureApp(request.AppKey, request.SecretKey); err != nil {
+			// The same validation already succeeded in the credential manager;
+			// this is an invariant failure and should fail closed.
+			http.Error(w, "application config was saved but activation failed; restart the service", http.StatusInternalServerError)
+			return
+		}
+		appConfigMu.Lock()
+		cfg.BaiduAppID, cfg.BaiduAppKey, cfg.BaiduSecretKey, cfg.BaiduSignKey, cfg.BaiduAppSource = request.AppID, request.AppKey, request.SecretKey, request.SignKey, "queue"
+		dl.UpdateClient(baiduapi.NewClient(cfg.AccessToken, cfg.BaiduAppKey))
+		appConfigMu.Unlock()
+		auth.Wake()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"configured": true, "source": "queue", "app_id_mask": maskCredential(request.AppID), "app_key_mask": maskCredential(request.AppKey), "secret_key_mask": maskCredential(request.SecretKey), "sign_key_mask": maskCredential(request.SignKey)})
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func appConfigBarrier(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		appConfigSaveMu.Lock()
+		defer appConfigSaveMu.Unlock()
+		next(w, r)
+	}
+}
+
+func handleManagedPaths(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	switch r.Method {
+	case http.MethodGet:
+		paths := dl.GetManagedPaths()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"queue_dir": paths.QueueDir, "local_download_dir": paths.LocalDownDir,
+			"queue_editable": !cfg.QueueDirExplicit, "local_download_editable": !cfg.LocalDownDirExplicit,
+		})
+	case http.MethodPost:
+		var request struct {
+			downloader.ManagedPaths
+			MigrateFiles bool `json:"migrate_files"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			http.Error(w, "invalid path settings request", http.StatusBadRequest)
+			return
+		}
+		current := dl.GetManagedPaths()
+		if (cfg.QueueDirExplicit && request.QueueDir != current.QueueDir) || (cfg.LocalDownDirExplicit && !sameLocalSettingPath(request.LocalDownDir, current.LocalDownDir)) {
+			http.Error(w, "此路径由 .env 或启动环境配置，请在那里修改", http.StatusConflict)
+			return
+		}
+		migration, err := dl.SetManagedPaths(r.Context(), request.ManagedPaths, request.MigrateFiles)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if migration.ID != "" {
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"migration": migration, "paths": dl.GetManagedPaths()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(dl.GetManagedPaths())
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func handleLocalDirectoryMigration(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	migration, err := dl.LocalDirectoryMigrationStatus()
+	if errors.Is(err, sql.ErrNoRows) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "none"})
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(migration)
+}
+
+func sameLocalSettingPath(a, b string) bool {
+	a, errA := filepath.Abs(a)
+	b, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.Server) http.Handler {
@@ -210,10 +464,14 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 		}
 	})
 	mux.HandleFunc("/", ui.HandlePageWS)
+	mux.HandleFunc("/login", ui.HandlePageLogin)
+	mux.HandleFunc("/api/login", gate.HandleLogin)
+	mux.HandleFunc("/api/logout", gate.HandleLogout)
 	mux.HandleFunc("/ws", ui.HandleWS)
 	mux.HandleFunc("/poll", ui.HandlePagePoll)
 	mux.HandleFunc("/oauth", ui.HandlePageOAuth)
 	mux.HandleFunc("/intake", ui.HandlePageIntake)
+	mux.HandleFunc("/cloud", ui.HandlePageCloud)
 	mux.HandleFunc("/res/", ui.HandleRes)
 	mux.HandleFunc("/api/health", handleHealth)
 	mux.HandleFunc("/api/status", handleStatus)
@@ -221,12 +479,22 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/api/tasks/{id}/events", handleTaskEvents)
 	mux.HandleFunc("/api/tasks/", handleTaskAction)
 	mux.HandleFunc("/api/cloud", intakeHTTP.HandleCloud)
+	mux.HandleFunc("/api/cloud-inventory", intakeHTTP.HandleInventory)
+	mux.HandleFunc("/api/cloud-inventory/size", intakeHTTP.HandleInventorySize)
+	mux.HandleFunc("/api/cloud-inventory/scan", intakeHTTP.HandleInventoryScan)
+	mux.HandleFunc("/api/cloud-cleanup/empty-directories", intakeHTTP.HandleEmptyCloudDirectories)
+	mux.HandleFunc("/api/cloud-cleanup/duplicate-scan", intakeHTTP.HandleDuplicateScan)
+	mux.HandleFunc("/api/cloud-cleanup/duplicates", intakeHTTP.HandleDuplicatePreview)
+	mux.HandleFunc("/api/cloud/mutations", intakeHTTP.HandleCloudMutation)
+	mux.HandleFunc("/api/settings/paths", handleManagedPaths)
+	mux.HandleFunc("/api/settings/local-migration", handleLocalDirectoryMigration)
 	mux.HandleFunc("/api/intakes", intakeHTTP.HandleRecords)
 	mux.HandleFunc("/api/intakes/preview", intakeHTTP.HandlePreview)
 	mux.HandleFunc("/api/intakes/", intakeHTTP.HandleAction)
-	mux.HandleFunc("/api/oauth/device-code", authorizationHTTP.HandleDeviceCode)
-	mux.HandleFunc("/api/oauth/token", authorizationHTTP.HandleToken)
-	mux.HandleFunc("/api/oauth/refresh", authorizationHTTP.HandleRefresh)
+	mux.HandleFunc("/api/app-config", handleAppConfig)
+	mux.HandleFunc("/api/oauth/device-code", appConfigBarrier(authorizationHTTP.HandleDeviceCode))
+	mux.HandleFunc("/api/oauth/token", appConfigBarrier(authorizationHTTP.HandleToken))
+	mux.HandleFunc("/api/oauth/refresh", appConfigBarrier(authorizationHTTP.HandleRefresh))
 	mux.HandleFunc("/api/oauth/status", authorizationHTTP.HandleStatus)
 	return gate.Wrap(mux)
 }
