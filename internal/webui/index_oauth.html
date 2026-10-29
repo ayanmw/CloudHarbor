@@ -4,7 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>百度账号授权</title>
 <style>
-body{font-family:system-ui,sans-serif;background:#f4f6fa;color:#243047;margin:0;padding:32px 16px}.container{max-width:720px;margin:auto}a{color:#2465d7}.card{background:white;border-radius:12px;padding:24px;margin:20px 0;box-shadow:0 3px 18px #2030520d}h1{font-size:26px}h2{font-size:18px}button{padding:10px 16px;border:0;border-radius:6px;background:#2465d7;color:white;cursor:pointer;margin:4px}button:disabled{opacity:.5;cursor:wait}.muted{color:#647087;font-size:14px;line-height:1.7}#message{white-space:pre-wrap;line-height:1.7}#qr{max-width:220px;display:block;margin:16px 0}code{font-size:22px;letter-spacing:3px}dl{display:grid;grid-template-columns:120px 1fr;gap:10px}dd{margin:0;overflow-wrap:anywhere}
+body{font-family:system-ui,sans-serif;background:#f4f6fa;color:#243047;margin:0;padding:32px 16px}.container{max-width:720px;margin:auto}a{color:#2465d7}.card{background:white;border-radius:12px;padding:24px;margin:20px 0;box-shadow:0 3px 18px #2030520d}h1{font-size:26px}h2{font-size:18px}button{padding:10px 16px;border:0;border-radius:6px;background:#2465d7;color:white;cursor:pointer;margin:4px}button:disabled{opacity:.5;cursor:wait}.muted{color:#647087;font-size:14px;line-height:1.7}#message{white-space:pre-wrap;line-height:1.7}#qr{max-width:220px;display:block;margin:16px 0}code{font-size:22px;letter-spacing:3px}dl{display:grid;grid-template-columns:120px 1fr;gap:10px}dd{margin:0;overflow-wrap:anywhere}.setup-guide{margin:16px 0;padding:14px;background:#f6f8fc;border-radius:8px;line-height:1.8}.setup-guide summary{cursor:pointer;color:#2465d7;font-weight:600}.setup-guide ol{padding-left:24px}.setup-guide p{margin:8px 0}.setup-guide code{font-size:inherit;letter-spacing:normal}
 </style>
 <script src="/res/shared.js"></script>
 </head>
@@ -13,6 +13,11 @@ body{font-family:system-ui,sans-serif;background:#f4f6fa;color:#243047;margin:0;
 <p class="muted">管理员登录保护本工具，百度授权允许工具访问网盘。授权成功后，凭证会保存到当前下载目录并应用于后台任务。</p>
 <section class="card"><h2>账号状态</h2><dl><dt>当前状态</dt><dd id="state">检查中</dd><dt>凭证到期</dt><dd id="expiry">—</dd><dt>自动续期</dt><dd id="renewal">—</dd><dt>最近错误</dt><dd id="error">—</dd></dl><button id="refresh" onclick="refreshCredential()">立即续期</button></section>
 <section class="card"><h2>授权或重新授权</h2><p class="muted">网页授权需要启动时设置 BAIDU_APP_KEY 和 BAIDU_SECRET_KEY。同一下载目录绑定一个百度账号，更换账号请使用新的下载目录。</p>
+<details class="setup-guide"><summary>还没有 AppKey？去哪里申请</summary><ol>
+<li>登录<a href="https://yun.baidu.com/open/platform" target="_blank" rel="noopener noreferrer">百度网盘开放平台（官方入口）</a>，按页面要求申请开发者接入。</li>
+<li>在<a href="https://pan.baidu.com/union/apply" target="_blank" rel="noopener noreferrer">百度网盘应用申请</a>创建网盘应用；之后可从<a href="https://developer.baidu.com/console" target="_blank" rel="noopener noreferrer">百度开发者控制台</a>进入应用管理。</li>
+<li>打开应用详情，复制 <strong>AppKey</strong>（OAuth 的 <code>client_id</code>）和 <strong>SecretKey</strong>（OAuth 的 <code>client_secret</code>）。请使用网盘应用的密钥，不要拿百度地图等其他产品的 AK 代替。</li>
+</ol><p class="muted">开发者认证或应用资格以百度平台当前要求为准。SecretKey 等同密码，请勿发给他人、贴到公开问题或提交进代码仓库。</p></details>
 <button id="device" onclick="getDeviceCode()">获取授权码</button>
 <div id="authorization" hidden><p>授权码：<code id="user-code"></code></p><img id="qr" alt="百度授权二维码" hidden><p><a id="auth-link" target="_blank" rel="noopener noreferrer">打开百度授权页面</a></p><p class="muted" id="deadline"></p><button id="poll" onclick="applyAuthorization()">已完成百度授权，开始验证</button><button id="cancel" onclick="cancelPolling()" disabled>停止等待</button></div>
 <p id="message" role="status"></p></section>

@@ -126,6 +126,16 @@ test('OAuth page only accepts HTTPS Baidu authorization links',()=>{
     assert.equal(vm.runInContext("safeBaiduURL('https://openapi.baidu.com/device')",p.context),'https://openapi.baidu.com/device');
 });
 
+test('OAuth page tells new users where to create a Baidu Netdisk app and configure its keys',()=>{
+    const html=fs.readFileSync(path.join(root,'index_oauth.html'),'utf8');
+    assert.match(html,/https:\/\/yun\.baidu\.com\/open\/platform/);
+    assert.match(html,/https:\/\/pan\.baidu\.com\/union\/apply/);
+    assert.match(html,/AppKey.*client_id/);
+    assert.match(html,/SecretKey.*client_secret/);
+    assert.match(html,/百度网盘应用/);
+    assert.match(html,/请勿发给他人/);
+});
+
 test('root task actions use exact string IDs and server capabilities',async()=>{
     const p=page('index_ws.html');
     p.context.task={task_id:'3400000000000000123',fs_id:3400000000000000123,is_root:true,can_retry:true,can_cancel:false,download_mode:'delete',attempts:2,next_attempt:'2026-10-21T10:00:00Z'};
