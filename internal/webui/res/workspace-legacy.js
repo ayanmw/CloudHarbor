@@ -12,6 +12,7 @@
  main.classList.add('workspace-page');
  const oldNav=main.querySelector('nav');if(oldNav)oldNav.classList.add('workspace-old-nav');
  if(page==='/cloud'){
+  main.classList.add('workspace-cloud');
   const cards=[...main.querySelectorAll(':scope > section.card')];
   const groups=[['files','网盘文件',['目录浏览']],['settings','下载设置',['自动下载路径']],['cache','缓存与统计',['全盘目录缓存']],['cleanup','重复与空目录',['空文件夹','重复文件']],['history','刷新记录',['目录缓存刷新历史']]];
   for(const card of cards){const title=card.querySelector('h2')?.textContent||'';card.dataset.workspaceGroup=groups.find(([, ,titles])=>titles.some(x=>title.includes(x)))?.[0]||'files'}
