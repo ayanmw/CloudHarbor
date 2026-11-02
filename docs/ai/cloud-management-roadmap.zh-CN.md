@@ -1,6 +1,6 @@
 # 网盘管理与路径设置实施路线
 
-## v0.8.30-preview.150（最高优先级：下载工作台与全站重构）
+## v0.8.30-preview.150（下载工作台与全站重构，已交付）
 
 1. Vue 3 / TypeScript / Vite 资源嵌入 Go，离线运行，统一侧栏、表格、按钮和状态视觉。
 2. 根任务总览与独立文件详情，服务端分页/排序/筛选，64 位身份以字符串传递。
@@ -19,7 +19,7 @@
 4. 冷却期扫描触发不建立虚假的扫描 run，也不请求百度；请求成功时清除退避状态，跨重启继续执行截止时间。
 5. `/api/health` 和任务页显示剩余等待及绝对重试 UTC，令牌/账号指纹和原始错误不对外暴露。
 
-全仓 `go test ./... -count=1`、`go vet ./...`、WebUI 172/172、userscript 3/3、Windows AMD64/Linux AMD64/Linux ARM64 构建及 ZIP 12/12 载荷 SHA-256、491 条源码快照和 `git diff --check` 通过。唯一 `.nas-downloader` 从 `.148` 移到 `.149`，43 个文件迁移后均可读取，旧路径不存在；SQLite v40→v41 与 integrity `ok`，任务 0，retry state 0。真实授权状态可用，启动后自动监控目录列表一次成功；未手动启动全盘扫描、下载或远端写操作。SHA-256 `D3E87C4AD29E3D5EF9F9D7080A96425F1C411A0260834FB31BB024181C58BE8D`；详细证据见 releases 同级 `v0.8.30-preview.149-validation.md`。NAS/SMB 和真实 provider 限流行为未验收。
+全仓 `go test ./... -count=1`、`go vet ./...`、WebUI 172/172、userscript 3/3、Windows AMD64/Linux AMD64/Linux ARM64 构建及 ZIP 12/12 载荷 SHA-256、491 条源码快照和 `git diff --check` 通过。唯一 `.nas-downloader` 从 `.148` 移到 `.149`，43 个文件迁移后均可读取，旧路径不存在；SQLite v40→v41 与 integrity `ok`，任务 0，retry state 0。真实授权状态可用，启动后自动监控目录列表一次成功；未手动启动全盘扫描、下载或远端写操作。SHA-256 `BFD5B4E7A96F18D5B8FF6D35143D46C0D981629141851B50D4FE5C8E443CD459`；详细证据见 releases 同级 `v0.8.30-preview.149-validation.md`。NAS/SMB 和真实 provider 限流行为未验收。
 
 ## v0.8.30-preview.148（局部刷新分页漂移证据，5/5 已交付）
 
