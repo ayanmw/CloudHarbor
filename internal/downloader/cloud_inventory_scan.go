@@ -14,7 +14,6 @@ import (
 )
 
 const cloudInventoryPageSize = 100
-const cloudInventoryPageInterval = time.Second
 
 func cloudInventoryPageBoundary(file baiduapi.FileInfo) *taskstore.CloudInventoryPageBoundary {
 	return &taskstore.CloudInventoryPageBoundary{FsID: file.FsID, Path: file.Path, Name: file.ServerFilename, Directory: file.IsDir == 1, Size: file.Size, ProviderMtime: file.Mtime, ContentMD5: file.MD5}
@@ -744,15 +743,8 @@ func (d *Downloader) runCloudInventoryScan(ctx context.Context, state taskstore.
 		if state.Status == "complete" {
 			return
 		}
-		timer := time.NewTimer(cloudInventoryPageInterval)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			continue
-		case <-timer.C:
-		}
+		// Successful pages continue through the shared API scheduler; only failed
+		// requests use the retry/backoff path above, not an assumed provider limit.
 	}
 }
 
@@ -989,15 +981,8 @@ func (d *Downloader) runCloudInventoryRefresh(ctx context.Context, state tasksto
 		if state.Status == "complete" {
 			return
 		}
-		timer := time.NewTimer(cloudInventoryPageInterval)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			continue
-		case <-timer.C:
-		}
+		// Successful pages continue through the shared API scheduler; only failed
+		// requests use the retry/backoff path above, not an assumed provider limit.
 	}
 }
 
