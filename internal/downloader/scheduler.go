@@ -21,6 +21,7 @@ import (
 )
 
 type queueJob struct {
+	TransferStats     *TransferStatistics   `json:"transfer_statistics,omitempty"`
 	Version           int                   `json:"version"`
 	Info              baiduapi.FileInfo     `json:"file"`
 	Mode              DownloadMode          `json:"mode"`
@@ -47,6 +48,8 @@ const (
 )
 
 type scheduler struct {
+	transferMeters map[int64]*transferMeter
+
 	mu      sync.Mutex
 	owner   *Downloader
 	store   *taskstore.Store
@@ -821,6 +824,11 @@ func (q *scheduler) claimAt(now time.Time) (*queueJob, context.Context, time.Dur
 		return nil, nil, 0
 	}
 	previousStatus, previousAttempts, previousAttemptID := chosen.Status, chosen.Attempts, chosen.AttemptID
+	previousStats := chosen.TransferStats
+	if chosen.TransferStats == nil && chosen.Attempts == 0 {
+		// A new attempt can reuse local files without ever opening a response body.
+		chosen.TransferStats = &TransferStatistics{RecordedAtUTC: now.UTC()}
+	}
 	previousNextAttempt, previousError, previousStorage, previousUpdated := chosen.NextAttempt, chosen.Error, chosen.LocalStorage, chosen.Updated
 	chosen.Status = "downloading"
 	chosen.Attempts++
@@ -833,6 +841,7 @@ func (q *scheduler) claimAt(now time.Time) (*queueJob, context.Context, time.Dur
 	}{chosen.Attempts, chosen.Status})
 	if err := q.persistWithEvent(chosen, taskstore.Event{Kind: "download_attempt_started", AttemptID: attemptID, EvidenceType: "local_scheduler_claim", Evidence: attemptEvidence}); err != nil {
 		chosen.Status, chosen.Attempts, chosen.AttemptID = previousStatus, previousAttempts, previousAttemptID
+		chosen.TransferStats = previousStats
 		chosen.NextAttempt, chosen.Error, chosen.LocalStorage, chosen.Updated = previousNextAttempt, previousError, previousStorage, previousUpdated
 		return nil, nil, 0
 	}

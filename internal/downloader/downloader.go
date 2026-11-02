@@ -19,6 +19,7 @@ import (
 )
 
 type Task struct {
+	TransferStats     *TransferStatistics
 	FileInfo          baiduapi.FileInfo
 	Status            string // pending, downloading, done, failed
 	LocalPath         string
@@ -626,13 +627,17 @@ func (d *Downloader) GetTasks() []*Task {
 func (d *Downloader) taskViewLocked(id int64, job *queueJob) *Task {
 	if task := d.tasks[id]; task != nil {
 		copy := *task
+		if job != nil {
+			copy.TransferStats = copyTransferStatistics(job.TransferStats)
+		}
 		return &copy
 	}
 	if job == nil {
 		return nil
 	}
 	task := &Task{
-		FileInfo: job.Info, Status: job.Status, Error: job.Error,
+		TransferStats: copyTransferStatistics(job.TransferStats),
+		FileInfo:      job.Info, Status: job.Status, Error: job.Error,
 		StartTime: job.Created, Attempts: job.Attempts, NextAttempt: job.NextAttempt,
 		Root: true, DownloadMode: job.Mode, LocalStorage: job.LocalStorage,
 	}

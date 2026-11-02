@@ -393,3 +393,7 @@ Invoke-RestMethod http://127.0.0.1:18089/api/tasks/123/retry -Method Post -Heade
 - 只处理静止的队列副本，暂不支持多个实例写同一下载目录。
 
 包内 SHA256SUMS.txt 可用于核对文件传输；它是完整性清单，不是签名。
+# 下载统计补充
+
+任务总览及详情展示仅文件响应体传输阶段的累计用时和平均吞吐量。并发区间按并集计算，暂停、离线和后处理不计时；旧任务缺失数据不回填，强制结束可能丢失末次未保存增量。详见源码 docs/ai/download-statistics.zh-CN.md。
+

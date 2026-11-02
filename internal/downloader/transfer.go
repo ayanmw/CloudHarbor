@@ -548,6 +548,12 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 			return err
 		}
 		written := offset
+		statistics := d.beginTransferStatistics(info.Path)
+		defer func() {
+			if statsErr := statistics(0, true); resultErr == nil && statsErr != nil {
+				resultErr = statsErr
+			}
+		}()
 		lastLog := time.Now()
 		buf := make([]byte, 128*1024)
 		for {
@@ -555,6 +561,10 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 				break
 			}
 			n, readErr := body.Read(buf)
+			if statsErr := statistics(int64(n), false); statsErr != nil {
+				err = statsErr
+				break
+			}
 			if n > 0 {
 				if int64(n) > info.Size-written {
 					err = fmt.Errorf("download exceeds expected size")
@@ -586,6 +596,9 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 				}
 				break
 			}
+		}
+		if statsErr := statistics(0, true); err == nil && statsErr != nil {
+			err = statsErr
 		}
 		if err == nil && written != info.Size {
 			// A chunked response can end cleanly below the known file size.

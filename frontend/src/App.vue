@@ -23,6 +23,7 @@ import {
   Activity,
 } from "lucide-vue-next";
 type Task = {
+	transfer_statistics?: { active_ns: number; network_bytes: number; partial?: boolean; recorded_at_utc?: string } | null;
   id: string;
   name: string;
   path: string;
@@ -116,6 +117,19 @@ const bytes = (n: number) => {
     i = Math.min(4, Math.floor(Math.log(n) / Math.log(1024)));
   return `${(n / 1024 ** i).toFixed(i ? 2 : 0)} ${u[i]}`;
 };
+const downloadDuration = (t: Task) => {
+  const stats = t.transfer_statistics;
+  if (!stats) return t.status === "pending" ? "尚未开始" : "历史统计未记录";
+  const total = Math.floor(stats.active_ns / 1e9);
+  if (total < 1) return stats.active_ns > 0 ? "不足1秒" : "0秒";
+  const h = Math.floor(total / 3600), m = Math.floor(total / 60) % 60, sec = total % 60;
+  return (h ? `${h}小时` : "") + (h || m ? `${m}分` : "") + `${String(sec).padStart(m || h ? 2 : 1, "0")}秒`;
+};
+const averageSpeed = (t: Task) => {
+  const s = t.transfer_statistics;
+  return s && s.active_ns > 0 ? bytes(s.network_bytes / (s.active_ns / 1e9)) + "/s" : "—";
+};
+const statisticsHint = "仅累计文件数据传输期间；并发时间不重复，暂停、离线、校验及网盘后处理不计入。平均速度按实际接收字节计算，包含重传，不含已有本地文件。异常退出可能丢失最后未保存的增量。";
 const percent = (t: Task) =>
   t.status === "done"
     ? 100
@@ -361,6 +375,8 @@ onUnmounted(() => {
                 保存至 {{ root.local_path || "正在准备本地目录" }}
               </p>
               <div class="summary-meta">
+                <span :title="statisticsHint">下载用时 {{ downloadDuration(root) }}</span>
+                <span :title="statisticsHint">平均 {{ averageSpeed(root) }}{{ root.transfer_statistics?.partial ? "（部分记录）" : "" }}</span>
                 <span>{{ completionText(root) }}</span
                 ><span v-if="root.files || root.prepared"
                   >{{ root.folders }} 个文件夹</span
@@ -549,7 +565,7 @@ onUnmounted(() => {
                   </th>
                   <th>状态</th>
                   <th>{{ rootID ? "传输进度" : "完成情况" }}</th>
-                  <th>速度</th>
+                  <th>速度</th><th v-if="!rootID" :title="statisticsHint">下载用时</th><th v-if="!rootID" :title="statisticsHint">平均速度</th>
                   <th class="actions-column">操作</th>
                 </tr>
               </thead>
@@ -624,6 +640,8 @@ onUnmounted(() => {
                   <td class="speed">
                     {{ t.speed > 0 ? bytes(t.speed) + "/s" : "—" }}
                   </td>
+                  <td v-if="!rootID" :title="statisticsHint">{{ downloadDuration(t) }}<small v-if="t.transfer_statistics?.partial" class="cell-sub">部分记录</small></td>
+                  <td v-if="!rootID" class="speed" :title="statisticsHint">{{ averageSpeed(t) }}</td>
                   <td>
                     <div class="row-actions">
                       <button

@@ -197,3 +197,18 @@ test("unknown source operation is shown as postprocessing, not waiting for direc
     dom.window.close();
   }
 });
+
+test("root statistics show measured download duration and average without inventing historical values", async () => {
+  const { dom } = await render({ transfer_statistics: { active_ns: 65000000000, network_bytes: 6656000 } });
+  try {
+    const doc = dom.window.document;
+    assert.match(doc.querySelector("tbody").textContent, /1分05秒/);
+    assert.match(doc.querySelector("tbody").textContent, /100.00 KB\/s/);
+    doc.querySelector(".file-name").click();
+    await tick(); await tick();
+    assert.match(doc.querySelector(".summary-meta").textContent, /下载用时.*1分05秒/);
+  } finally { dom.window.close(); }
+  const legacy = await render();
+  try { assert.match(legacy.dom.window.document.querySelector("tbody").textContent, /历史统计未记录/); }
+  finally { legacy.dom.window.close(); }
+});

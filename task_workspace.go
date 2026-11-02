@@ -63,10 +63,12 @@ type workspaceTask struct {
 	CanCancel bool   `json:"can_cancel"`
 	CanRetry  bool   `json:"can_retry"`
 	Prepared  bool   `json:"prepared"`
+
+	TransferStats *downloader.TransferStatistics `json:"transfer_statistics"`
 }
 
 func workspaceRow(t *downloader.Task) workspaceTask {
-	return workspaceTask{ID: strconv.FormatInt(t.FileInfo.FsID, 10), Name: t.FileInfo.ServerFilename, Path: t.FileInfo.Path, Status: t.Status, LocalPath: t.LocalPath, Error: t.Error, Size: t.FileInfo.Size, Progress: t.Progress, Speed: t.Speed, Mode: string(t.DownloadMode), CanPause: t.CanPause, CanResume: t.CanResume, CanCancel: t.CanCancel, CanRetry: t.CanRetry, Prepared: t.DirectoryPrepared || t.FileInfo.IsDir == 0}
+	return workspaceTask{TransferStats: t.TransferStats, ID: strconv.FormatInt(t.FileInfo.FsID, 10), Name: t.FileInfo.ServerFilename, Path: t.FileInfo.Path, Status: t.Status, LocalPath: t.LocalPath, Error: t.Error, Size: t.FileInfo.Size, Progress: t.Progress, Speed: t.Speed, Mode: string(t.DownloadMode), CanPause: t.CanPause, CanResume: t.CanResume, CanCancel: t.CanCancel, CanRetry: t.CanRetry, Prepared: t.DirectoryPrepared || t.FileInfo.IsDir == 0}
 }
 
 func workspacePriority(status string) int {
