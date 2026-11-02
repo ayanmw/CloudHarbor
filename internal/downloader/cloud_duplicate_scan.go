@@ -563,6 +563,12 @@ func hashCloudFileResumable(ctx context.Context, c *baiduapi.Client, item taskst
 	if offset == item.Size {
 		return hex.EncodeToString(h.Sum(nil)), nil
 	}
+	traceID, err := newSourceOperationID()
+	if err != nil {
+		return "", err
+	}
+	// Hash reads share the HTTP download helpers, but are not local downloads.
+	c = c.WithDownloadTrace("hash-"+traceID, state.RunID, item.FsID, item.Path)
 	link, err := c.GetDownloadLink(item.FsID)
 	if err != nil {
 		if errors.Is(err, baiduapi.ErrFileMetadataMissing) || errors.Is(err, baiduapi.ErrDownloadLinkMissing) {

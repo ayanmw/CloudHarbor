@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/durablefs"
@@ -352,7 +354,45 @@ func hashReader(ctx context.Context, reader io.Reader) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relative, local string) error {
+func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relative, local string) (resultErr error) {
+	transferID, idErr := newSourceOperationID()
+	if idErr != nil {
+		return idErr
+	}
+	batchID := ""
+	d.queue.mu.Lock()
+	for _, job := range d.queue.jobs {
+		if job.Info.FsID == info.FsID || strings.HasPrefix(info.Path, strings.TrimSuffix(job.Info.Path, "/")+"/") {
+			batchID = job.AttemptID
+			break
+		}
+	}
+	d.queue.mu.Unlock()
+	started := time.Now()
+	trace := func(event, format string, args ...any) {
+		fields := []any{time.Now().UTC().Format(time.RFC3339Nano), transferID, batchID, info.FsID, info.Path, local, event}
+		log.Printf("[Download] at_utc=%s transfer_id=%q batch_id=%q fsid=%d path=%q local_path=%q event=%s "+format, append(fields, args...)...)
+	}
+	trace("transfer_started", "expected_bytes=%d", info.Size)
+	defer func() {
+		if resultErr == nil {
+			trace("transfer_finished", "outcome=success expected_bytes=%d elapsed_ms=%d", info.Size, time.Since(started).Milliseconds())
+			return
+		}
+		status, code := 0, 0
+		var apiErr *baiduapi.APIError
+		if errors.As(resultErr, &apiErr) {
+			status, code = apiErr.Status, apiErr.Code
+		}
+		outcome := "success"
+		if resultErr != nil {
+			outcome = "failed"
+		}
+		if errors.Is(resultErr, context.Canceled) {
+			outcome = "cancelled"
+		}
+		trace("transfer_finished", "outcome=%s elapsed_ms=%d http_status=%d provider_code=%d retryable=%t error_type=%T", outcome, time.Since(started).Milliseconds(), status, code, baiduapi.IsRetryable(resultErr), resultErr)
+	}()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -389,6 +429,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		if stat.IsDir() || recordErr != nil || !record.matches(expected) || record.SHA256 == "" || stat.Size() != info.Size {
 			return fmt.Errorf("本地文件已存在且无法确认身份，请移走或更名后重试: %s", local)
 		}
+		trace("local_verify_started", "bytes=%d reused=true", info.Size)
 		digest, hashErr := hashFile(ctx, local)
 		if hashErr != nil {
 			return hashErr
@@ -406,6 +447,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		}
 		removeVerifiedPublishedPartial(ctx, stat, record, expected, partialName, metaName)
 		d.updateProgress(info.FsID, info.Size)
+		trace("local_verified", "bytes=%d reused=true", info.Size)
 		return nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return statErr
@@ -470,12 +512,14 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		if authErr != nil {
 			return authErr
 		}
+		client = client.WithDownloadTrace(transferID, batchID, info.FsID, info.Path)
 		link, linkErr := client.GetDownloadLink(info.FsID)
 		if linkErr != nil {
 			return linkErr
 		}
 		body, length, downloadErr := client.DownloadFileWithRange(link, offset)
 		if errors.Is(downloadErr, baiduapi.ErrRangeIgnored) {
+			trace("range_restart", "previous_offset=%d reason=server_ignored_range", offset)
 			reservation.Release()
 			reservation, err = d.reserveLocalSpace(info.FsID, filepath.Dir(local), info.Size)
 			if err != nil {
@@ -504,6 +548,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 			return err
 		}
 		written := offset
+		lastLog := time.Now()
 		buf := make([]byte, 128*1024)
 		for {
 			if err = ctx.Err(); err != nil {
@@ -519,6 +564,10 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 				count, err = writePartialChunk(out, buf[:n])
 				written += int64(count)
 				d.updateProgress(info.FsID, written)
+				if time.Since(lastLog) >= 30*time.Second {
+					trace("transfer_progress", "completed_bytes=%d expected_bytes=%d elapsed_ms=%d", written, info.Size, time.Since(started).Milliseconds())
+					lastLog = time.Now()
+				}
 				reservation.UpdateRemaining(info.Size - written)
 				if err != nil {
 					if localStorageFullCheck(err) {
@@ -557,6 +606,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 			return err
 		}
 	}
+	trace("local_verify_started", "bytes=%d reused=false", info.Size)
 	digest, err := hashFile(ctx, partialName)
 	if err != nil {
 		return err
@@ -572,6 +622,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	}
 	// Prefer the atomic hard-link path. If the filesystem does not support
 	// links, copy to a synced sibling and atomically publish without replacement.
+	trace("local_publish_started", "bytes=%d", info.Size)
 	if err = publishDownloadedFile(ctx, partialName, local, expected); err != nil {
 		return err
 	}
@@ -585,5 +636,6 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		return fmt.Errorf("清理临时文件失败: %w", err)
 	}
 	d.updateProgress(info.FsID, info.Size)
+	trace("local_published", "bytes=%d verified=true", info.Size)
 	return nil
 }

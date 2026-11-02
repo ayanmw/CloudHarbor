@@ -48,11 +48,12 @@ func requestError(err error) error {
 
 // Client 百度网盘 API 客户端
 type Client struct {
-	AccessToken  string
-	AppKey       string
-	ctx          context.Context
-	idleTimeout  time.Duration
-	requestPacer RequestPacer
+	AccessToken   string
+	AppKey        string
+	ctx           context.Context
+	idleTimeout   time.Duration
+	requestPacer  RequestPacer
+	downloadTrace downloadTrace
 }
 
 // RequestPacer may be shared by clients that use the same provider quota.
@@ -367,7 +368,20 @@ func (c *Client) GetFileInfo(fsid int64) (FileInfo, error) {
 
 // GetDownloadLink 获取文件下载链接
 // 改用 PCS 接口直接构造下载链接
-func (c *Client) GetDownloadLink(fsid int64) (string, error) {
+func (c *Client) GetDownloadLink(fsid int64) (link string, resultErr error) {
+	observedStatus := 0
+	defer func() {
+		status, code := observedStatus, 0
+		var apiErr *APIError
+		if errors.As(resultErr, &apiErr) {
+			status, code = apiErr.Status, apiErr.Code
+		}
+		outcome := "success"
+		if resultErr != nil {
+			outcome = "failed"
+		}
+		c.downloadLog("link_finished", "requested_fsid=%d outcome=%s status=%d code=%d error_type=%T", fsid, outcome, status, code, resultErr)
+	}()
 	// 方法1: 尝试使用 xpan multimedia 接口
 	apiURL := "https://pan.baidu.com/rest/2.0/xpan/multimedia"
 	params := url.Values{}
@@ -377,11 +391,12 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 	params.Set("dlink", "1")
 
 	fullURL := apiURL + "?" + params.Encode()
-	fmt.Printf("[BaiduAPI] 获取下载链接请求(multimedia): fsid=%d\n", fsid)
+	c.downloadLog("link_request", "requested_fsid=%d", fsid)
 	resp, err := c.get(fullURL)
 	if err != nil {
 		return "", fmt.Errorf("获取下载链接请求失败: %w", requestError(err))
 	}
+	observedStatus = resp.StatusCode
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return "", apiErrorFromResponse(c, "filemetas", resp, 0, false)
@@ -498,9 +513,10 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 	req.Header.Set("User-Agent", "pan.baidu.com")
 	req.Header.Set("Host", "d.pcs.baidu.com")
 
-	fmt.Printf("[BaiduAPI] 开始下载文件（支持断点续传，偏移量: %d）\n", startOffset)
+	c.downloadLog("http_request", "offset=%d", startOffset)
 	resp, err := client.Do(req)
 	if err != nil {
+		c.downloadLog("http_failed", "offset=%d error_type=%T cancelled=%t", startOffset, err, ctx.Err() != nil)
 		if context.Cause(ctx) == errDownloadIdleTimeout {
 			return nil, 0, errDownloadIdleTimeout
 		}
@@ -508,6 +524,7 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 	}
 	resp.Body = &idleBody{ReadCloser: resp.Body, ctx: ctx, cancel: cancel, timer: timer, timeout: timeout}
 	accepted = true
+	c.downloadLog("http_response", "offset=%d status=%d content_length=%d", startOffset, resp.StatusCode, resp.ContentLength)
 
 	// 检查响应状态码
 	if startOffset > 0 && resp.StatusCode == http.StatusOK {
@@ -534,7 +551,6 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 		return resp.Body, total - start, nil
 	}
 
-	fmt.Printf("[BaiduAPI] 下载响应成功，Content-Length=%d, StatusCode=%d\n", resp.ContentLength, resp.StatusCode)
 	return resp.Body, resp.ContentLength, nil
 }
 
