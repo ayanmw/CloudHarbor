@@ -27,13 +27,13 @@ type Provider interface {
 	Refresh(context.Context, string, string, string) (*oauth.TokenResponse, error)
 	Account(context.Context, string, string) (string, error)
 }
-type BaiduProvider struct{}
+type BaiduProvider struct{ RequestPacer baiduapi.RequestPacer }
 
 func (BaiduProvider) Refresh(ctx context.Context, key, secret, refresh string) (*oauth.TokenResponse, error) {
 	return oauth.RefreshTokenContext(ctx, key, secret, refresh)
 }
-func (BaiduProvider) Account(ctx context.Context, access, key string) (string, error) {
-	return baiduapi.NewClient(access, key).WithContext(ctx).UserID()
+func (p BaiduProvider) Account(ctx context.Context, access, key string) (string, error) {
+	return baiduapi.NewClient(access, key).WithRequestPacer(p.RequestPacer).WithContext(ctx).UserID()
 }
 
 type Options struct{ AppKey, SecretKey, AccessToken, RefreshToken string }

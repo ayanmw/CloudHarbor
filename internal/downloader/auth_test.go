@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
 func TestAuthenticationGatesScanAndResumesAfterFreshScan(t *testing.T) {
@@ -20,6 +21,9 @@ func TestAuthenticationGatesScanAndResumesAfterFreshScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { shutdown(t, d) }()
+	if err = d.BindAccount("123"); err != nil {
+		t.Fatal(err)
+	}
 	p.lists["/queue"] = []baiduapi.FileInfo{file(1, "a.txt", 3)}
 	transport := http.DefaultTransport
 	var calls atomic.Int32
@@ -41,6 +45,10 @@ func TestAuthenticationGatesScanAndResumesAfterFreshScan(t *testing.T) {
 	if err := d.ScanAndDownload(); err != nil {
 		t.Fatal(err)
 	}
+	runs, _, more, err := d.QueueMonitorScanHistoryRuns(context.Background(), 0, taskstore.QueueMonitorScanFilter{}, 10)
+	if err != nil || more || len(runs) != 1 || runs[0].Status != "success" || runs[0].CloudObservedAtUTC == nil || runs[0].FinishedAtUTC == nil {
+		t.Fatalf("durable monitor scan history=%+v more=%v err=%v", runs, more, err)
+	}
 	waitForStatus(t, d, 1, "auth_wait")
 	select {
 	case fp := <-rejected:
@@ -60,6 +68,10 @@ func TestAuthenticationGatesScanAndResumesAfterFreshScan(t *testing.T) {
 	d, err = OpenDownloader(original.cfg, baiduapi.NewClient("new", "app"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	runs, _, more, err = d.QueueMonitorScanHistoryRuns(context.Background(), 0, taskstore.QueueMonitorScanFilter{}, 10)
+	if err != nil || more || len(runs) != 1 || runs[0].Status != "success" {
+		t.Fatalf("monitor scan history after restart=%+v more=%v err=%v", runs, more, err)
 	}
 	d.SetAuthentication(baiduapi.NewClient("new", "app"), false, time.Time{})
 	assertStatus(t, d, 1, "auth_wait")

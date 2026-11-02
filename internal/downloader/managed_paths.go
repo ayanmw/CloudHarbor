@@ -2,19 +2,125 @@ package downloader
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
+	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
 type ManagedPaths struct {
 	QueueDir     string `json:"queue_dir"`
 	LocalDownDir string `json:"local_download_dir"`
+}
+
+type ManagedPathImpactTask struct {
+	FsID         int64        `json:"fs_id"`
+	Path         string       `json:"path"`
+	Filename     string       `json:"server_filename"`
+	Status       string       `json:"status"`
+	Attempts     int          `json:"attempts"`
+	DownloadMode DownloadMode `json:"download_mode"`
+}
+
+type ManagedPathImpact struct {
+	CurrentQueueDir string                  `json:"current_queue_dir"`
+	TargetQueueDir  string                  `json:"target_queue_dir"`
+	Count           int                     `json:"count"`
+	Offset          int                     `json:"offset"`
+	Limit           int                     `json:"limit"`
+	HasMore         bool                    `json:"has_more"`
+	Tasks           []ManagedPathImpactTask `json:"tasks"`
+	Digest          string                  `json:"digest"`
+}
+
+const managedPathImpactPageLimit = 50
+
+type ManagedPathImpactConfirmationError struct {
+	Impact ManagedPathImpact
+	Stale  bool
+}
+
+func (e *ManagedPathImpactConfirmationError) Error() string {
+	if e.Stale {
+		return "队列在确认后发生变化，请核对最新受影响任务后再次确认"
+	}
+	return "切换监控目录会影响未执行任务，请先预览并确认"
+}
+
+// PreviewManagedPathChange snapshots unstarted queue roots that the target
+// monitor directory will not list directly. The digest is revalidated before
+// a confirmed settings write; it is not a remote identity proof.
+func (d *Downloader) PreviewManagedPathChange(targetQueueDir string) (ManagedPathImpact, error) {
+	return d.PreviewManagedPathChangePage(targetQueueDir, 0, managedPathImpactPageLimit)
+}
+
+func (d *Downloader) PreviewManagedPathChangePage(targetQueueDir string, offset, limit int) (ManagedPathImpact, error) {
+	if !validCloudPath(targetQueueDir) || targetQueueDir == "/" {
+		return ManagedPathImpact{}, fmt.Errorf("网盘监控目录必须是以 / 开头的非根目录")
+	}
+	if offset < 0 || limit < 1 || limit > managedPathImpactPageLimit {
+		return ManagedPathImpact{}, fmt.Errorf("监控目录影响预览分页参数无效")
+	}
+	d.pathOperations.RLock()
+	defer d.pathOperations.RUnlock()
+	current := d.GetManagedPaths()
+	return d.managedPathImpact(current.QueueDir, targetQueueDir, offset, limit), nil
+}
+
+func (d *Downloader) managedPathImpact(currentQueueDir, targetQueueDir string, offset, limit int) ManagedPathImpact {
+	currentQueueDir, targetQueueDir = path.Clean(currentQueueDir), path.Clean(targetQueueDir)
+	impact := ManagedPathImpact{
+		CurrentQueueDir: currentQueueDir,
+		TargetQueueDir:  targetQueueDir,
+		Tasks:           make([]ManagedPathImpactTask, 0),
+		Offset:          offset,
+		Limit:           limit,
+	}
+	d.queue.mu.Lock()
+	for _, job := range d.queue.jobs {
+		if job == nil || (job.Status != "pending" && job.Status != "auth_wait" && job.Status != "retry_wait") {
+			continue
+		}
+		jobPath := path.Clean(job.Info.Path)
+		if path.Dir(jobPath) != currentQueueDir || path.Dir(jobPath) == targetQueueDir {
+			continue
+		}
+		impact.Tasks = append(impact.Tasks, ManagedPathImpactTask{
+			FsID: job.Info.FsID, Path: job.Info.Path, Filename: job.Info.ServerFilename,
+			Status: job.Status, Attempts: job.Attempts, DownloadMode: job.Mode,
+		})
+	}
+	d.queue.mu.Unlock()
+	sort.Slice(impact.Tasks, func(i, j int) bool { return impact.Tasks[i].FsID < impact.Tasks[j].FsID })
+	impact.Count = len(impact.Tasks)
+	encoded, _ := json.Marshal(struct {
+		CurrentQueueDir string                  `json:"current_queue_dir"`
+		TargetQueueDir  string                  `json:"target_queue_dir"`
+		Tasks           []ManagedPathImpactTask `json:"tasks"`
+	}{impact.CurrentQueueDir, impact.TargetQueueDir, impact.Tasks})
+	digest := sha256.Sum256(encoded)
+	impact.Digest = hex.EncodeToString(digest[:])
+	if offset > impact.Count {
+		offset = impact.Count
+	}
+	impact.Offset = offset
+	end := impact.Count
+	if limit < impact.Count-offset {
+		end = offset + limit
+	}
+	impact.HasMore = end < impact.Count
+	impact.Tasks = impact.Tasks[offset:end]
+	return impact
 }
 
 func (d *Downloader) GetManagedPaths() ManagedPaths {
@@ -38,6 +144,10 @@ func (d *Downloader) LocalDownloadDirectory() string {
 // SetManagedPaths changes runtime paths only after acquiring the queue gate.
 // When requested, a local migration owns that gate until source verification and cleanup finish.
 func (d *Downloader) SetManagedPaths(ctx context.Context, paths ManagedPaths, migrateFiles bool) (taskstore.LocalDirectoryMigration, error) {
+	return d.SetManagedPathsConfirmed(ctx, paths, migrateFiles, "")
+}
+
+func (d *Downloader) SetManagedPathsConfirmed(ctx context.Context, paths ManagedPaths, migrateFiles bool, impactDigest string) (taskstore.LocalDirectoryMigration, error) {
 	if !validCloudPath(paths.QueueDir) || paths.QueueDir == "/" {
 		return taskstore.LocalDirectoryMigration{}, fmt.Errorf("网盘监控目录必须是以 / 开头的非根目录")
 	}
@@ -51,8 +161,27 @@ func (d *Downloader) SetManagedPaths(ctx context.Context, paths ManagedPaths, mi
 			return taskstore.LocalDirectoryMigration{}, fmt.Errorf("本地下载目录不能包含或位于程序状态目录内")
 		}
 	}
+	d.pathOperations.Lock()
+	defer d.pathOperations.Unlock()
+	if err = ctx.Err(); err != nil {
+		return taskstore.LocalDirectoryMigration{}, err
+	}
+	if d.managedPathsAdmissionHook != nil {
+		d.managedPathsAdmissionHook()
+	}
 	current := d.GetManagedPaths()
-	if current.QueueDir == paths.QueueDir && sameLocalPath(current.LocalDownDir, local) {
+	samePaths := current.QueueDir == paths.QueueDir && sameLocalPath(current.LocalDownDir, local)
+	var failedMigration taskstore.LocalDirectoryMigration
+	resumeFailedMigration := false
+	if samePaths && migrateFiles {
+		failedMigration, err = d.queue.store.LoadLatestLocalDirectoryMigration()
+		if err != nil && err != sql.ErrNoRows {
+			return taskstore.LocalDirectoryMigration{}, err
+		}
+		resumeFailedMigration = err == nil && failedMigration.Status == "failed" &&
+			failedMigration.TargetPath == local && failedMigration.DesiredQueuePath == paths.QueueDir
+	}
+	if samePaths && !resumeFailedMigration {
 		return taskstore.LocalDirectoryMigration{}, nil
 	}
 	if d.cfg.QueueDirExplicit && paths.QueueDir != current.QueueDir {
@@ -61,8 +190,11 @@ func (d *Downloader) SetManagedPaths(ctx context.Context, paths ManagedPaths, mi
 	if d.cfg.LocalDownDirExplicit && !sameLocalPath(local, current.LocalDownDir) {
 		return taskstore.LocalDirectoryMigration{}, fmt.Errorf("本地下载目录由 .env 或启动环境锁定")
 	}
+	if err = validateLocalPathOutsideState(local, d.cfg.StateDir); err != nil {
+		return taskstore.LocalDirectoryMigration{}, err
+	}
 	for _, intake := range d.GetIntakes() {
-		if intake.State != "finished" {
+		if intake.State == "preview" || intake.State == "running" {
 			return taskstore.LocalDirectoryMigration{}, fmt.Errorf("存在未完成的网盘入队操作，暂不能修改路径")
 		}
 	}
@@ -85,8 +217,16 @@ func (d *Downloader) SetManagedPaths(ctx context.Context, paths ManagedPaths, mi
 	if scanning {
 		return taskstore.LocalDirectoryMigration{}, fmt.Errorf("全盘缓存扫描运行时不能修改路径")
 	}
-	if migrateFiles && !sameLocalPath(current.LocalDownDir, local) {
-		migration, startErr := d.beginLocalDirectoryMigration(current.LocalDownDir, local, paths.QueueDir)
+	impact := d.managedPathImpact(current.QueueDir, paths.QueueDir, 0, managedPathImpactPageLimit)
+	if (impact.Count > 0 && impactDigest == "") || (impactDigest != "" && impactDigest != impact.Digest) {
+		return taskstore.LocalDirectoryMigration{}, &ManagedPathImpactConfirmationError{Impact: impact, Stale: impactDigest != ""}
+	}
+	if migrateFiles && (!sameLocalPath(current.LocalDownDir, local) || resumeFailedMigration) {
+		source := current.LocalDownDir
+		if resumeFailedMigration {
+			source = failedMigration.SourcePath
+		}
+		migration, startErr := d.beginLocalDirectoryMigration(source, local, paths.QueueDir)
 		if startErr != nil {
 			return taskstore.LocalDirectoryMigration{}, startErr
 		}
@@ -102,7 +242,21 @@ func (d *Downloader) SetManagedPaths(ctx context.Context, paths ManagedPaths, mi
 	d.pathMu.Lock()
 	d.queueDir, d.localDownDir = paths.QueueDir, local
 	d.pathMu.Unlock()
+	if current.QueueDir != paths.QueueDir {
+		d.invalidateQueueEligibility()
+	}
 	return taskstore.LocalDirectoryMigration{}, nil
+}
+
+// A successful scan is the only evidence that can authorize tasks from a
+// monitoring directory. Discard in-memory eligibility when that directory
+// changes, while retaining persisted task history for the next reconciliation.
+func (d *Downloader) invalidateQueueEligibility() {
+	q := d.queue
+	q.mu.Lock()
+	q.eligible = make(map[int64]*baiduapi.FileInfo)
+	q.clearCandidates()
+	q.mu.Unlock()
 }
 
 func (d *Downloader) saveAppSettings(updates map[string]any) error {

@@ -21,6 +21,18 @@ type provider struct {
 	account func(context.Context, string, string) (string, error)
 }
 
+type accountPacer struct{ calls atomic.Int32 }
+
+func (p *accountPacer) Wait(context.Context) error { p.calls.Add(1); return context.Canceled }
+
+func TestBaiduProviderAccountCheckUsesSharedRequestPacer(t *testing.T) {
+	pacer := &accountPacer{}
+	_, err := (BaiduProvider{RequestPacer: pacer}).Account(context.Background(), "access", "app")
+	if !errors.Is(err, context.Canceled) || pacer.calls.Load() != 1 {
+		t.Fatalf("account request skipped shared pacer: calls=%d err=%v", pacer.calls.Load(), err)
+	}
+}
+
 func (p provider) Refresh(ctx context.Context, key, secret, token string) (*oauth.TokenResponse, error) {
 	return p.refresh(ctx, key, secret, token)
 }

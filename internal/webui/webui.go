@@ -33,6 +33,15 @@ var indexLogin []byte
 //go:embed index_cloud.html
 var indexCloud []byte
 
+//go:embed index_operations.html
+var indexOperations []byte
+
+//go:embed index_monitor_history.html
+var indexMonitorHistory []byte
+
+//go:embed index_task_events.html
+var indexTaskEvents []byte
+
 //go:embed res/*
 var resFiles embed.FS
 
@@ -48,6 +57,9 @@ type wsMessage struct {
 	Offset       int    `json:"offset,omitempty"`
 	Limit        int    `json:"limit,omitempty"`
 	SortBy       string `json:"sort_by,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Query        string `json:"q,omitempty"`
+	RequestID    int64  `json:"request_id,omitempty"`
 }
 
 func NewServer(dl *downloader.Downloader) *Server {
@@ -93,6 +105,21 @@ func (s *Server) HandlePageLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) HandlePageCloud(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(indexCloud)
+}
+
+func (s *Server) HandlePageOperations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexOperations)
+}
+
+func (s *Server) HandlePageMonitorHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexMonitorHistory)
+}
+
+func (s *Server) HandlePageTaskEvents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexTaskEvents)
 }
 
 // HandleRes 静态资源文件服务
@@ -151,7 +178,7 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	done := make(chan struct{})
 	pageRequests := make(chan wsMessage, 1)
-	offset, limit, sortBy := 0, 100, "name"
+	offset, limit, sortBy, status, query, requestID := 0, 100, "name", "", "", int64(0)
 
 	// 读取前端消息（设置更新）
 	go func() {
@@ -167,6 +194,10 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[WebUI] 更新下载模式为: %s", msg.DownloadMode)
 				s.dl.SetDownloadMode(downloader.DownloadMode(msg.DownloadMode))
 			} else if msg.Type == "status_page" && msg.Offset >= 0 && msg.Limit >= 1 && msg.Limit <= 200 && (msg.SortBy == "name" || msg.SortBy == "progress" || msg.SortBy == "size") {
+				msg.Status, msg.Query, err = downloader.NormalizeTaskFilters(msg.Status, msg.Query)
+				if err != nil {
+					continue
+				}
 				select {
 				case pageRequests <- msg:
 				default:
@@ -191,13 +222,13 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 		case <-done:
 			return
 		case request := <-pageRequests:
-			offset, limit, sortBy = request.Offset, request.Limit, request.SortBy
-			if err := s.sendStatus(conn, offset, limit, sortBy); err != nil {
+			offset, limit, sortBy, status, query, requestID = request.Offset, request.Limit, request.SortBy, request.Status, request.Query, request.RequestID
+			if err := s.sendStatus(conn, offset, limit, sortBy, status, query, requestID); err != nil {
 				log.Printf("[WebUI] 发送状态失败: %v", err)
 				return
 			}
 		case <-ticker.C:
-			if err := s.sendStatus(conn, offset, limit, sortBy); err != nil {
+			if err := s.sendStatus(conn, offset, limit, sortBy, status, query, requestID); err != nil {
 				log.Printf("[WebUI] 发送状态失败: %v", err)
 				return
 			}
@@ -205,37 +236,43 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) sendStatus(conn *websocket.Conn, offset, limit int, sortBy string) error {
-	page := s.dl.GetTaskPage(offset, limit, sortBy)
+func (s *Server) sendStatus(conn *websocket.Conn, offset, limit int, sortBy, status, query string, requestID int64) error {
+	page, err := s.dl.GetTaskPageFiltered(offset, limit, sortBy, status, query)
+	if err != nil {
+		return err
+	}
 	tasks := page.Tasks
 
 	// 与 /status 类似的结构
 	type TaskStatus struct {
-		FsID           int64  `json:"fs_id"`
-		TaskID         string `json:"task_id"`
-		CanCancel      bool   `json:"can_cancel"`
-		CanRetry       bool   `json:"can_retry"`
-		Path           string `json:"path"`
-		ServerFilename string `json:"server_filename"`
-		Size           int64  `json:"size"`
-		Status         string `json:"status"`
-		LocalPath      string `json:"local_path,omitempty"`
-		Error          string `json:"error,omitempty"`
-		StartTime      string `json:"start_time,omitempty"`
-		FinishTime     string `json:"finish_time,omitempty"`
-		Progress       int64  `json:"progress"`
-		Speed          int64  `json:"speed,omitempty"` // 添加速度信息
-		Attempts       int    `json:"attempts"`
-		NextAttempt    string `json:"next_attempt,omitempty"`
-		Root           bool   `json:"is_root"`
-		DownloadMode   string `json:"download_mode,omitempty"`
+		FsID           int64                            `json:"fs_id"`
+		TaskID         string                           `json:"task_id"`
+		CanCancel      bool                             `json:"can_cancel"`
+		CanPause       bool                             `json:"can_pause"`
+		CanResume      bool                             `json:"can_resume"`
+		CanRetry       bool                             `json:"can_retry"`
+		Path           string                           `json:"path"`
+		ServerFilename string                           `json:"server_filename"`
+		Size           int64                            `json:"size"`
+		Status         string                           `json:"status"`
+		LocalPath      string                           `json:"local_path,omitempty"`
+		Error          string                           `json:"error,omitempty"`
+		StartTime      string                           `json:"start_time,omitempty"`
+		FinishTime     string                           `json:"finish_time,omitempty"`
+		Progress       int64                            `json:"progress"`
+		Speed          int64                            `json:"speed,omitempty"` // 添加速度信息
+		Attempts       int                              `json:"attempts"`
+		NextAttempt    string                           `json:"next_attempt,omitempty"`
+		LocalStorage   *downloader.LocalStorageEvidence `json:"local_storage,omitempty"`
+		Root           bool                             `json:"is_root"`
+		DownloadMode   string                           `json:"download_mode,omitempty"`
 	}
 
 	statuses := make([]TaskStatus, 0, len(tasks))
 	for _, t := range tasks {
 		ts := TaskStatus{
 			FsID:   t.FileInfo.FsID,
-			TaskID: t.TaskID, CanCancel: t.CanCancel, CanRetry: t.CanRetry,
+			TaskID: t.TaskID, CanCancel: t.CanCancel, CanPause: t.CanPause, CanResume: t.CanResume, CanRetry: t.CanRetry,
 			Path:           t.FileInfo.Path,
 			ServerFilename: t.FileInfo.ServerFilename,
 			Size:           t.FileInfo.Size,
@@ -245,6 +282,7 @@ func (s *Server) sendStatus(conn *websocket.Conn, offset, limit int, sortBy stri
 			Progress:       t.Progress,
 			Speed:          t.Speed, // 添加速度信息
 			Attempts:       t.Attempts,
+			LocalStorage:   t.LocalStorage,
 			Root:           t.Root, DownloadMode: string(t.DownloadMode),
 		}
 
@@ -262,8 +300,9 @@ func (s *Server) sendStatus(conn *websocket.Conn, offset, limit int, sortBy stri
 	}
 
 	payload := map[string]interface{}{
-		"type": "status", "tasks": statuses,
-		"total_tasks": page.Total, "status_counts": page.Counts,
+		"type": "status", "tasks": statuses, "request_id": requestID,
+		"total_tasks": page.Total, "queue_total_tasks": page.QueueTotal, "status_counts": page.Counts,
+		"queue_pause": s.dl.QueuePauseStatus(), "queue_healthy": s.dl.QueueOperational(),
 		"offset": page.Offset, "limit": page.Limit, "has_more": page.HasMore,
 		"next_offset": func() *int {
 			if !page.HasMore {

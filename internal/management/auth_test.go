@@ -2,11 +2,13 @@ package management
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
@@ -63,6 +65,40 @@ func TestManagementAuthenticationAndOrigin(t *testing.T) {
 				t.Fatal("private management page cacheable")
 			}
 		})
+	}
+}
+
+func TestAdminadminIsAcceptedForLocalManagementLogin(t *testing.T) {
+	gate, err := New("adminadmin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://example.com/api/status", nil)
+	r.Header.Set("Authorization", "Bearer adminadmin")
+	gate.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })).ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("simple administrator key rejected: status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminadminCanCreateBrowserSession(t *testing.T) {
+	store, err := taskstore.Open(filepath.Join(t.TempDir(), "queue"), "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	gate, err := New("adminadmin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.SetSessionStore(store)
+	req := httptest.NewRequest(http.MethodPost, "http://nas.example/api/login", strings.NewReader(`{"password":"adminadmin"}`))
+	req.Header.Set("Origin", "http://nas.example")
+	w := httptest.NewRecorder()
+	gate.HandleLogin(w, req)
+	if w.Code != http.StatusOK || len(w.Result().Cookies()) != 1 {
+		t.Fatalf("simple-key browser login failed: status=%d body=%q", w.Code, w.Body.String())
 	}
 }
 
@@ -149,5 +185,27 @@ func TestLoginRequiresSameOriginAndBoundsFailedAttempts(t *testing.T) {
 	gate.HandleLogin(blocked, badOrigin)
 	if blocked.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin login status=%d", blocked.Code)
+	}
+}
+
+func TestExpiredLoginFailuresDoNotPermanentlyFillRateLimitMap(t *testing.T) {
+	gate, err := New("a-strong-preview-admin-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gate.loginMu.Lock()
+	for i := 0; i < 1024; i++ {
+		gate.failures[fmt.Sprintf("192.0.2.%d", i)] = loginFailure{started: time.Now().Add(-16 * time.Minute), count: 1}
+	}
+	gate.loginMu.Unlock()
+
+	if !gate.allowLogin("198.51.100.1") {
+		t.Fatal("new login source should be admitted after expired failures are reclaimed")
+	}
+	gate.loginMu.Lock()
+	defer gate.loginMu.Unlock()
+	if len(gate.failures) != 0 {
+		t.Fatalf("expired failure records remain: %d", len(gate.failures))
 	}
 }

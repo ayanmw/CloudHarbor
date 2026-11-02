@@ -22,6 +22,7 @@ const stateDirectory = ".nas-downloader"
 var syncPublishedDirectory = durablefs.SyncDirectory
 var removePublishedPartial = os.Remove
 var linkDownloadedFile = os.Link
+var writePartialChunk = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
 
 func publishDownloadedFile(ctx context.Context, partialName, local string, expected fileRecord) error {
 	linkErr := linkDownloadedFile(partialName, local)
@@ -445,6 +446,11 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 			offset = 0
 		}
 	}
+	reservation, err := d.reserveLocalSpace(info.FsID, filepath.Dir(local), info.Size-offset)
+	if err != nil {
+		return err
+	}
+	defer func() { reservation.Release() }()
 	if offset == 0 {
 		// Reset stale/unbound data before associating it with a different version.
 		f, openErr := os.OpenFile(partialName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
@@ -470,6 +476,11 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		}
 		body, length, downloadErr := client.DownloadFileWithRange(link, offset)
 		if errors.Is(downloadErr, baiduapi.ErrRangeIgnored) {
+			reservation.Release()
+			reservation, err = d.reserveLocalSpace(info.FsID, filepath.Dir(local), info.Size)
+			if err != nil {
+				return err
+			}
 			offset = 0
 			body, length, downloadErr = client.DownloadFileWithRange(link, 0)
 		}
@@ -505,10 +516,14 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 					break
 				}
 				var count int
-				count, err = out.Write(buf[:n])
+				count, err = writePartialChunk(out, buf[:n])
 				written += int64(count)
 				d.updateProgress(info.FsID, written)
+				reservation.UpdateRemaining(info.Size - written)
 				if err != nil {
+					if localStorageFullCheck(err) {
+						err = reservation.fullError(info.Size-written, err)
+					}
 					break
 				}
 				if count != n {
@@ -536,6 +551,9 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 			err = closeErr
 		}
 		if err != nil {
+			if localStorageFullCheck(err) {
+				return reservation.fullError(info.Size-written, err)
+			}
 			return err
 		}
 	}

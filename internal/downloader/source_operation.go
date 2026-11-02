@@ -143,6 +143,7 @@ func (d *Downloader) beginSourceOperation(ctx context.Context, info baiduapi.Fil
 	if err != nil {
 		return false, err
 	}
+	previous := *job
 	job.SourceState = "sending"
 	job.SourceOperationID = operationID
 	job.SourceAttemptID = attemptID
@@ -152,6 +153,11 @@ func (d *Downloader) beginSourceOperation(ctx context.Context, info baiduapi.Fil
 	q.rebuildSourceBlocks()
 	event := taskstore.Event{Kind: "source_operation_sending", OperationID: operationID, AttemptID: attemptID, EvidenceType: "local_send_intent", Evidence: sourceOperationEvidence(info, "sending")}
 	if err := q.persistWithEvent(job, event); err != nil {
+		// The provider call starts only after this durable intent succeeds, so a
+		// failed journal write is definitely unsent and must not leave quarantine.
+		*job = previous
+		q.rebuildSourceBlocks()
+		q.reflect(job)
 		return false, err
 	}
 	q.reflect(job)

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/config"
@@ -37,6 +39,59 @@ func TestGetTaskPageSortsAcrossAllTasksAndReturnsGlobalCounts(t *testing.T) {
 	page = d.GetTaskPage(2, 1, "name")
 	if len(page.Tasks) != 1 || page.Tasks[0].FileInfo.FsID != 1 || page.HasMore {
 		t.Fatalf("last name page = %+v", page)
+	}
+}
+
+func TestGetTaskPageFilteredMatchesStatusAndPathWithinStableSortedPages(t *testing.T) {
+	d := NewDownloader(&config.Config{}, baiduapi.NewClient("", ""))
+	defer d.cancel()
+	d.queue.jobs = map[int64]*queueJob{
+		1: {Info: baiduapi.FileInfo{FsID: 1, Path: "/queue/alpha/movie.MKV", ServerFilename: "movie.MKV"}, Status: "failed"},
+		2: {Info: baiduapi.FileInfo{FsID: 2, Path: "/queue/beta/keep.txt", ServerFilename: "keep.txt"}, Status: "done"},
+		3: {Info: baiduapi.FileInfo{FsID: 3, Path: "/other/ALPHA-note.txt", ServerFilename: "ALPHA-note.txt"}, Status: "failed"},
+		4: {Info: baiduapi.FileInfo{FsID: 4, Path: "/queue/alpha/part.bin", ServerFilename: "part.bin"}, Status: "pending"},
+		5: {Info: baiduapi.FileInfo{FsID: 5, Path: "/queue/beta/movie.mkv", ServerFilename: "movie.mkv"}, Status: "cancelled"},
+		6: {Info: baiduapi.FileInfo{FsID: 6, ServerFilename: "Beta-File.txt"}, Status: "pending"},
+	}
+	page, err := d.GetTaskPageFiltered(1, 1, "name", "failed", "  ALPHA ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || page.QueueTotal != 6 || page.Counts["done"] != 1 || len(page.Tasks) != 1 || page.Tasks[0].FileInfo.FsID != 1 || page.HasMore {
+		t.Fatalf("filtered page = %+v, want second of 2 failed ALPHA matches and global counts", page)
+	}
+	page, err = d.GetTaskPageFiltered(0, 10, "size", "pending", "BETA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Tasks) != 1 || page.Tasks[0].FileInfo.FsID != 6 {
+		t.Fatalf("filename fallback search = %+v, want task 6", page)
+	}
+	page, err = d.GetTaskPageFiltered(0, 10, "name", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 6 || page.QueueTotal != 6 || len(page.Tasks) != 6 {
+		t.Fatalf("empty filter changed full list: %+v", page)
+	}
+}
+
+func TestNormalizeTaskFiltersBoundsUnicodeSearchAndRejectsUnknownStatus(t *testing.T) {
+	status, query, err := NormalizeTaskFilters("failed", "  Ａbc  ")
+	if err != nil || status != "failed" || query != "ａbc" {
+		t.Fatalf("normalized filters = %q %q err=%v", status, query, err)
+	}
+	if _, _, err = NormalizeTaskFilters("unknown-status", ""); err == nil {
+		t.Fatal("unknown status filter accepted")
+	}
+	if status, _, err = NormalizeTaskFilters("paused", ""); err != nil || status != "paused" {
+		t.Fatalf("paused status filter = %q, err=%v", status, err)
+	}
+	if _, _, err = NormalizeTaskFilters("", strings.Repeat("界", 129)); err == nil {
+		t.Fatal("129-codepoint query accepted")
+	}
+	if _, query, err = NormalizeTaskFilters("", strings.Repeat("界", 128)); err != nil || utf8.RuneCountInString(query) != 128 {
+		t.Fatalf("128-codepoint query rejected: %v", err)
 	}
 }
 
@@ -177,7 +232,7 @@ func TestGetTaskStatsCachesSummaryAndInvalidatesOnChanges(t *testing.T) {
 func TestGetTaskPageSortIndexesInvalidateOnCatalogChanges(t *testing.T) {
 	d := NewDownloader(&config.Config{}, baiduapi.NewClient("", ""))
 	defer d.cancel()
-	d.queue.jobs[1] = &queueJob{Info: baiduapi.FileInfo{FsID: 1, Path: "/queue/z.txt", ServerFilename: "z.txt", Size: 10}, Status: "done"}
+	d.queue.jobs[1] = &queueJob{Info: baiduapi.FileInfo{FsID: 1, Path: "/queue/z-dir", ServerFilename: "z-dir", Size: 10, IsDir: 1}, Mode: DownloadModeKeep, Status: "pending"}
 	d.queue.jobs[2] = &queueJob{Info: baiduapi.FileInfo{FsID: 2, Path: "/queue/b.txt", ServerFilename: "b.txt", Size: 20}, Status: "done"}
 
 	page := d.GetTaskPage(0, 1, "name")
@@ -200,11 +255,11 @@ func TestGetTaskPageSortIndexesInvalidateOnCatalogChanges(t *testing.T) {
 		t.Fatalf("size index did not include new task: %+v", page)
 	}
 
-	// Reconciliation may replace metadata under an existing FsID.
+	// A safe unstarted directory may change path and computed size under the same FsID.
 	d.queue.mu.Lock()
 	d.queue.started = true // Keep this fixture from launching scheduler workers.
 	d.queue.mu.Unlock()
-	updated := baiduapi.FileInfo{FsID: 1, Path: "/queue/0.txt", ServerFilename: "0.txt", Size: 200}
+	updated := baiduapi.FileInfo{FsID: 1, Path: "/queue/0-dir", ServerFilename: "0-dir", Size: 200, IsDir: 1}
 	if err := d.queue.reconcile([]baiduapi.FileInfo{updated}, 0); err != nil {
 		t.Fatal(err)
 	}

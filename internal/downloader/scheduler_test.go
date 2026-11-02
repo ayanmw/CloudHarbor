@@ -23,6 +23,27 @@ import (
 	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
+func TestQueueOperationalReportsFailClosedPersistenceError(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	defer shutdown(t, d)
+	if !d.QueueOperational() {
+		t.Fatal("new queue should report operational")
+	}
+	d.queue.mu.Lock()
+	d.queue.err = errors.New("injected SQLite persistence failure")
+	d.queue.mu.Unlock()
+	if d.QueueOperational() {
+		t.Fatal("queue with a fail-closed persistence error reported operational")
+	}
+	d.queue.mu.Lock()
+	d.queue.err = nil
+	d.queue.mu.Unlock()
+	d.cancel()
+	if d.QueueOperational() {
+		t.Fatal("cancelled downloader reported an operational queue")
+	}
+}
+
 func TestReconcileSharesIdenticalPersistedFileInfoStorage(t *testing.T) {
 	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	info := baiduapi.FileInfo{

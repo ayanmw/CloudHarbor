@@ -2,27 +2,64 @@ package downloader
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"time"
+
+	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
 type CloudEntry struct {
-	ID         string `json:"id"`
-	FsID       int64  `json:"fs_id"`
-	Path       string `json:"path"`
-	Name       string `json:"name"`
-	Directory  bool   `json:"directory"`
-	Size       int64  `json:"size"`
-	Mtime      int64  `json:"server_mtime"`
-	MD5        string `json:"md5,omitempty"`
-	CanEnqueue bool   `json:"can_enqueue"`
+	ID           string `json:"id"`
+	FsID         int64  `json:"fs_id"`
+	Path         string `json:"path"`
+	Name         string `json:"name"`
+	Directory    bool   `json:"directory"`
+	Size         int64  `json:"size"`
+	SizeComplete bool   `json:"size_complete,omitempty"`
+	ProviderSize int64  `json:"provider_size"`
+	Mtime        int64  `json:"server_mtime"`
+	MD5          string `json:"md5,omitempty"`
+	CanEnqueue   bool   `json:"can_enqueue"`
 }
 type CloudListing struct {
-	Directory  string       `json:"directory"`
-	QueueDir   string       `json:"queue_dir"`
-	Entries    []CloudEntry `json:"entries"`
-	Total      *int         `json:"total"`
-	Offset     int          `json:"offset"`
-	NextOffset *int         `json:"next_offset,omitempty"`
+	Directory            string             `json:"directory"`
+	QueueDir             string             `json:"queue_dir"`
+	Entries              []CloudEntry       `json:"entries"`
+	Total                *int               `json:"total"`
+	Offset               int                `json:"offset"`
+	NextOffset           *int               `json:"next_offset,omitempty"`
+	NextBoundary         *CloudPageBoundary `json:"next_boundary,omitempty"`
+	BoundaryChanged      bool               `json:"boundary_changed,omitempty"`
+	BoundaryChangeReason string             `json:"boundary_change_reason,omitempty"`
+	ObservedAtUTC        string             `json:"observed_at_utc,omitempty"`
+}
+
+type CloudPageBoundary struct {
+	FsID          int64  `json:"-"`
+	Path          string `json:"-"`
+	Name          string `json:"-"`
+	Directory     bool   `json:"-"`
+	Size          int64  `json:"-"`
+	ProviderMtime int64  `json:"-"`
+	ContentMD5    string `json:"-"`
+	Fingerprint   string `json:"fingerprint"`
+}
+
+func (b CloudPageBoundary) ComputeFingerprint() string {
+	identity, _ := json.Marshal(struct {
+		FsID          int64  `json:"fs_id"`
+		Path          string `json:"path"`
+		Name          string `json:"name"`
+		Directory     bool   `json:"directory"`
+		Size          int64  `json:"size"`
+		ProviderMtime int64  `json:"provider_mtime"`
+		ContentMD5    string `json:"content_md5"`
+	}{b.FsID, b.Path, b.Name, b.Directory, b.Size, b.ProviderMtime, b.ContentMD5})
+	digest := sha256.Sum256(identity)
+	return hex.EncodeToString(digest[:])
 }
 
 func (d *Downloader) ListCloud(ctx context.Context, directory string, offset, limit int) (CloudListing, error) {
@@ -40,31 +77,56 @@ func (d *Downloader) ListCloud(ctx context.Context, directory string, offset, li
 	if err != nil {
 		return CloudListing{}, err
 	}
-	files, hasMore, err := client.ListDirPage(directory, offset, limit)
+	files, hasMore, boundary, err := client.ListDirPageWithBoundary(directory, offset, limit)
 	if err != nil {
 		d.reportAuthenticationFailure(err)
 		return CloudListing{}, err
 	}
+	observedAtUTC := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, f := range files {
 		if !validListingFile(directory, f) {
 			return CloudListing{}, ErrIntakeConflict
 		}
 	}
+	if boundary != nil && !validListingFile(directory, *boundary) {
+		return CloudListing{}, ErrIntakeConflict
+	}
 	if _, err = d.intakeClient(ctx, epoch); err != nil {
 		return CloudListing{}, err
 	}
 	queueDir := d.QueueDirectory()
-	result := CloudListing{Directory: directory, QueueDir: queueDir, Entries: []CloudEntry{}, Offset: offset}
+	result := CloudListing{Directory: directory, QueueDir: queueDir, Entries: []CloudEntry{}, Offset: offset, ObservedAtUTC: observedAtUTC}
 	if hasMore {
 		next := offset + len(files)
 		result.NextOffset = &next
+		if boundary != nil {
+			pageBoundary := CloudPageBoundary{FsID: boundary.FsID, Path: boundary.Path, Name: boundary.ServerFilename, Directory: boundary.IsDir == 1, Size: boundary.Size, ProviderMtime: boundary.Mtime, ContentMD5: boundary.MD5}
+			pageBoundary.Fingerprint = pageBoundary.ComputeFingerprint()
+			result.NextBoundary = &pageBoundary
+		}
+	}
+	directorySizes := make(map[int64]taskstore.CloudDirectorySize)
+	if d.queue.store != nil {
+		for _, f := range files {
+			if f.IsDir != 1 {
+				continue
+			}
+			if size, sizeErr := d.queue.store.CloudDirectorySize(client.Fingerprint(), f.Path); sizeErr == nil {
+				directorySizes[f.FsID] = size
+			}
+		}
 	}
 	d.queue.mu.Lock()
 	defer d.queue.mu.Unlock()
 	for _, f := range files {
 		target := intakeTarget(queueDir, f.Path)
 		allowed := validateIntakePaths([]string{f.Path}, queueDir) == nil && d.queue.jobs[f.FsID] == nil && !d.queue.isRemoteBlocked(f.FsID, f.Path) && !d.queue.blockedIntakes[target] && !d.queue.blockedSources[target]
-		result.Entries = append(result.Entries, CloudEntry{ID: fmt.Sprint(f.FsID), FsID: f.FsID, Path: f.Path, Name: f.ServerFilename, Directory: f.IsDir == 1, Size: f.Size, Mtime: f.Mtime, MD5: f.MD5, CanEnqueue: allowed})
+		entry := CloudEntry{ID: fmt.Sprint(f.FsID), FsID: f.FsID, Path: f.Path, Name: f.ServerFilename, Directory: f.IsDir == 1, Size: f.Size, ProviderSize: f.Size, Mtime: f.Mtime, MD5: f.MD5, CanEnqueue: allowed}
+		if size, ok := directorySizes[f.FsID]; ok && size.Complete {
+			entry.Size = size.Bytes
+			entry.SizeComplete = true
+		}
+		result.Entries = append(result.Entries, entry)
 	}
 	return result, nil
 }

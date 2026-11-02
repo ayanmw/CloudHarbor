@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>全局任务事件历史</title>
+    <link rel="stylesheet" href="/res/shared.css">
+    <style>
+        body{background:#f4f6fa}.container{max-width:1240px}.card{background:#fff;border-radius:12px;padding:20px;margin:18px 0}
+        .filters{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:14px 0}.filters label{display:grid;gap:4px;font-size:13px}
+        .filters input,.filters select{min-width:150px}.filters .wide{min-width:230px}.muted{color:#647087;font-size:13px;line-height:1.6}
+        .message{white-space:pre-wrap;color:#8d3c24}.event{border-top:1px solid #e5e9f2;padding:14px 0;overflow-wrap:anywhere}.event-meta{line-height:1.75}
+        .event pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f7f8fb;padding:10px;border-radius:6px}.kind-counts{display:flex;gap:8px;flex-wrap:wrap}.kind-counts button{padding:5px 9px}
+    </style>
+</head>
+<body>
+<main class="container">
+    <nav><a href="/">← 下载任务</a> · <a href="/cloud">网盘管理</a> · <a href="/monitor-history">自动扫描历史</a> · <a href="/oauth">百度账号授权</a> · <button type="button" onclick="logoutAdmin()">退出登录</button></nav>
+    <section class="card">
+        <h1>全局任务事件历史</h1>
+        <p class="muted">从本机 SQLite 查看所有下载任务的追加事件。记录时间为本机 UTC；百度发生、目录观察和 HTTP 响应时间分开显示。本页只读，不调用百度 API，也不改变下载队列。</p>
+        <form id="task-event-filter" class="filters">
+            <label>任务 ID（精确）<input id="task-event-task-id" inputmode="numeric" autocomplete="off" placeholder="留空表示全部任务"></label>
+            <label>事件类型<select id="task-event-kind"><option value="">全部类型</option>
+                <option value="authentication_wait_entered">等待百度授权</option><option value="cloud_file_observed">扫描发现网盘文件</option><option value="download_attempt_finished">下载尝试结束</option><option value="download_attempt_started">下载尝试开始</option><option value="job_completed">任务完成</option><option value="job_registered">任务登记</option><option value="job_state_saved">任务状态保存</option><option value="legacy_import">旧队列导入</option><option value="source_operation_sending">准备处理网盘源文件</option><option value="source_identity_changed">网盘源文件身份变化</option><option value="source_operation_confirmed">网盘源文件操作已确认</option><option value="source_operation_retryable_failure">网盘源文件操作可重试失败</option><option value="source_operation_unknown">网盘源文件操作结果未知</option><option value="startup_recovery">启动恢复</option><option value="status_transition">任务状态变化</option><option value="task_cancelled">取消任务</option><option value="task_cloud_identity_updated">网盘文件身份更新</option><option value="task_paused">暂停任务</option><option value="task_recovered_after_scan">扫描后恢复任务</option><option value="task_resumed">继续任务</option><option value="task_retry_requested">手动请求重试</option><option value="task_source_deleted_remotely">网盘源文件已删除</option><option value="task_source_missing">扫描未发现网盘源文件</option>
+            </select></label>
+            <label>远端操作 ID<input id="task-event-operation-id" class="wide" maxlength="128" autocomplete="off"></label>
+            <label>下载尝试 ID<input id="task-event-attempt-id" class="wide" maxlength="128" autocomplete="off"></label>
+            <label>记录 UTC 起始日<input id="task-event-from-date" type="date"></label>
+            <label>记录 UTC 截止日<input id="task-event-through-date" type="date"></label>
+            <label>记录 UTC 精确起点<input id="task-event-from-exact" type="datetime-local" step="1"></label>
+            <label>记录 UTC 精确截止（不含）<input id="task-event-before-exact" type="datetime-local" step="1"></label>
+            <button id="task-event-search" type="submit">筛选</button><button id="task-event-clear" type="button">清除</button>
+            <button id="task-event-refresh" type="button">刷新当前条件</button><button id="task-event-export" type="button" disabled>导出当前筛选</button>
+        </form>
+        <p id="task-event-summary" class="muted" role="status" aria-live="polite">正在读取本机事件…</p>
+        <p id="task-event-error" class="message" role="alert" aria-live="polite"></p>
+        <h2>事件类型计数</h2><div id="task-event-kinds" class="kind-counts" aria-label="事件类型命中数"></div>
+        <div id="task-event-list" aria-live="polite"></div>
+        <div class="filters"><button id="task-event-prev" type="button" disabled>更新的事件</button><button id="task-event-next" type="button" disabled>更早的事件</button></div>
+        <p id="task-event-export-status" class="muted" role="status" aria-live="polite"></p>
+    </section>
+</main>
+<script src="/res/shared.js"></script><script src="/res/task_event_history.js"></script>
+</body>
+</html>

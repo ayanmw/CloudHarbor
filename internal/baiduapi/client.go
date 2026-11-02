@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
+	"strconv"
 	"time"
 )
 
@@ -18,7 +20,21 @@ import (
 // The caller must restart from zero instead of appending that body.
 var ErrRangeIgnored = errors.New("server ignored Range; restart required")
 
+// ErrDuplicatePageItem indicates that a provider directory page contains the same file identity more than once.
+var ErrDuplicatePageItem = errors.New("分页目录发生重复，等待下一次扫描")
+
+type DuplicatePageItemError struct{ FsID int64 }
+
+func (e *DuplicatePageItemError) Error() string {
+	return fmt.Sprintf("%s: fs_id=%d", ErrDuplicatePageItem, e.FsID)
+}
+func (e *DuplicatePageItemError) Unwrap() error { return ErrDuplicatePageItem }
+
+// ErrDirectoryPageBoundaryMoved means an offset listing changed between pages, so it is not safe to reconcile.
+var ErrDirectoryPageBoundaryMoved = errors.New("分页目录边界发生变化，等待下一次扫描")
+
 var ErrFileMetadataMissing = errors.New("file metadata missing")
+var ErrDownloadLinkMissing = errors.New("download link missing")
 
 // net/http wraps failures in url.Error, whose Error string includes credentials
 // in the request URL. Preserve the cause without putting that URL in task/logs.
@@ -60,6 +76,11 @@ func (c *Client) context() context.Context {
 var metadataHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func (c *Client) get(address string) (*http.Response, error) {
+	if c.requestPacer != nil {
+		if err := c.requestPacer.Wait(c.context()); err != nil {
+			return nil, err
+		}
+	}
 	req, err := http.NewRequestWithContext(c.context(), http.MethodGet, address, nil)
 	if err != nil {
 		return nil, err
@@ -71,10 +92,38 @@ type APIError struct {
 	Operation        string
 	Status           int
 	Code             int
+	RetryAfter       time.Duration
 	tokenFingerprint string
 	// Preserve the JSON namespace: xpan errno=111 means async work is running,
 	// whereas OAuth error_code=111 means the access token has expired.
 	businessErrno bool
+}
+
+const retryAfterMaximum = time.Hour
+
+func retryAfterDelay(value string, now time.Time) time.Duration {
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		if seconds >= int64(retryAfterMaximum/time.Second) {
+			return retryAfterMaximum
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	when, err := http.ParseTime(value)
+	if err != nil || !when.After(now) {
+		return 0
+	}
+	delay := when.Sub(now)
+	if delay > retryAfterMaximum {
+		return retryAfterMaximum
+	}
+	return delay
+}
+
+func apiErrorFromResponse(c *Client, operation string, resp *http.Response, code int, business bool) *APIError {
+	return &APIError{tokenFingerprint: c.Fingerprint(), Operation: operation, Status: resp.StatusCode, Code: code, businessErrno: business, RetryAfter: retryAfterDelay(resp.Header.Get("Retry-After"), time.Now())}
 }
 
 // Fingerprint identifies the credential used by a request without exposing it.
@@ -132,56 +181,87 @@ func NewClient(accessToken, appKey string) *Client {
 // ListDir 列出指定目录内容
 // dir: 网盘路径，如 /NAS_Download_Queue
 func (c *Client) ListDir(dir string) ([]FileInfo, error) {
-	const limit = 1000
+	const limit = 999 // Reserve one provider result as an overlap boundary for the next offset page.
 	files := make([]FileInfo, 0)
 	seen := make(map[int64]bool)
+	var expectedBoundary *FileInfo
 	for start := 0; ; start += limit {
-		page, err := c.listDirPage(dir, start, limit)
+		page, hasMore, boundary, err := c.listDirPageWithBoundary(dir, start, limit)
 		if err != nil {
 			return nil, err
 		}
+		if expectedBoundary != nil {
+			if len(page) == 0 || page[0] != *expectedBoundary {
+				return nil, fmt.Errorf("%w: expected fs_id=%d", ErrDirectoryPageBoundaryMoved, expectedBoundary.FsID)
+			}
+			page = page[1:]
+		}
 		for _, file := range page {
 			if seen[file.FsID] {
-				return nil, fmt.Errorf("分页目录发生重复，等待下一次扫描: fs_id=%d", file.FsID)
+				return nil, &DuplicatePageItemError{FsID: file.FsID}
 			}
 			seen[file.FsID] = true
 			files = append(files, file)
 		}
-		if len(page) < limit {
+		if !hasMore {
 			return files, nil
 		}
+		if boundary == nil {
+			return nil, fmt.Errorf("%w: next page boundary was not returned", ErrDirectoryPageBoundaryMoved)
+		}
+		if seen[boundary.FsID] {
+			return nil, &DuplicatePageItemError{FsID: boundary.FsID}
+		}
+		seen[boundary.FsID] = true
+		files = append(files, *boundary)
+		expectedBoundary = boundary
 	}
 }
 
 // ListDirPage returns one bounded page and whether another item exists.
 func (c *Client) ListDirPage(dir string, start, limit int) ([]FileInfo, bool, error) {
+	page, hasMore, _, err := c.ListDirPageWithBoundary(dir, start, limit)
+	return page, hasMore, err
+}
+
+// ListDirPageWithBoundary also returns the lookahead item already fetched to
+// determine whether another page exists. Callers can persist that identity as
+// evidence for the next offset without issuing an additional provider request.
+func (c *Client) ListDirPageWithBoundary(dir string, start, limit int) ([]FileInfo, bool, *FileInfo, error) {
 	if start < 0 || start > 1000000 || limit < 1 || limit >= 1000 {
-		return nil, false, fmt.Errorf("invalid directory page")
+		return nil, false, nil, fmt.Errorf("invalid directory page")
+	}
+	return c.listDirPageWithBoundary(dir, start, limit)
+}
+
+// listDirPageWithBoundary is also used by a full directory read, whose
+// internal offset must not inherit the interactive page API's UI bound.
+func (c *Client) listDirPageWithBoundary(dir string, start, limit int) ([]FileInfo, bool, *FileInfo, error) {
+	if start < 0 || limit < 1 || limit >= 1000 {
+		return nil, false, nil, fmt.Errorf("invalid directory page")
 	}
 	page, err := c.listDirPage(dir, start, limit+1)
 	if err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
 	seen := make(map[int64]bool, len(page))
 	for _, file := range page {
 		if seen[file.FsID] {
-			return nil, false, fmt.Errorf("分页目录发生重复，等待下一次扫描: fs_id=%d", file.FsID)
+			return nil, false, nil, &DuplicatePageItemError{FsID: file.FsID}
 		}
 		seen[file.FsID] = true
 	}
 	hasMore := len(page) > limit
+	var boundary *FileInfo
 	if hasMore {
+		lookahead := page[limit]
+		boundary = &lookahead
 		page = page[:limit]
 	}
-	return page, hasMore, nil
+	return page, hasMore, boundary, nil
 }
 
 func (c *Client) listDirPage(dir string, start, limit int) ([]FileInfo, error) {
-	if c.requestPacer != nil {
-		if err := c.requestPacer.Wait(c.context()); err != nil {
-			return nil, err
-		}
-	}
 	const responseLimit = 16 * 1024 * 1024
 	params := url.Values{}
 	params.Set("method", "list")
@@ -201,7 +281,7 @@ func (c *Client) listDirPage(dir string, start, limit int) ([]FileInfo, error) {
 		return nil, readErr
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode}
+		return nil, apiErrorFromResponse(c, "list", resp, 0, false)
 	}
 	if len(body) > responseLimit {
 		return nil, fmt.Errorf("目录响应超过大小限制")
@@ -215,13 +295,13 @@ func (c *Client) listDirPage(dir string, start, limit int) ([]FileInfo, error) {
 		return nil, fmt.Errorf("解析目录响应失败: %w", err)
 	}
 	if result.ErrorCode != 0 {
-		return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: result.ErrorCode}
+		return nil, apiErrorFromResponse(c, "list", resp, result.ErrorCode, false)
 	}
 	if result.Errno == nil {
 		return nil, fmt.Errorf("目录响应缺失 errno")
 	}
 	if *result.Errno != 0 {
-		return nil, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "list", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
+		return nil, apiErrorFromResponse(c, "list", resp, *result.Errno, true)
 	}
 	if len(result.List) == 0 || result.List[0] != '[' {
 		return nil, fmt.Errorf("目录响应缺失文件列表")
@@ -251,7 +331,7 @@ func (c *Client) GetFileInfo(fsid int64) (FileInfo, error) {
 		return FileInfo{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return FileInfo{}, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode}
+		return FileInfo{}, apiErrorFromResponse(c, "filemetas", resp, 0, false)
 	}
 	if len(body) > responseLimit {
 		return FileInfo{}, fmt.Errorf("文件元数据响应超过大小限制")
@@ -265,18 +345,24 @@ func (c *Client) GetFileInfo(fsid int64) (FileInfo, error) {
 		return FileInfo{}, fmt.Errorf("解析文件元数据失败: %w", err)
 	}
 	if result.ErrorCode != 0 {
-		return FileInfo{}, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.ErrorCode}
+		return FileInfo{}, apiErrorFromResponse(c, "filemetas", resp, result.ErrorCode, false)
 	}
 	if result.Errno == nil {
 		return FileInfo{}, fmt.Errorf("文件元数据响应缺失 errno")
 	}
 	if *result.Errno != 0 {
-		return FileInfo{}, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
+		return FileInfo{}, apiErrorFromResponse(c, "filemetas", resp, *result.Errno, true)
 	}
 	if len(result.List) != 1 || result.List[0].FsID != fsid {
 		return FileInfo{}, ErrFileMetadataMissing
 	}
-	return result.List[0], nil
+	info := result.List[0]
+	// filemetas may omit server_filename even though it includes the current
+	// path; normalize it so identity checks compare the same provider object.
+	if info.ServerFilename == "" && info.Path != "" {
+		info.ServerFilename = path.Base(info.Path)
+	}
+	return info, nil
 }
 
 // GetDownloadLink 获取文件下载链接
@@ -298,7 +384,7 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode}
+		return "", apiErrorFromResponse(c, "filemetas", resp, 0, false)
 	}
 
 	const responseLimit = 1024 * 1024
@@ -326,15 +412,18 @@ func (c *Client) GetDownloadLink(fsid int64) (string, error) {
 
 	// 检查错误
 	if result.ErrorCode != 0 {
-		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.ErrorCode}
+		return "", apiErrorFromResponse(c, "filemetas", resp, result.ErrorCode, false)
 	}
 
 	if result.Errno != 0 {
-		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "filemetas", Status: resp.StatusCode, Code: result.Errno, businessErrno: true}
+		return "", apiErrorFromResponse(c, "filemetas", resp, result.Errno, true)
 	}
 
-	if len(result.List) == 0 || result.List[0].Dlink == "" {
-		return "", fmt.Errorf("下载链接为空")
+	if len(result.List) != 1 {
+		return "", ErrFileMetadataMissing
+	}
+	if result.List[0].Dlink == "" {
+		return "", ErrDownloadLinkMissing
 	}
 
 	return result.List[0].Dlink, nil
@@ -429,7 +518,7 @@ func (c *Client) DownloadFileWithRange(dlink string, startOffset int64) (io.Read
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
 		_ = body
-		return nil, 0, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "download", Status: resp.StatusCode}
+		return nil, 0, &APIError{tokenFingerprint: c.Fingerprint(), Operation: "download", Status: resp.StatusCode, RetryAfter: retryAfterDelay(resp.Header.Get("Retry-After"), time.Now())}
 	}
 	// 接受 206 前验证完整后缀，不能仅根据状态码追加，否则会损坏本地文件。
 	if resp.StatusCode == http.StatusPartialContent {

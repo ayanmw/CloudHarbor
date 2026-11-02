@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 15
+const sqliteSchemaVersion = 41
 
 type Event struct {
 	Sequence              int64           `json:"sequence"`
@@ -193,7 +193,13 @@ CREATE TABLE IF NOT EXISTS cloud_inventory_scan_state (
 	pending_count INTEGER NOT NULL DEFAULT 0 CHECK(pending_count>=0),
 	started_at_utc INTEGER NOT NULL,
 	updated_at_utc INTEGER NOT NULL,
-	last_error TEXT NOT NULL
+	last_error TEXT NOT NULL,
+	retry_delay_millis INTEGER NOT NULL DEFAULT 0 CHECK(retry_delay_millis>=0 AND retry_delay_millis<=3600000),
+	retry_backoff_base_millis INTEGER NOT NULL DEFAULT 0 CHECK(retry_backoff_base_millis>=0 AND retry_backoff_base_millis<=3600000),
+	retry_at_utc INTEGER CHECK(retry_at_utc IS NULL OR retry_at_utc>0),
+	next_page_boundary_json TEXT NOT NULL DEFAULT '' CHECK(length(next_page_boundary_json)<=8192 AND (next_page_boundary_json='' OR json_valid(next_page_boundary_json)))
+	,request_budget INTEGER NOT NULL DEFAULT 0 CHECK(request_budget>=0)
+	,requests_used INTEGER NOT NULL DEFAULT 0 CHECK(requests_used>=0 AND (request_budget=0 OR requests_used<=request_budget))
 );
 CREATE TABLE IF NOT EXISTS cloud_inventory_scan_queue (
 	account_fingerprint TEXT NOT NULL,
@@ -203,10 +209,164 @@ CREATE TABLE IF NOT EXISTS cloud_inventory_scan_queue (
 	PRIMARY KEY(account_fingerprint,run_id,sequence),
 	UNIQUE(account_fingerprint,run_id,path)
 );
+CREATE TABLE IF NOT EXISTS cloud_scan_runs (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_fingerprint TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	status TEXT NOT NULL CHECK(status IN ('running','paused','complete','failed')),
+	phase TEXT NOT NULL,
+	current_directory TEXT NOT NULL,
+	pages_processed INTEGER NOT NULL CHECK(pages_processed>=0),
+	items_processed INTEGER NOT NULL CHECK(items_processed>=0),
+	request_budget INTEGER NOT NULL CHECK(request_budget>=0),
+	requests_used INTEGER NOT NULL CHECK(requests_used>=0),
+	pending_count INTEGER NOT NULL CHECK(pending_count>=0),
+	started_at_utc INTEGER NOT NULL,
+	updated_at_utc INTEGER NOT NULL,
+	last_error TEXT NOT NULL,
+	coverage_status TEXT CHECK(coverage_status IS NULL OR coverage_status IN ('unknown','scanning','incomplete','complete')),
+	coverage_incomplete_directories INTEGER CHECK(coverage_incomplete_directories IS NULL OR coverage_incomplete_directories>=0),
+	coverage_generation INTEGER CHECK(coverage_generation IS NULL OR coverage_generation>=0),
+	coverage_observed_at_utc INTEGER CHECK(coverage_observed_at_utc IS NULL OR coverage_observed_at_utc>0),
+	coverage_reasons_json TEXT CHECK(coverage_reasons_json IS NULL OR json_valid(coverage_reasons_json)),
+	UNIQUE(account_fingerprint,run_id)
+);
+CREATE INDEX IF NOT EXISTS cloud_scan_runs_order ON cloud_scan_runs(account_fingerprint,sequence DESC);
+CREATE TABLE IF NOT EXISTS queue_monitor_scan_runs (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_fingerprint TEXT NOT NULL CHECK(length(account_fingerprint)<=128),
+	run_id TEXT NOT NULL CHECK(length(run_id)=32),
+	status TEXT NOT NULL CHECK(status IN ('running','success','failed','interrupted')),
+	monitor_path TEXT NOT NULL CHECK(length(monitor_path)<=4096),
+	started_at_utc INTEGER NOT NULL,
+	finished_at_utc INTEGER,
+	cloud_observed_at_utc INTEGER,
+	recorded_at_utc INTEGER NOT NULL,
+	error_code TEXT NOT NULL DEFAULT '',
+	UNIQUE(account_fingerprint,run_id)
+);
+CREATE INDEX IF NOT EXISTS queue_monitor_scan_runs_order ON queue_monitor_scan_runs(account_fingerprint,sequence DESC);
+CREATE TABLE IF NOT EXISTS queue_monitor_scan_events (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_fingerprint TEXT NOT NULL CHECK(length(account_fingerprint)<=128),
+	run_id TEXT NOT NULL CHECK(length(run_id)=32),
+	event_kind TEXT NOT NULL CHECK(event_kind IN ('started','cloud_listed','completed','failed','interrupted')),
+	recorded_at_utc INTEGER NOT NULL,
+	cloud_observed_at_utc INTEGER,
+	error_code TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS queue_monitor_scan_events_order ON queue_monitor_scan_events(account_fingerprint,run_id,sequence DESC);
+CREATE TRIGGER IF NOT EXISTS queue_monitor_scan_events_no_update BEFORE UPDATE ON queue_monitor_scan_events BEGIN SELECT RAISE(ABORT, 'queue monitor scan events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS queue_monitor_scan_events_no_delete BEFORE DELETE ON queue_monitor_scan_events BEGIN SELECT RAISE(ABORT, 'queue monitor scan events are append-only'); END;
+CREATE TABLE IF NOT EXISTS queue_monitor_retry_state (
+	account_fingerprint TEXT PRIMARY KEY CHECK(length(account_fingerprint)<=128),
+	failure_count INTEGER NOT NULL CHECK(failure_count>0),
+	error_code TEXT NOT NULL CHECK(length(error_code)<=64),
+	retry_delay_millis INTEGER NOT NULL CHECK(retry_delay_millis>0),
+	retry_at_utc INTEGER NOT NULL CHECK(retry_at_utc>0),
+	updated_at_utc INTEGER NOT NULL CHECK(updated_at_utc>0)
+);
+CREATE TABLE IF NOT EXISTS cloud_inventory_scan_events (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_fingerprint TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	event_kind TEXT NOT NULL CHECK(event_kind IN ('started','resumed','paused','request_budget_reached','retry_scheduled','boundary_restart','failed','completed')),
+	status TEXT NOT NULL CHECK(status IN ('running','paused','complete','failed')),
+	phase TEXT NOT NULL,
+	current_directory TEXT NOT NULL,
+	pages_processed INTEGER NOT NULL CHECK(pages_processed>=0),
+	items_processed INTEGER NOT NULL CHECK(items_processed>=0),
+	request_budget INTEGER NOT NULL CHECK(request_budget>=0),
+	requests_used INTEGER NOT NULL CHECK(requests_used>=0),
+	pending_count INTEGER NOT NULL CHECK(pending_count>=0),
+	recorded_at_utc INTEGER NOT NULL,
+	last_error TEXT NOT NULL,
+	restart_reason TEXT NOT NULL DEFAULT '' CHECK(restart_reason IN ('','page_boundary_mismatch','provider_duplicate_page_id','staged_page_duplicate_id'))
+);
+CREATE INDEX IF NOT EXISTS cloud_inventory_scan_events_order ON cloud_inventory_scan_events(account_fingerprint,run_id,sequence DESC);
+CREATE INDEX IF NOT EXISTS cloud_inventory_scan_boundary_restart_count ON cloud_inventory_scan_events(account_fingerprint,run_id,current_directory) WHERE event_kind='boundary_restart';
+CREATE TRIGGER IF NOT EXISTS cloud_inventory_scan_events_no_update BEFORE UPDATE ON cloud_inventory_scan_events BEGIN SELECT RAISE(ABORT, 'cloud scan events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_inventory_scan_events_no_delete BEFORE DELETE ON cloud_inventory_scan_events BEGIN SELECT RAISE(ABORT, 'cloud scan events are append-only'); END;
+CREATE TABLE IF NOT EXISTS cloud_inventory_refresh_state (
+	account_fingerprint TEXT PRIMARY KEY CHECK(length(account_fingerprint)<=128),
+	run_id TEXT NOT NULL CHECK(length(run_id)<=128),
+	root_path TEXT NOT NULL CHECK(length(root_path)<=4096),
+	status TEXT NOT NULL CHECK(status IN ('running','paused','complete','failed')),
+	phase TEXT NOT NULL,
+	current_directory TEXT NOT NULL CHECK(length(current_directory)<=4096),
+	next_offset INTEGER NOT NULL CHECK(next_offset>=0),
+	pages_processed INTEGER NOT NULL CHECK(pages_processed>=0),
+	items_processed INTEGER NOT NULL CHECK(items_processed>=0),
+	request_budget INTEGER NOT NULL DEFAULT 0 CHECK(request_budget>=0),
+	requests_used INTEGER NOT NULL DEFAULT 0 CHECK(requests_used>=0),
+	pending_count INTEGER NOT NULL CHECK(pending_count>=0),
+	started_at_utc INTEGER NOT NULL,
+	updated_at_utc INTEGER NOT NULL,
+	last_error TEXT NOT NULL,
+	retry_delay_millis INTEGER NOT NULL DEFAULT 0 CHECK(retry_delay_millis>=0 AND retry_delay_millis<=3600000),
+	retry_backoff_base_millis INTEGER NOT NULL DEFAULT 0 CHECK(retry_backoff_base_millis>=0 AND retry_backoff_base_millis<=3600000),
+	retry_at_utc INTEGER CHECK(retry_at_utc IS NULL OR retry_at_utc>0),
+	next_page_boundary_json TEXT NOT NULL DEFAULT '' CHECK(length(next_page_boundary_json)<=8192 AND (next_page_boundary_json='' OR json_valid(next_page_boundary_json)))
+);
+CREATE TABLE IF NOT EXISTS cloud_inventory_refresh_runs (
+	start_sequence INTEGER PRIMARY KEY,
+	account_fingerprint TEXT NOT NULL CHECK(length(account_fingerprint)<=128),
+	run_id TEXT NOT NULL CHECK(length(run_id)<=128),
+	root_path TEXT NOT NULL CHECK(length(root_path)<=4096),
+	status TEXT NOT NULL CHECK(status IN ('running','paused','complete','failed')),
+	phase TEXT NOT NULL,
+	current_directory TEXT NOT NULL CHECK(length(current_directory)<=4096),
+	pages_processed INTEGER NOT NULL CHECK(pages_processed>=0),
+	items_processed INTEGER NOT NULL CHECK(items_processed>=0),
+	request_budget INTEGER NOT NULL CHECK(request_budget>=0),
+	requests_used INTEGER NOT NULL CHECK(requests_used>=0),
+	pending_count INTEGER NOT NULL CHECK(pending_count>=0),
+	started_at_utc INTEGER NOT NULL,
+	updated_at_utc INTEGER NOT NULL,
+	last_error TEXT NOT NULL,
+	latest_sequence INTEGER NOT NULL CHECK(latest_sequence>=start_sequence),
+	latest_kind TEXT NOT NULL,
+	UNIQUE(account_fingerprint,run_id)
+);
+CREATE INDEX IF NOT EXISTS cloud_inventory_refresh_run_order ON cloud_inventory_refresh_runs(account_fingerprint,start_sequence DESC);
+CREATE TABLE IF NOT EXISTS cloud_inventory_refresh_queue (
+	account_fingerprint TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	sequence INTEGER NOT NULL CHECK(sequence>=0),
+	path TEXT NOT NULL CHECK(length(path)<=4096),
+	PRIMARY KEY(account_fingerprint,run_id,sequence),
+	UNIQUE(account_fingerprint,run_id,path)
+);
+CREATE TABLE IF NOT EXISTS cloud_inventory_refresh_entries (
+	account_fingerprint TEXT NOT NULL CHECK(length(account_fingerprint)<=128),
+	run_id TEXT NOT NULL CHECK(length(run_id)<=128),
+	directory TEXT NOT NULL CHECK(length(directory)<=4096),
+	fs_id INTEGER NOT NULL CHECK(fs_id>0),
+	path TEXT NOT NULL CHECK(length(path)<=4096),
+	name TEXT NOT NULL CHECK(length(name)<=1024),
+	is_dir INTEGER NOT NULL CHECK(is_dir IN (0,1)),
+	size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),
+	provider_mtime INTEGER NOT NULL,
+	content_md5 TEXT NOT NULL,
+	observed_at_utc INTEGER NOT NULL DEFAULT 0 CHECK(observed_at_utc>=0),
+	PRIMARY KEY(account_fingerprint,run_id,directory,fs_id)
+);
+CREATE INDEX IF NOT EXISTS cloud_inventory_refresh_entries_order ON cloud_inventory_refresh_entries(account_fingerprint,run_id,directory,path,fs_id);
+CREATE TABLE IF NOT EXISTS cloud_inventory_refresh_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT,account_fingerprint TEXT NOT NULL CHECK(length(account_fingerprint)<=128),run_id TEXT NOT NULL CHECK(length(run_id)<=128),event_kind TEXT NOT NULL CHECK(event_kind IN ('started','resumed','paused','request_budget_reached','retry_scheduled','boundary_restart','failed','completed','directory_published')),status TEXT NOT NULL CHECK(status IN ('running','paused','complete','failed')),phase TEXT NOT NULL,current_directory TEXT NOT NULL CHECK(length(current_directory)<=4096),pages_processed INTEGER NOT NULL CHECK(pages_processed>=0),items_processed INTEGER NOT NULL CHECK(items_processed>=0),request_budget INTEGER NOT NULL DEFAULT 0 CHECK(request_budget>=0),requests_used INTEGER NOT NULL DEFAULT 0 CHECK(requests_used>=0),request_budget_added INTEGER NOT NULL DEFAULT 0 CHECK(request_budget_added>=0),retry_at_utc INTEGER,pending_count INTEGER NOT NULL CHECK(pending_count>=0),recorded_at_utc INTEGER NOT NULL,cloud_observed_at_utc INTEGER,directory_changed INTEGER CHECK(directory_changed IN (0,1)),added_count INTEGER CHECK(added_count>=0),removed_count INTEGER CHECK(removed_count>=0),changed_count INTEGER CHECK(changed_count>=0),last_error TEXT NOT NULL DEFAULT '',restart_reason TEXT NOT NULL DEFAULT '' CHECK(restart_reason IN ('','page_boundary_mismatch','provider_duplicate_page_id','staged_page_duplicate_id')),restart_offset INTEGER CHECK(restart_offset IS NULL OR restart_offset>0),restart_fs_id INTEGER CHECK(restart_fs_id IS NULL OR restart_fs_id>0));
+CREATE INDEX IF NOT EXISTS cloud_inventory_refresh_events_order ON cloud_inventory_refresh_events(account_fingerprint,run_id,sequence DESC);
+CREATE INDEX IF NOT EXISTS cloud_inventory_refresh_runs_order ON cloud_inventory_refresh_events(account_fingerprint,event_kind,sequence DESC);
+CREATE INDEX IF NOT EXISTS cloud_inventory_refresh_boundary_restart_count ON cloud_inventory_refresh_events(account_fingerprint,run_id,current_directory) WHERE event_kind='boundary_restart';
+CREATE TRIGGER IF NOT EXISTS cloud_inventory_refresh_events_no_update BEFORE UPDATE ON cloud_inventory_refresh_events BEGIN SELECT RAISE(ABORT, 'cloud inventory refresh events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_inventory_refresh_events_no_delete BEFORE DELETE ON cloud_inventory_refresh_events BEGIN SELECT RAISE(ABORT, 'cloud inventory refresh events are append-only'); END;
+CREATE TABLE IF NOT EXISTS cloud_inventory_refresh_changes (change_sequence INTEGER PRIMARY KEY AUTOINCREMENT,account_fingerprint TEXT NOT NULL CHECK(length(account_fingerprint)<=128),run_id TEXT NOT NULL CHECK(length(run_id)<=128),event_sequence INTEGER NOT NULL CHECK(event_sequence>0),ordinal INTEGER NOT NULL CHECK(ordinal>0),change_kind TEXT NOT NULL CHECK(change_kind IN ('added','removed','metadata_changed','identity_changed')),old_snapshot TEXT CHECK(old_snapshot IS NULL OR length(old_snapshot)<=8192),new_snapshot TEXT CHECK(new_snapshot IS NULL OR length(new_snapshot)<=8192),recorded_at_utc INTEGER NOT NULL,cloud_observed_at_utc INTEGER NOT NULL,CHECK(old_snapshot IS NOT NULL OR new_snapshot IS NOT NULL),UNIQUE(account_fingerprint,run_id,event_sequence,ordinal));
+CREATE INDEX IF NOT EXISTS cloud_inventory_refresh_changes_order ON cloud_inventory_refresh_changes(account_fingerprint,run_id,event_sequence,change_sequence DESC);
+CREATE TRIGGER IF NOT EXISTS cloud_inventory_refresh_changes_no_update BEFORE UPDATE ON cloud_inventory_refresh_changes BEGIN SELECT RAISE(ABORT, 'cloud inventory refresh changes are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_inventory_refresh_changes_no_delete BEFORE DELETE ON cloud_inventory_refresh_changes BEGIN SELECT RAISE(ABORT, 'cloud inventory refresh changes are append-only'); END;
 CREATE TABLE IF NOT EXISTS cloud_content_hashes (account_fingerprint TEXT NOT NULL,fs_id INTEGER NOT NULL,path TEXT NOT NULL,size_bytes INTEGER NOT NULL,provider_mtime INTEGER NOT NULL,sha256 TEXT NOT NULL CHECK(length(sha256)=64),verified_at_utc INTEGER NOT NULL,PRIMARY KEY(account_fingerprint,fs_id));
 CREATE INDEX IF NOT EXISTS cloud_content_hashes_duplicate_group ON cloud_content_hashes(account_fingerprint,sha256,size_bytes,fs_id);
-CREATE TABLE IF NOT EXISTS cloud_duplicate_scan_state (account_fingerprint TEXT PRIMARY KEY,run_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('running','paused','complete','failed')),phase TEXT NOT NULL,next_fs_id INTEGER NOT NULL CHECK(next_fs_id>=0),total_files INTEGER NOT NULL CHECK(total_files>=0),processed_files INTEGER NOT NULL CHECK(processed_files>=0),started_at_utc INTEGER NOT NULL,updated_at_utc INTEGER NOT NULL,last_error TEXT NOT NULL,retry_delay_ms INTEGER NOT NULL DEFAULT 0 CHECK(retry_delay_ms>=0),retry_at_utc INTEGER);
+CREATE TABLE IF NOT EXISTS cloud_duplicate_scan_state (account_fingerprint TEXT PRIMARY KEY,run_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('running','paused','complete','failed')),phase TEXT NOT NULL,next_fs_id INTEGER NOT NULL CHECK(next_fs_id>=0),total_files INTEGER NOT NULL CHECK(total_files>=0),processed_files INTEGER NOT NULL CHECK(processed_files>=0),total_bytes INTEGER NOT NULL DEFAULT 0 CHECK(total_bytes>=0),processed_bytes INTEGER NOT NULL DEFAULT 0 CHECK(processed_bytes>=0),started_at_utc INTEGER NOT NULL,updated_at_utc INTEGER NOT NULL,last_error TEXT NOT NULL,retry_delay_ms INTEGER NOT NULL DEFAULT 0 CHECK(retry_delay_ms>=0),retry_backoff_base_millis INTEGER NOT NULL DEFAULT 0 CHECK(retry_backoff_base_millis>=0 AND retry_backoff_base_millis<=3600000),retry_at_utc INTEGER,current_fs_id INTEGER NOT NULL DEFAULT 0 CHECK(current_fs_id>=0),current_path TEXT NOT NULL DEFAULT '',current_name TEXT NOT NULL DEFAULT '',current_size INTEGER NOT NULL DEFAULT 0 CHECK(current_size>=0),current_provider_mtime INTEGER NOT NULL DEFAULT 0,current_content_md5 TEXT NOT NULL DEFAULT '',current_bytes INTEGER NOT NULL DEFAULT 0 CHECK(current_bytes>=0),current_sha256_state BLOB NOT NULL DEFAULT X'' CHECK(length(current_sha256_state)<=1024));
 CREATE TABLE IF NOT EXISTS cloud_duplicate_scan_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT,account_fingerprint TEXT NOT NULL,run_id TEXT NOT NULL,status TEXT NOT NULL,phase TEXT NOT NULL,recorded_at_utc INTEGER NOT NULL,evidence_json BLOB NOT NULL CHECK(json_valid(evidence_json)));
+CREATE TABLE IF NOT EXISTS cloud_duplicate_scan_runs (start_sequence INTEGER NOT NULL,account_fingerprint TEXT NOT NULL CHECK(length(account_fingerprint)<=128),run_id TEXT NOT NULL CHECK(length(run_id)<=128),status TEXT NOT NULL CHECK(status IN ('running','paused','complete','failed')),phase TEXT NOT NULL,next_fs_id INTEGER NOT NULL CHECK(next_fs_id>=0),total_files INTEGER NOT NULL CHECK(total_files>=0),processed_files INTEGER NOT NULL CHECK(processed_files>=0),total_bytes INTEGER NOT NULL CHECK(total_bytes>=0),processed_bytes INTEGER NOT NULL CHECK(processed_bytes>=0),started_at_utc INTEGER NOT NULL,updated_at_utc INTEGER NOT NULL,last_error TEXT NOT NULL,latest_sequence INTEGER NOT NULL CHECK(latest_sequence>=0),UNIQUE(account_fingerprint,run_id));
 CREATE TABLE IF NOT EXISTS local_directory_migrations (
 	migration_id TEXT PRIMARY KEY CHECK(length(migration_id)=32),
 	source_path TEXT NOT NULL CHECK(length(source_path)<=4096),
@@ -237,6 +397,7 @@ CREATE INDEX IF NOT EXISTS cloud_inventory_parent_name_id ON cloud_inventory(acc
 CREATE INDEX IF NOT EXISTS cloud_inventory_path ON cloud_inventory(account_fingerprint,path);
 CREATE INDEX IF NOT EXISTS cloud_inventory_duplicate_size ON cloud_inventory(account_fingerprint,is_dir,size_bytes,fs_id);
 CREATE INDEX IF NOT EXISTS cloud_duplicate_scan_events_order ON cloud_duplicate_scan_events(account_fingerprint,sequence);
+CREATE INDEX IF NOT EXISTS cloud_duplicate_scan_runs_order ON cloud_duplicate_scan_runs(account_fingerprint,start_sequence DESC,run_id);
 CREATE INDEX IF NOT EXISTS local_directory_migration_events_order ON local_directory_migration_events(migration_id, sequence);
 CREATE TRIGGER IF NOT EXISTS remote_operation_events_no_update BEFORE UPDATE ON remote_operation_events BEGIN SELECT RAISE(ABORT, 'remote operation events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS remote_operation_events_no_delete BEFORE DELETE ON remote_operation_events BEGIN SELECT RAISE(ABORT, 'remote operation events are append-only'); END;
@@ -248,6 +409,10 @@ CREATE TRIGGER IF NOT EXISTS cloud_inventory_file_size_insert AFTER INSERT ON cl
 CREATE TRIGGER IF NOT EXISTS cloud_inventory_file_size_delete AFTER DELETE ON cloud_inventory WHEN OLD.is_dir=0 BEGIN UPDATE cloud_inventory_file_sizes SET file_count=file_count-1 WHERE account_fingerprint=OLD.account_fingerprint AND size_bytes=OLD.size_bytes; DELETE FROM cloud_inventory_file_sizes WHERE account_fingerprint=OLD.account_fingerprint AND size_bytes=OLD.size_bytes AND file_count<=0; END;
 CREATE TRIGGER IF NOT EXISTS cloud_inventory_file_size_update AFTER UPDATE OF account_fingerprint,is_dir,size_bytes ON cloud_inventory WHEN OLD.account_fingerprint<>NEW.account_fingerprint OR OLD.is_dir<>NEW.is_dir OR OLD.size_bytes<>NEW.size_bytes BEGIN UPDATE cloud_inventory_file_sizes SET file_count=file_count-1 WHERE account_fingerprint=OLD.account_fingerprint AND size_bytes=OLD.size_bytes AND OLD.is_dir=0; DELETE FROM cloud_inventory_file_sizes WHERE account_fingerprint=OLD.account_fingerprint AND size_bytes=OLD.size_bytes AND file_count<=0; INSERT INTO cloud_inventory_file_sizes(account_fingerprint,size_bytes,file_count) SELECT NEW.account_fingerprint,NEW.size_bytes,1 WHERE NEW.is_dir=0 ON CONFLICT(account_fingerprint,size_bytes) DO UPDATE SET file_count=file_count+1; END;
 CREATE INDEX IF NOT EXISTS job_events_job_sequence ON job_events(job_id, sequence);
+CREATE INDEX IF NOT EXISTS job_events_kind_sequence ON job_events(event_type, sequence);
+CREATE INDEX IF NOT EXISTS job_events_operation_sequence ON job_events(operation_id, sequence);
+CREATE INDEX IF NOT EXISTS job_events_attempt_sequence ON job_events(attempt_id, sequence);
+CREATE INDEX IF NOT EXISTS job_events_recorded_sequence ON job_events(recorded_at_utc, sequence);
 CREATE TRIGGER IF NOT EXISTS job_events_no_update BEFORE UPDATE ON job_events BEGIN SELECT RAISE(ABORT, 'job events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS job_events_no_delete BEFORE DELETE ON job_events BEGIN SELECT RAISE(ABORT, 'job events are append-only'); END;
 		`); err != nil {
@@ -290,10 +455,10 @@ func sqliteDataSourceName(path string) string {
 
 func validateSQLiteSchemaAndScope(ctx context.Context, db *sql.DB, scope string) error {
 	var schemaObjects int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE (type='table' AND name IN ('store_meta','jobs','job_events','admin_sessions','remote_operations','remote_operation_events','cloud_inventory','cloud_inventory_file_sizes','cloud_inventory_directories','cloud_inventory_generations','cloud_directory_size_cache','cloud_inventory_scan_state','cloud_inventory_scan_queue','local_directory_migrations','local_directory_migration_events')) OR (type='index' AND name IN ('job_events_job_sequence','remote_operation_events_order','cloud_inventory_parent_name_id','cloud_inventory_path','cloud_inventory_duplicate_size','cloud_content_hashes_duplicate_group','local_directory_migration_events_order')) OR (type='trigger' AND name IN ('job_events_no_update','job_events_no_delete','remote_operation_events_no_update','remote_operation_events_no_delete','local_directory_migration_events_no_update','local_directory_migration_events_no_delete','cloud_inventory_file_size_insert','cloud_inventory_file_size_delete','cloud_inventory_file_size_update'))`).Scan(&schemaObjects); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE (type='table' AND name IN ('store_meta','jobs','job_events','admin_sessions','remote_operations','remote_operation_events','cloud_inventory','cloud_inventory_file_sizes','cloud_inventory_directories','cloud_inventory_generations','cloud_directory_size_cache','cloud_inventory_scan_state','cloud_inventory_scan_queue','cloud_inventory_scan_events','cloud_scan_runs','queue_monitor_scan_runs','queue_monitor_scan_events','cloud_inventory_refresh_state','cloud_inventory_refresh_runs','cloud_inventory_refresh_queue','cloud_inventory_refresh_entries','cloud_inventory_refresh_events','cloud_inventory_refresh_changes','cloud_duplicate_scan_runs','local_directory_migrations','local_directory_migration_events')) OR (type='index' AND name IN ('job_events_job_sequence','job_events_kind_sequence','job_events_operation_sequence','job_events_attempt_sequence','job_events_recorded_sequence','remote_operation_events_order','cloud_inventory_parent_name_id','cloud_inventory_path','cloud_inventory_duplicate_size','cloud_content_hashes_duplicate_group','cloud_inventory_refresh_entries_order','cloud_inventory_scan_events_order','cloud_inventory_scan_boundary_restart_count','cloud_inventory_refresh_events_order','cloud_inventory_refresh_runs_order','cloud_inventory_refresh_run_order','cloud_inventory_refresh_boundary_restart_count','cloud_inventory_refresh_changes_order','local_directory_migration_events_order','cloud_scan_runs_order','queue_monitor_scan_runs_order','queue_monitor_scan_events_order','cloud_duplicate_scan_runs_order')) OR (type='trigger' AND name IN ('job_events_no_update','job_events_no_delete','remote_operation_events_no_update','remote_operation_events_no_delete','cloud_inventory_scan_events_no_update','cloud_inventory_scan_events_no_delete','queue_monitor_scan_events_no_update','queue_monitor_scan_events_no_delete','cloud_inventory_refresh_events_no_update','cloud_inventory_refresh_events_no_delete','cloud_inventory_refresh_changes_no_update','cloud_inventory_refresh_changes_no_delete','local_directory_migration_events_no_update','local_directory_migration_events_no_delete','cloud_inventory_file_size_insert','cloud_inventory_file_size_delete','cloud_inventory_file_size_update'))`).Scan(&schemaObjects); err != nil {
 		return err
 	}
-	if schemaObjects != 31 {
+	if schemaObjects != 66 {
 		return fmt.Errorf("SQLite schema is incomplete")
 	}
 	var version, gotScope string
@@ -312,6 +477,90 @@ func validateSQLiteSchemaAndScope(ctx context.Context, db *sql.DB, scope string)
 	}
 	if pendingCountColumn != 1 {
 		return fmt.Errorf("SQLite cloud scan state schema is incomplete")
+	}
+	var boundaryColumns int
+	if err := db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM pragma_table_info('cloud_inventory_scan_state') WHERE name='next_page_boundary_json') + (SELECT count(*) FROM pragma_table_info('cloud_inventory_refresh_state') WHERE name='next_page_boundary_json')`).Scan(&boundaryColumns); err != nil {
+		return err
+	}
+	if boundaryColumns != 2 {
+		return fmt.Errorf("SQLite cloud page boundary schema is incomplete")
+	}
+	var scanCoverageColumns int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_scan_runs') WHERE name IN ('coverage_status','coverage_incomplete_directories','coverage_generation','coverage_observed_at_utc')`).Scan(&scanCoverageColumns); err != nil {
+		return err
+	}
+	if scanCoverageColumns != 4 {
+		return fmt.Errorf("SQLite cloud scan coverage history schema is incomplete")
+	}
+	var scanCoverageReasonsColumn int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_scan_runs') WHERE name='coverage_reasons_json'`).Scan(&scanCoverageReasonsColumn); err != nil {
+		return err
+	}
+	if scanCoverageReasonsColumn != 1 {
+		return fmt.Errorf("SQLite cloud scan coverage reason schema is incomplete")
+	}
+	var refreshDeltaColumns int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_inventory_refresh_events') WHERE name IN ('added_count','removed_count','changed_count')`).Scan(&refreshDeltaColumns); err != nil {
+		return err
+	}
+	if refreshDeltaColumns != 3 {
+		return fmt.Errorf("SQLite cloud refresh delta schema is incomplete")
+	}
+	var refreshRunColumns int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_inventory_refresh_runs') WHERE name IN ('start_sequence','root_path','request_budget','requests_used','latest_sequence','latest_kind')`).Scan(&refreshRunColumns); err != nil {
+		return err
+	}
+	if refreshRunColumns != 6 {
+		return fmt.Errorf("SQLite cloud refresh run summary schema is incomplete")
+	}
+	var refreshAuditColumns int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_inventory_refresh_events') WHERE name IN ('request_budget_added','retry_at_utc','last_error')`).Scan(&refreshAuditColumns); err != nil {
+		return err
+	}
+	if refreshAuditColumns != 3 {
+		return fmt.Errorf("SQLite cloud refresh audit event schema is incomplete")
+	}
+	var restartReasonColumns int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_inventory_refresh_events') WHERE name='restart_reason'`).Scan(&restartReasonColumns); err != nil {
+		return err
+	}
+	if restartReasonColumns != 1 {
+		return fmt.Errorf("SQLite cloud refresh restart evidence schema is incomplete")
+	}
+	var refreshRestartDetailColumns int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_inventory_refresh_events') WHERE name IN ('restart_offset','restart_fs_id')`).Scan(&refreshRestartDetailColumns); err != nil {
+		return err
+	}
+	if refreshRestartDetailColumns != 2 {
+		return fmt.Errorf("SQLite cloud refresh restart detail schema is incomplete")
+	}
+	var scanRestartReasonColumns int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_inventory_scan_events') WHERE name='restart_reason'`).Scan(&scanRestartReasonColumns); err != nil {
+		return err
+	}
+	if scanRestartReasonColumns != 1 {
+		return fmt.Errorf("SQLite cloud scan restart evidence schema is incomplete")
+	}
+	var fullRetryColumns, refreshRetryColumns, duplicateRetryColumns int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_inventory_scan_state') WHERE name IN ('retry_delay_millis','retry_at_utc')`).Scan(&fullRetryColumns); err != nil {
+		return err
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_inventory_refresh_state') WHERE name IN ('retry_delay_millis','retry_at_utc')`).Scan(&refreshRetryColumns); err != nil {
+		return err
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('cloud_duplicate_scan_state') WHERE name IN ('retry_delay_ms','retry_at_utc')`).Scan(&duplicateRetryColumns); err != nil {
+		return err
+	}
+	var backoffColumns int
+	for _, table := range []string{"cloud_inventory_scan_state", "cloud_inventory_refresh_state", "cloud_duplicate_scan_state"} {
+		var found int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info(?) WHERE name='retry_backoff_base_millis'`, table).Scan(&found); err != nil {
+			return err
+		}
+		backoffColumns += found
+	}
+	if fullRetryColumns != 2 || refreshRetryColumns != 2 || duplicateRetryColumns != 2 || backoffColumns != 3 {
+		return fmt.Errorf("SQLite cloud retry state schema is incomplete")
 	}
 	return nil
 }

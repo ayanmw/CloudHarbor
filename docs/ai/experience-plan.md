@@ -41,6 +41,8 @@
 
 2026-10-23 追加核查：百度官方 [Go SDK API 文档](https://pkg.go.dev/github.com/baidu-netdisk/baidu-drive-sdk-go/baidudriver/api)仍将 `taskid` 定义为异步文件管理响应字段，但公开的 `FileManagerService` 方法清单没有任务查询方法；其链接的官方 Move 文档本轮无法读取。搜索到的 `/api/taskquery` 用例来自网盘网页脚本，使用的是浏览器页面环境，未证明它属于 OAuth 开放平台契约，也未给出可由应用凭据调用的授权、状态终态或结果一致性保证。因此本工具继续将异步 Move 结果视为 unknown；不调用网页登录 Cookie 接口、不按目标路径出现推断完成，也不提供人工解除隔离。只有取得适用于当前 OAuth 应用的官方契约并能对终态和单项结果做验证后，才继续设计查询接线。
 
+2026-11-02 复核：百度官方 [Go SDK FileManagerResponse](https://github.com/baidu-netdisk/baidu-drive-sdk-go/blob/main/baidudriver/api/file_manager.go)仍仅将 `taskid` 描述为 `async=2` 时返回；公开的 FileManager 方法为 Copy/Move/Rename/Delete/Mkdir，没有声明 task status 查询。百度官方 [MCP 文件管理说明](https://github.com/baidu-netdisk/mcp)列出文件管理操作，但公开工具清单中没有对应的 filemanager task 查询。该证据只说明本轮可查的官方 SDK/MCP 未提供此契约，不证明底层绝无未公开接口；当前 OAuth 应用如何查询 taskid、完成终态及逐项结果仍未得到官方证明，因此继续隔离 unknown，不重发 Move，也不按目标路径出现推断完成。
+
 ## D3：油猴与管理页衔接（已实现，真实页面适配待验收）
 
 - [x] 独立选中项适配层，不将整页 FILEINFO 当选中项；旧 context 与已知 Vue selectedList，空选/无路径/来源不一致失败。尚未验证所有 SPA hash/query 模式。
@@ -53,7 +55,7 @@
 
 - [x] 更新 v0.4.0-preview.1 发布包和测试指南，验证包内程序的管理入口与未授权边界，保留不可变旧包。
 - [x] v0.6 包在实际内置浏览器、受控本机 HTTP 转发入口下验证 Basic 挑战后认证缓存、真实 WebSocket 状态/停止重连、轮询页、未授权预检拒绝与 fragment 只导入；详见 [browser-validation.md](browser-validation.md)。
-- [ ] 目标浏览器直连时原生 Basic 登录框流程、TLS 终止反代仍待验收；本机受控资源挑战不能替代这两项。
+- [ ] 目标浏览器管理员表单登录、Cookie 会话/登出及 TLS 终止反代仍待实机验收；当前仅观察到本地登录页并通过 API 完成只读预检，不能替代认证后页面交互。
 - [x] 本机 TLS 终止代理到 HTTP applicationHandler 的 POST/WSS 协议验证，新增显式 PUBLIC_ORIGIN，保留认证及来源拒绝；见 [reverse-proxy-plan.md](reverse-proxy-plan.md)。v0.7.0-preview.1 已打包并在 Windows/Linux AMD64 实际包进程上验证 TLS 代理；目标浏览器和厂商 NAS 代理/证书部署仍待实际验收。
 - [ ] 真实百度/NAS、入队/移动/下载后处理链路仍需用户提供测试反馈；不能以 mock 或隐藏进程测试代替这些验收。
 
@@ -306,3 +308,22 @@
 - [x] 只读列表、预检和重新核对使用专用错误响应；APIError 只公开 HTTP 状态与百度错误码，不暴露原始网络错误文本或请求凭据；Move/Delete 的未知结果处理保持不变。
 - [x] 回归覆盖 errno=-9 诊断、安全重试提示、原始错误中的模拟 access_token 不泄漏，以及既有入队/变更行为。
 - [ ] 用户确认目录路径或账号可见性问题已能据错误码定位；不创建或修改任何云端文件来规避错误。
+
+## D35：浏览目录缓存刷新运行历史（preview.88）
+
+- [x] 复核 `.87` 事件已持久化但网页仅能从当前状态取得 run ID，导致新运行后旧事件没有发现入口。
+- [x] 增加按授权账号隔离的 SQLite 运行摘要查询，使用不可变启动事件序号分页；摘要显示每轮最新事件，不合成旧运行或远端证据。
+- [x] 提供登录保护的只读 API 和按需网页入口；选择某轮后复用事件时间线，运行列表与事件分页游标独立，所有查询只读本地数据库。
+- [x] schema 19→20 仅新增索引；验证迁移、manifest 落后恢复、账号隔离、跨重开分页及页面过期响应保护。
+- [x] `.88` 全仓 Go 测试/vet、WebUI 63/63、userscript 3/3、Windows AMD64/Linux AMD64/Linux ARM64 构建和 ZIP 载荷检查通过；真实百度账号与 NAS/SMB 未纳入验证。
+- [x] `.89` 为选定目录缓存刷新运行导出同一 SQLite 快照中的摘要与完整事件，最多 100 条，超限拒绝整份；认证账号隔离、不会序列化账号指纹，页面仅响应用户显式点击。全仓 Go/vet、UI 自动化与三平台发布验证通过；不访问真实账号。
+- [x] `.90` 刷新运行历史可按最新状态和开始 UTC 日期范围筛选，SQLite 服务端筛选并沿用不可变启动序号游标；调整/清除条件均从第一页加载。全仓 Go/vet、WebUI 66/66、userscript 3/3 和三平台发布验证通过；不访问真实账号。
+
+## D36：重复扫描时对账线上对象变化（preview.100 已交付）
+
+- [x] 成功的实时元数据身份变化按 fs_id 条件更新 SQLite 库存；原 SHA-256 失效、新旧目录/子树覆盖与大小代次失效，并在同事务暂停重复扫描、清除活动 SHA 检查点、保存旧/新快照和本机/百度 UTC 时间。
+- [x] 无唯一匹配对象的元数据响应不作远端删除推断；保留缓存对象与旧哈希，仅将原目录标记待刷新并暂停。与全盘/局部缓存扫描队列或当前路径重叠时延期库存修改，避免并发发布覆盖。
+- [x] 受影响缓存完整前不能恢复扫描；刷新后重估剩余候选，保留已完成游标并从未完成 fs_id 重新在线核对。页面说明暂停阶段和需要刷新的路径，事件列表按需显示对象快照和时间证据。
+- [x] 定向 taskstore/downloader/WebUI 回归已通过；覆盖事务失败回滚、账号缓存身份变化、旧哈希不进入预览、扫描前/后漂移和不完整元数据响应。
+- [x] 全仓 `go test -count=1 ./...`、`go vet ./...`、WebUI 84/84、userscript 3/3、Windows AMD64/Linux AMD64/Linux ARM64 发布门禁通过；最终 ZIP、源码快照和载荷校验记录见 releases 同级 `.100-validation.md`。
+- [x] 按既有授权将唯一真实 `.nas-downloader` 从 `.99` 移至 `.100`；health `ok`、OAuth ready/账号绑定、队列及 source_unknown 为 0，SQLite startup integrity 为 `ok`。未启动哈希扫描、下载或远端写入；百度 Range 与 NAS/SMB 未验收。

@@ -63,6 +63,21 @@ func TestMaintenanceStopsClaimsAndWaitsForActiveWork(t *testing.T) {
 	d.EndMaintenance()
 }
 
+func TestQueuePauseStatusReportsMaintenanceGate(t *testing.T) {
+	d := NewDownloader(&config.Config{QueueDir: "/queue", MaxParallel: 1}, baiduapi.NewClient("token", "app"))
+	defer d.cancel()
+	if err := d.TryBeginMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	if status := d.QueuePauseStatus(); !status.Maintenance || status.Paused {
+		t.Fatalf("maintenance state not represented independently from user pause: %+v", status)
+	}
+	d.EndMaintenance()
+	if status := d.QueuePauseStatus(); status.Maintenance {
+		t.Fatalf("maintenance state remained after release: %+v", status)
+	}
+}
+
 func TestMaintenanceTimeoutReleasesClaimGate(t *testing.T) {
 	d := NewDownloader(&config.Config{QueueDir: "/queue", MaxParallel: 1}, baiduapi.NewClient("token", "app"))
 	defer d.cancel()

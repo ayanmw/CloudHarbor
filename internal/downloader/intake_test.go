@@ -69,6 +69,14 @@ func intakeFixture(t *testing.T) (*Downloader, *provider, *atomic.Int32, *atomic
 	return d, p, calls, unavailable, loseReply
 }
 
+func TestIntakePathValidationRejectsTrailingSpaceAndDotNames(t *testing.T) {
+	for _, source := range []string{"/source/file ", "/source/file."} {
+		if err := validateIntakePaths([]string{source}, "/queue"); !errors.Is(err, ErrIntakeInvalid) {
+			t.Fatalf("validateIntakePaths(%q) error = %v, want ErrIntakeInvalid", source, err)
+		}
+	}
+}
+
 func TestIntakeBlockChangesRefreshEligibleSchedulerCandidates(t *testing.T) {
 	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	info := baiduapi.FileInfo{FsID: 902, Path: "/queue/moved.bin", ServerFilename: "moved.bin", Size: 3}
@@ -232,6 +240,139 @@ func TestIntakePreviewDoesNotSurviveAuthenticationChangeOrRestart(t *testing.T) 
 	defer shutdown(t, reopened)
 	if _, err = reopened.CommitIntake(context.Background(), fresh.ID); !errors.Is(err, ErrIntakeStale) || calls.Load() != 0 {
 		t.Fatalf("restart reused preview: %v", err)
+	}
+}
+
+func TestGetIntakesProjectsExpiredPreviewWithoutChangingJournal(t *testing.T) {
+	d, _, _, _, _ := intakeFixture(t)
+	preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.intakeMutex.Lock()
+	record := d.intakes[preview.ID]
+	record.Expires = time.Now().Add(-time.Second)
+	d.intakes[preview.ID] = record
+	d.intakeMutex.Unlock()
+
+	var projected *Intake
+	for _, intake := range d.GetIntakes() {
+		if intake.ID == preview.ID {
+			projected = &intake
+			break
+		}
+	}
+	if projected == nil || projected.State != "expired" {
+		t.Fatalf("expired preview should be projected as expired: %+v", projected)
+	}
+	stored, err := d.intakeJournal.LoadIntakes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted intakeRecord
+	if err = json.Unmarshal(stored[preview.ID], &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != "preview" {
+		t.Fatalf("read projection rewrote the persisted state: %q", persisted.State)
+	}
+}
+
+func TestGetIntakesProjectsAuthenticationAndRestartPreviewsExpired(t *testing.T) {
+	t.Run("authentication epoch", func(t *testing.T) {
+		d, _, _, _, _ := intakeFixture(t)
+		preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.SetAuthentication(d.getClient(), true, time.Time{})
+		for _, intake := range d.GetIntakes() {
+			if intake.ID == preview.ID && intake.State == "expired" {
+				return
+			}
+		}
+		t.Fatal("preview tied to the previous auth epoch was not projected as expired")
+	})
+
+	t.Run("process restart", func(t *testing.T) {
+		d, _, _, _, _ := intakeFixture(t)
+		preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, client := d.cfg, d.getClient()
+		shutdown(t, d)
+		reopened, err := OpenDownloader(cfg, client)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer shutdown(t, reopened)
+		for _, intake := range reopened.GetIntakes() {
+			if intake.ID == preview.ID && intake.State == "expired" {
+				return
+			}
+		}
+		t.Fatal("preview from a previous process boot was not projected as expired")
+	})
+}
+
+func TestLoadIntakesAcceptsCompletedHistoryFromPriorQueueDirectory(t *testing.T) {
+	d, _, calls, unavailable, loseReply := intakeFixture(t)
+	preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loseReply.Store(true)
+	if result, commitErr := d.CommitIntake(context.Background(), preview.ID); commitErr != nil || result.Items[0].State != "unknown" {
+		t.Fatalf("lost move reply was not isolated: result=%+v err=%v", result, commitErr)
+	}
+	unavailable.Store(false)
+	if _, err = d.SetManagedPaths(context.Background(), ManagedPaths{QueueDir: "/new-queue", LocalDownDir: d.LocalDownloadDirectory()}, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, client := d.cfg, d.getClient()
+	shutdown(t, d)
+	reopened, err := OpenDownloader(cfg, client)
+	if err != nil {
+		t.Fatalf("completed history from the previous queue directory must load after restart: %v", err)
+	}
+	defer shutdown(t, reopened)
+	if calls.Load() != 1 {
+		t.Fatalf("history load replayed a remote move: calls=%d", calls.Load())
+	}
+}
+
+func TestRecheckIntakeUsesRecordedQueueDirectory(t *testing.T) {
+	d, _, calls, unavailable, loseReply := intakeFixture(t)
+	preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loseReply.Store(true)
+	if result, commitErr := d.CommitIntake(context.Background(), preview.ID); commitErr != nil || result.Items[0].State != "unknown" {
+		t.Fatalf("lost move reply was not isolated: result=%+v err=%v", result, commitErr)
+	}
+	unavailable.Store(false)
+	if _, err = d.SetManagedPaths(context.Background(), ManagedPaths{QueueDir: "/new-queue", LocalDownDir: d.LocalDownloadDirectory()}, false); err != nil {
+		t.Fatal(err)
+	}
+	result, err := d.RecheckIntake(context.Background(), preview.ID)
+	if err != nil || result.Items[0].State != "moved" || calls.Load() != 1 {
+		t.Fatalf("recheck did not confirm the item in its recorded queue without resending: result=%+v calls=%d err=%v", result, calls.Load(), err)
+	}
+}
+
+func TestPreviewIntakeRejectedDuringQueueMaintenance(t *testing.T) {
+	d, _, calls, _, _ := intakeFixture(t)
+	d.queue.mu.Lock()
+	d.queue.maintenance = true
+	d.queue.mu.Unlock()
+
+	if _, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"}); err == nil {
+		t.Fatal("intake must not begin while path maintenance or an async local migration owns queue maintenance")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("maintenance rejection sent a remote move: %d", calls.Load())
 	}
 }
 

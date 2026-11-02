@@ -12,6 +12,7 @@ import (
 )
 
 var ErrIntakeConflict = errors.New("入队项目已变化、目标冲突或存在待核对记录")
+var ErrCloudInventoryIncomplete = errors.New("全盘列表缓存已失效或尚未完整，请先完成全盘扫描")
 var ErrIntakeInvalid = errors.New("入队路径或请求无效")
 var ErrIntakeStale = errors.New("入队预检已过期或认证已变化，请重新预检")
 var ErrIntakeNotFound = errors.New("入队记录不存在")
@@ -73,6 +74,28 @@ func (d *Downloader) startIntake(ctx context.Context) (context.Context, func(), 
 	stop := context.AfterFunc(d.ctx, cancel)
 	return scoped, func() { stop(); cancel(); q.wg.Done() }, nil
 }
+
+func (d *Downloader) startPathSensitiveOperation(ctx context.Context) (context.Context, func(), error) {
+	d.pathOperations.RLock()
+	scoped, done, err := d.startIntake(ctx)
+	if err != nil {
+		d.pathOperations.RUnlock()
+		return nil, nil, err
+	}
+	d.queue.mu.Lock()
+	maintenance := d.queue.maintenance
+	d.queue.mu.Unlock()
+	if maintenance {
+		done()
+		d.pathOperations.RUnlock()
+		return nil, nil, fmt.Errorf("下载队列正在维护，请稍后重试")
+	}
+	return scoped, func() {
+		done()
+		d.pathOperations.RUnlock()
+	}, nil
+}
+
 func checkedListing(client *baiduapi.Client, dir string) ([]baiduapi.FileInfo, error) {
 	files, err := client.ListDir(dir)
 	if err != nil {
@@ -89,8 +112,7 @@ func checkedListing(client *baiduapi.Client, dir string) ([]baiduapi.FileInfo, e
 func validListingFile(dir string, f baiduapi.FileInfo) bool {
 	return f.FsID > 0 && f.Size >= 0 && validName(f.ServerFilename) && f.Path == path.Join(dir, f.ServerFilename) && (f.IsDir == 0 || f.IsDir == 1)
 }
-func (d *Downloader) previewIntakeItems(client *baiduapi.Client, paths []string) ([]IntakeItem, error) {
-	queueDir := d.QueueDirectory()
+func (d *Downloader) previewIntakeItems(client *baiduapi.Client, paths []string, queueDir string) ([]IntakeItem, error) {
 	if err := validateIntakePaths(paths, queueDir); err != nil {
 		return nil, err
 	}
@@ -140,7 +162,7 @@ func (d *Downloader) previewIntakeItems(client *baiduapi.Client, paths []string)
 	return result, nil
 }
 func (d *Downloader) PreviewIntake(ctx context.Context, paths []string) (Intake, error) {
-	ctx, done, err := d.startIntake(ctx)
+	ctx, done, err := d.startPathSensitiveOperation(ctx)
 	if err != nil {
 		return Intake{}, err
 	}
@@ -151,12 +173,12 @@ func (d *Downloader) PreviewIntake(ctx context.Context, paths []string) (Intake,
 	if err != nil {
 		return Intake{}, err
 	}
-	items, err := d.previewIntakeItems(client, paths)
+	queueDir := d.QueueDirectory()
+	items, err := d.previewIntakeItems(client, paths, queueDir)
 	if err != nil {
 		d.reportAuthenticationFailure(err)
 		return Intake{}, err
 	}
-	queueDir := d.QueueDirectory()
 	id, err := newIntakeID()
 	if err != nil {
 		return Intake{}, err
@@ -222,12 +244,11 @@ func (d *Downloader) registerIntakeItem(r intakeRecord, item IntakeItem, destina
 func sameMovedIdentity(source, target baiduapi.FileInfo) bool {
 	return source.FsID == target.FsID && source.Size == target.Size && source.IsDir == target.IsDir && source.MD5 == target.MD5 && source.ServerFilename == target.ServerFilename
 }
-func (d *Downloader) checkIntakeOutcome(client *baiduapi.Client, item IntakeItem) (baiduapi.FileInfo, bool, bool, error) {
+func (d *Downloader) checkIntakeOutcome(client *baiduapi.Client, item IntakeItem, queueDir string) (baiduapi.FileInfo, bool, bool, error) {
 	sources, err := checkedListing(client, path.Dir(item.Source.Path))
 	if err != nil {
 		return baiduapi.FileInfo{}, false, false, err
 	}
-	queueDir := d.QueueDirectory()
 	targets, err := checkedListing(client, queueDir)
 	if err != nil {
 		return baiduapi.FileInfo{}, false, false, err
@@ -253,7 +274,7 @@ func (d *Downloader) checkIntakeOutcome(client *baiduapi.Client, item IntakeItem
 	return baiduapi.FileInfo{}, false, sourceSame && target == nil, nil
 }
 func (d *Downloader) CommitIntake(ctx context.Context, id string) (Intake, error) {
-	ctx, done, err := d.startIntake(ctx)
+	ctx, done, err := d.startPathSensitiveOperation(ctx)
 	if err != nil {
 		return Intake{}, err
 	}
@@ -279,7 +300,10 @@ func (d *Downloader) CommitIntake(ctx context.Context, id string) (Intake, error
 		paths[i] = item.Source.Path
 	}
 	queueDir := d.QueueDirectory()
-	fresh, err := d.previewIntakeItems(client, paths)
+	if queueDir != r.QueueDir {
+		return r.Intake, ErrIntakeStale
+	}
+	fresh, err := d.previewIntakeItems(client, paths, r.QueueDir)
 	if err != nil {
 		d.reportAuthenticationFailure(err)
 		return r.Intake, err
@@ -336,7 +360,7 @@ func (d *Downloader) CommitIntake(ctx context.Context, id string) (Intake, error
 		var moved, unchanged bool
 		checkErr := authErr
 		if checkErr == nil {
-			destination, moved, unchanged, checkErr = d.checkIntakeOutcome(client, *item)
+			destination, moved, unchanged, checkErr = d.checkIntakeOutcome(client, *item, r.QueueDir)
 		}
 		if checkErr != nil {
 			d.reportAuthenticationFailure(checkErr)
@@ -392,7 +416,7 @@ func (d *Downloader) CommitIntake(ctx context.Context, id string) (Intake, error
 // Recheck reads provider state; it never repeats a move or guesses that an
 // unobserved operation cannot still arrive later.
 func (d *Downloader) RecheckIntake(ctx context.Context, id string) (Intake, error) {
-	ctx, done, err := d.startIntake(ctx)
+	ctx, done, err := d.startPathSensitiveOperation(ctx)
 	if err != nil {
 		return Intake{}, err
 	}
@@ -415,7 +439,7 @@ func (d *Downloader) RecheckIntake(ctx context.Context, id string) (Intake, erro
 		if item.Error == "async_move_unconfirmed" || (item.Source.IsDir == 1 && !item.SyncConfirmed) {
 			continue
 		}
-		destination, moved, _, checkErr := d.checkIntakeOutcome(client, *item)
+		destination, moved, _, checkErr := d.checkIntakeOutcome(client, *item, r.QueueDir)
 		if checkErr != nil {
 			d.reportAuthenticationFailure(checkErr)
 			return r.Intake, checkErr

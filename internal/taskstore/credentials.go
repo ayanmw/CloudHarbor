@@ -1,6 +1,8 @@
 package taskstore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 )
 
 var ErrAccountMismatch = errors.New("download directory is bound to a different Baidu account")
+var ErrAccountNotBound = errors.New("Baidu account is not bound")
 
 func (s *Store) readPrivate(name string, limit int) ([]byte, error) {
 	file := filepath.Join(s.dir, name)
@@ -88,4 +91,29 @@ func (s *Store) BindAccount(id string) error {
 	record.ID = id
 	body, _ = json.Marshal(record)
 	return atomicWrite(filepath.Join(s.dir, "account.json"), body)
+}
+
+// BoundAccountFingerprint is stable across OAuth token refreshes and never returns the account ID.
+func (s *Store) BoundAccountFingerprint() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return "", os.ErrClosed
+	}
+	body, err := s.readPrivate("account.json", 4096)
+	if err != nil {
+		return "", err
+	}
+	if body == nil {
+		return "", ErrAccountNotBound
+	}
+	var record struct {
+		Version int    `json:"version"`
+		ID      string `json:"uk"`
+	}
+	if json.Unmarshal(body, &record) != nil || record.Version != 1 || record.ID == "" {
+		return "", fmt.Errorf("invalid account binding")
+	}
+	sum := sha256.Sum256([]byte(record.ID))
+	return hex.EncodeToString(sum[:]), nil
 }

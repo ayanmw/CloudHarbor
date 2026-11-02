@@ -71,8 +71,8 @@ func NewWithOrigin(password, origin string) (*Gate, error) {
 }
 
 func New(password string) (*Gate, error) {
-	if len(password) < 16 || len(password) > 4096 {
-		return nil, fmt.Errorf("ADMIN_PASSWORD must contain 16..4096 bytes")
+	if len(password) < 10 || len(password) > 4096 {
+		return nil, fmt.Errorf("ADMIN_PASSWORD must contain 10..4096 bytes")
 	}
 	return &Gate{password: sha256.Sum256([]byte(password)), failures: make(map[string]loginFailure)}, nil
 }
@@ -200,11 +200,12 @@ func (g *Gate) allowLogin(ip string) bool {
 	now := time.Now()
 	g.loginMu.Lock()
 	defer g.loginMu.Unlock()
-	failure, ok := g.failures[ip]
-	if ok && now.Sub(failure.started) >= 15*time.Minute {
-		delete(g.failures, ip)
-		ok = false
+	for address, failure := range g.failures {
+		if now.Sub(failure.started) >= 15*time.Minute {
+			delete(g.failures, address)
+		}
 	}
+	failure, ok := g.failures[ip]
 	if ok && failure.count >= 10 {
 		return false
 	}
@@ -253,7 +254,7 @@ func (g *Gate) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8192)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF || len(request.Password) < 16 || len(request.Password) > 4096 {
+	if decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF || len(request.Password) < 10 || len(request.Password) > 4096 {
 		g.recordLoginFailure(ip)
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return

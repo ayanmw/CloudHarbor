@@ -37,16 +37,20 @@ type Task struct {
 	DownloadMode     DownloadMode
 	TaskID           string
 	CanCancel        bool
+	CanPause         bool
+	CanResume        bool
 	CanRetry         bool
+	LocalStorage     *LocalStorageEvidence `json:"local_storage,omitempty"`
 }
 
 type TaskPage struct {
-	Tasks   []*Task
-	Total   int
-	Counts  map[string]int
-	Offset  int
-	Limit   int
-	HasMore bool
+	Tasks      []*Task
+	Total      int
+	QueueTotal int
+	Counts     map[string]int
+	Offset     int
+	Limit      int
+	HasMore    bool
 }
 
 // keep retains the cloud item and marks its name; delete removes it only after
@@ -74,12 +78,16 @@ type Downloader struct {
 	taskMutex              sync.RWMutex
 	scanMutex              sync.Mutex
 	cloudMutex             sync.RWMutex
+	pathOperations         sync.RWMutex
 	intakeMutex            sync.RWMutex
 	intakeBoot             string
 	intakeJournal          intakeJournal
 	intakes                map[string]intakeRecord
 	inFlight               map[int64]bool
 	transferSlots          chan struct{}
+	localSpaceProbe        func(string) (int64, error)
+	localSpaceMu           sync.Mutex
+	localSpaceReservations map[int64]int64
 	modeMutex              sync.RWMutex
 	downloadMode           DownloadMode
 	pathMu                 sync.RWMutex
@@ -89,19 +97,30 @@ type Downloader struct {
 	localMigrationMu       sync.Mutex
 	localMigrationRunning  bool
 	localMigrationPending  bool
+	localMigrationShutdown bool
+	localMigrationWG       sync.WaitGroup
 	localMigrationComplete func()
 	inventoryScanMutex     sync.Mutex
 	inventoryScanCancel    context.CancelFunc
 	inventoryScanStarting  bool
+	inventoryScanKind      string
 	// inventoryPageCommitHook synchronizes the read/commit race regression test.
 	inventoryPageCommitHook func(string)
-	duplicateScanMutex      sync.Mutex
-	duplicateScanCancel     context.CancelFunc
-	duplicateScanStarting   bool
-	cloudAPIPacer           *cloudAPIPacer
-	duplicateScanRetryBase  time.Duration
-	taskCatalogGeneration   atomic.Uint64
-	taskStatsGeneration     atomic.Uint64
+	// inventoryScanAdmissionHook synchronizes path-maintenance admission regression tests.
+	inventoryScanAdmissionHook func()
+	// managedPathsAdmissionHook and cloudMutationAdmissionHook synchronize path snapshot race regression tests.
+	managedPathsAdmissionHook  func()
+	cloudMutationAdmissionHook func()
+	// localMigrationCopyStartHook synchronizes migration progress drift regression tests.
+	localMigrationCopyStartHook func()
+	localMigrationRemoveAllHook func(string) error
+	duplicateScanMutex          sync.Mutex
+	duplicateScanCancel         context.CancelFunc
+	duplicateScanStarting       bool
+	cloudAPIPacer               *cloudAPIPacer
+	duplicateScanRetryBase      time.Duration
+	taskCatalogGeneration       atomic.Uint64
+	taskStatsGeneration         atomic.Uint64
 }
 
 func NewDownloader(cfg *config.Config, client *baiduapi.Client) *Downloader {
@@ -111,7 +130,7 @@ func NewDownloader(cfg *config.Config, client *baiduapi.Client) *Downloader {
 		parallel = 2
 	}
 	pacer := newCloudAPIPacer(cloudAPIRequestInterval)
-	d := &Downloader{cfg: cfg, client: client.WithRequestPacer(pacer), cloudAPIPacer: pacer, duplicateScanRetryBase: 5 * time.Second, tasks: make(map[int64]*Task), inFlight: make(map[int64]bool), transferSlots: make(chan struct{}, parallel), ctx: ctx, cancel: cancel, intakes: make(map[string]intakeRecord), queueDir: cfg.QueueDir, localDownDir: cfg.LocalDownDir}
+	d := &Downloader{cfg: cfg, client: client.WithRequestPacer(pacer), cloudAPIPacer: pacer, duplicateScanRetryBase: 5 * time.Second, tasks: make(map[int64]*Task), inFlight: make(map[int64]bool), transferSlots: make(chan struct{}, parallel), localSpaceProbe: localAvailableBytes, localSpaceReservations: make(map[int64]int64), ctx: ctx, cancel: cancel, intakes: make(map[string]intakeRecord), queueDir: cfg.QueueDir, localDownDir: cfg.LocalDownDir}
 	d.queue = newScheduler(d)
 	return d
 }
@@ -157,14 +176,14 @@ func (d *Downloader) GetDownloadMode() DownloadMode {
 
 func (d *Downloader) ScanAndDownload() error {
 	if !d.scanMutex.TryLock() {
-		return nil
+		return ErrQueueMonitorScanSkipped
 	}
 	defer d.scanMutex.Unlock()
 	d.queue.mu.Lock()
 	paused := d.queue.maintenance
 	d.queue.mu.Unlock()
 	if paused {
-		return nil
+		return ErrQueueMonitorScanSkipped
 	}
 	d.cloudMutex.RLock()
 	defer d.cloudMutex.RUnlock()
@@ -175,13 +194,82 @@ func (d *Downloader) ScanAndDownload() error {
 	if err != nil {
 		return err
 	}
+	runID, err := newQueueMonitorScanID()
+	if err != nil {
+		return err
+	}
+	startedAt := time.Now().UTC()
+	account := client.Fingerprint()
+	store := d.queue.store
+	if store != nil {
+		boundAccount, bindErr := store.BoundAccountFingerprint()
+		if bindErr == nil {
+			account = boundAccount
+		} else if !errors.Is(bindErr, taskstore.ErrAccountNotBound) {
+			return fmt.Errorf("读取百度账号绑定失败: %w", bindErr)
+		}
+		retryState, retryErr := store.QueueMonitorRetryState(account)
+		if retryErr != nil {
+			return fmt.Errorf("读取自动扫描重试状态失败: %w", retryErr)
+		}
+		if retryState != nil && time.Now().UTC().Before(retryState.RetryAtUTC) {
+			return ErrQueueMonitorScanSkipped
+		}
+		if err = store.StartQueueMonitorScan(account, runID, d.QueueDirectory(), startedAt); err != nil {
+			return fmt.Errorf("记录自动扫描开始失败: %w", err)
+		}
+	}
 	files, err := client.ListDir(d.QueueDirectory())
 	if err != nil {
 		d.reportAuthenticationFailure(err)
-		return fmt.Errorf("列目录失败: %w", err)
+		code := "provider_error"
+		if errors.Is(err, ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(err) {
+			code = "authentication_wait"
+		}
+		var finishErr error
+		if store != nil {
+			if code == "provider_error" && baiduapi.IsRetryable(err) {
+				prior, stateErr := store.QueueMonitorRetryState(account)
+				if stateErr != nil {
+					finishErr = stateErr
+				} else {
+					failures := 1
+					if prior != nil {
+						failures += prior.FailureCount
+					}
+					delay := queueMonitorRetryDelay(failures, providerRetryAfter(err))
+					_, finishErr = store.ScheduleQueueMonitorRetry(account, code, failures, delay, time.Now().UTC())
+				}
+			} else {
+				finishErr = store.ClearQueueMonitorRetryState(account)
+			}
+			finishErr = errors.Join(finishErr, store.FinishQueueMonitorScan(account, runID, "failed", code, time.Now().UTC()))
+		}
+		return errors.Join(fmt.Errorf("列目录失败: %w", err), finishErr)
 	}
 	observedAt := time.Now().UTC()
-	return d.queue.reconcileObserved(files, epoch, observedAt)
+	if store != nil {
+		if err = store.ClearQueueMonitorRetryState(account); err != nil {
+			return fmt.Errorf("清除自动扫描退避状态失败: %w", err)
+		}
+		if err = store.RecordQueueMonitorCloudListed(account, runID, observedAt); err != nil {
+			return fmt.Errorf("记录百度目录观察时间失败: %w", err)
+		}
+	}
+	err = d.queue.reconcileObserved(files, epoch, observedAt)
+	if err != nil {
+		var finishErr error
+		if store != nil {
+			finishErr = store.FinishQueueMonitorScan(account, runID, "failed", "queue_error", time.Now().UTC())
+		}
+		return errors.Join(err, finishErr)
+	}
+	if store != nil {
+		if err = store.FinishQueueMonitorScan(account, runID, "success", "", time.Now().UTC()); err != nil {
+			return fmt.Errorf("记录自动扫描完成失败: %w", err)
+		}
+	}
+	return nil
 }
 
 func (d *Downloader) beginTask(info baiduapi.FileInfo, local string) {
@@ -549,7 +637,7 @@ func (d *Downloader) taskViewLocked(id int64, job *queueJob) *Task {
 	task := &Task{
 		FileInfo: job.Info, Status: job.Status, Error: job.Error,
 		StartTime: job.Created, Attempts: job.Attempts, NextAttempt: job.NextAttempt,
-		Root: true, DownloadMode: job.Mode,
+		Root: true, DownloadMode: job.Mode, LocalStorage: job.LocalStorage,
 	}
 	if job.Status == "done" || job.Status == "failed" || job.Status == "cancelled" {
 		task.FinishTime = job.Updated
@@ -580,7 +668,7 @@ func (d *Downloader) GetTaskPage(offset, limit int, sortBy string) TaskPage {
 	defer d.taskMutex.RUnlock()
 
 	total, counts := d.taskStatsLocked()
-	page := TaskPage{Offset: offset, Limit: limit, Total: total, Counts: counts}
+	page := TaskPage{Offset: offset, Limit: limit, Total: total, QueueTotal: total, Counts: counts}
 	page.HasMore = offset < page.Total && limit < page.Total-offset
 	if limit == 0 || offset >= page.Total || page.Total == 0 {
 		return page
@@ -899,7 +987,9 @@ func (d *Downloader) taskWithActionsLocked(id int64, task *Task) *Task {
 	task.TaskID = strconv.FormatInt(task.FileInfo.FsID, 10)
 	job := d.queue.jobs[id]
 	if task.Root && job != nil && !d.queue.stopping && d.queue.err == nil && d.ctx.Err() == nil {
-		task.CanCancel = job.Status == "pending" || job.Status == "downloading" || job.Status == "retry_wait" || job.Status == "auth_wait"
+		task.CanCancel = job.Status == "pending" || job.Status == "downloading" || job.Status == "retry_wait" || job.Status == "auth_wait" || job.Status == "paused"
+		task.CanPause = job.SourceState == "" && (job.Status == "pending" || job.Status == "retry_wait" || job.Status == "downloading")
+		task.CanResume = job.SourceState == "" && job.Status == "paused" && d.queue.active[id] == nil
 		eligibleInfo := d.queue.eligible[id]
 		task.CanRetry = job.SourceState == "" && !d.queue.blockedSources[job.Info.Path] && !d.queue.blockedIntakes[job.Info.Path] && (job.Status == "failed" || job.Status == "cancelled") && d.queue.active[id] == nil && eligibleInfo != nil && *eligibleInfo == job.Info && d.AuthenticationReady()
 	}
@@ -962,6 +1052,76 @@ func (d *Downloader) TaskEventPage(id, beforeSequence int64, limit int) ([]tasks
 		return nil, 0, false, errors.New("task event store unavailable")
 	}
 	return store.EventPage(id, beforeSequence, limit)
+}
+
+func (d *Downloader) TaskEventPageFiltered(ctx context.Context, id, beforeSequence int64, limit int, filter taskstore.TaskEventFilter) ([]taskstore.Event, int64, int64, bool, error) {
+	d.queue.mu.Lock()
+	store := d.queue.store
+	d.queue.mu.Unlock()
+	if store == nil {
+		return nil, 0, 0, false, errors.New("task event store unavailable")
+	}
+	return store.EventPageFiltered(ctx, id, beforeSequence, limit, filter)
+}
+
+func (d *Downloader) TaskEventPageFilteredWithCounts(ctx context.Context, id, beforeSequence int64, limit int, filter taskstore.TaskEventFilter) ([]taskstore.Event, int64, int64, bool, []taskstore.TaskEventKindCount, error) {
+	d.queue.mu.Lock()
+	store := d.queue.store
+	d.queue.mu.Unlock()
+	if store == nil {
+		return nil, 0, 0, false, nil, errors.New("task event store unavailable")
+	}
+	return store.EventPageFilteredWithCounts(ctx, id, beforeSequence, limit, filter)
+}
+
+func (d *Downloader) TaskEventHistoryPage(ctx context.Context, filter taskstore.GlobalTaskEventFilter, beforeSequence int64, asOfSequence *int64, limit int) (taskstore.TaskEventHistoryPage, error) {
+	d.queue.mu.Lock()
+	store := d.queue.store
+	d.queue.mu.Unlock()
+	if store == nil {
+		return taskstore.TaskEventHistoryPage{}, errors.New("task event store unavailable")
+	}
+	return store.TaskEventHistoryPage(ctx, filter, beforeSequence, asOfSequence, limit)
+}
+
+func (d *Downloader) TaskEventHistoryExport(ctx context.Context, filter taskstore.GlobalTaskEventFilter, asOfSequence *int64) ([]taskstore.Event, int64, int64, error) {
+	d.queue.mu.Lock()
+	store := d.queue.store
+	d.queue.mu.Unlock()
+	if store == nil {
+		return nil, 0, 0, errors.New("task event store unavailable")
+	}
+	return store.TaskEventHistoryExport(ctx, filter, asOfSequence)
+}
+
+func (d *Downloader) TaskEventContext(ctx context.Context, id, sequence int64) (taskstore.TaskEventContext, error) {
+	d.queue.mu.Lock()
+	store := d.queue.store
+	d.queue.mu.Unlock()
+	if store == nil {
+		return taskstore.TaskEventContext{}, errors.New("task event store unavailable")
+	}
+	return store.TaskEventContext(ctx, id, sequence)
+}
+
+func (d *Downloader) TaskEventEvidenceExport(ctx context.Context, id int64) ([]taskstore.Event, error) {
+	d.queue.mu.Lock()
+	store := d.queue.store
+	d.queue.mu.Unlock()
+	if store == nil {
+		return nil, errors.New("task event store unavailable")
+	}
+	return store.TaskEventEvidenceExport(ctx, id)
+}
+
+func (d *Downloader) TaskEventEvidenceExportFiltered(ctx context.Context, id int64, filter taskstore.TaskEventFilter) ([]taskstore.Event, int64, error) {
+	d.queue.mu.Lock()
+	store := d.queue.store
+	d.queue.mu.Unlock()
+	if store == nil {
+		return nil, 0, errors.New("task event store unavailable")
+	}
+	return store.TaskEventEvidenceExportFiltered(ctx, id, filter)
 }
 
 func (d *Downloader) TaskStoreStartupDiagnostics() (taskstore.StartupDiagnostics, error) {

@@ -357,6 +357,46 @@ func TestSourceJournalSaveFailureNeverSendsRequest(t *testing.T) {
 	}
 }
 
+func TestSourceIntentPersistenceFailureKeepsDefinitelyUnsentJobState(t *testing.T) {
+	original, _ := setup(t, func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected source operation request") })
+	d, err := OpenDownloader(original.cfg, original.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := file(91, "a.txt", 3)
+	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeDelete, Status: "downloading", Error: "prior error", Created: time.Now(), NextAttempt: time.Now().Add(time.Minute)}
+	d.queue.mu.Lock()
+	d.queue.jobs[info.FsID] = job
+	if err = d.queue.persist(job); err != nil {
+		d.queue.mu.Unlock()
+		t.Fatal(err)
+	}
+	d.queue.mu.Unlock()
+	if err = d.queue.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if tracked, beginErr := d.beginSourceOperation(context.Background(), info); beginErr == nil || tracked {
+		t.Fatalf("failed send-intent persistence = tracked %v, error %v", tracked, beginErr)
+	}
+	if job.Status != "downloading" || job.SourceState != "" || job.SourceOperationID != "" || job.SourceAttemptID != "" || job.Error != "prior error" || job.NextAttempt.IsZero() {
+		t.Fatalf("definitely unsent job was projected as uncertain or mutated: %+v", job)
+	}
+	if d.queue.blockedSources[info.Path] {
+		t.Fatal("definitely unsent source remained quarantined")
+	}
+	shutdown(t, d)
+	d, err = OpenDownloader(original.cfg, original.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, d)
+	if restored := d.GetTaskByFsID(info.FsID); restored == nil || restored.Status != "pending" || restored.CanRetry {
+		t.Fatalf("reopened definitely-unsent task did not return to scan-gated pending state: %+v", restored)
+	} else if persisted := d.queue.jobs[info.FsID]; persisted.SourceState != "" || persisted.SourceOperationID != "" || persisted.SourceAttemptID != "" {
+		t.Fatalf("reopened definitely-unsent task retained a source journal: %+v", persisted)
+	}
+}
+
 func TestSourceReceiptSaveFailureKeepsSendingRecordOnDisk(t *testing.T) {
 	original, p := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "abc") })
 	d, err := OpenDownloader(original.cfg, original.getClient())

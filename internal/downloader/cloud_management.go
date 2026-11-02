@@ -29,6 +29,7 @@ type CloudMutationResult struct {
 	ObjectID        int64  `json:"object_id"`
 	SourcePath      string `json:"source_path,omitempty"`
 	DestinationPath string `json:"destination_path,omitempty"`
+	Warning         string `json:"warning,omitempty"`
 }
 
 func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationRequest) (CloudMutationResult, error) {
@@ -36,6 +37,14 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 	if err != nil {
 		return CloudMutationResult{}, err
 	}
+	if d.cloudMutationAdmissionHook != nil {
+		d.cloudMutationAdmissionHook()
+	}
+	scoped, done, err := d.startPathSensitiveOperation(ctx)
+	if err != nil {
+		return CloudMutationResult{}, err
+	}
+	defer done()
 	queueDir := d.QueueDirectory()
 	if request.Operation != "mkdir" && request.Expected.IsDir == 1 && insideCloud(queueDir, request.Expected.Path) {
 		return CloudMutationResult{}, ErrIntakeInvalid
@@ -43,11 +52,14 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 	if request.Operation == "move" && request.Expected.IsDir == 1 && insideCloud(request.DestinationDirectory, request.Expected.Path) {
 		return CloudMutationResult{}, ErrIntakeInvalid
 	}
-	scoped, done, err := d.startIntake(ctx)
-	if err != nil {
+	if err = d.reserveCloudInventoryScan("下载队列正在维护，暂不能执行网盘变更"); err != nil {
 		return CloudMutationResult{}, err
 	}
-	defer done()
+	defer func() {
+		d.inventoryScanMutex.Lock()
+		d.inventoryScanStarting = false
+		d.inventoryScanMutex.Unlock()
+	}()
 	if err = d.BeginMaintenance(scoped); err != nil {
 		return CloudMutationResult{}, err
 	}
@@ -58,6 +70,15 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 	if err != nil {
 		return CloudMutationResult{}, err
 	}
+	account := client.Fingerprint()
+	scanConflict, err := d.queue.store.CloudMutationScanConflict(account, mutationCachePaths(request, target))
+	if err != nil {
+		return CloudMutationResult{}, err
+	}
+	if scanConflict {
+		return CloudMutationResult{}, fmt.Errorf("%w：云端缓存或重复文件扫描仍有待处理工作，请先完成或恢复扫描再执行远端操作", ErrIntakeConflict)
+	}
+	var beforeInfo baiduapi.FileInfo
 	if request.Operation == "mkdir" {
 		if err = verifyDirectory(client, request.DestinationDirectory); err != nil {
 			return CloudMutationResult{}, err
@@ -73,6 +94,7 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 		if !sameCloudIdentity(request.Expected, current) {
 			return CloudMutationResult{}, ErrIntakeStale
 		}
+		beforeInfo = current
 		if request.ExpectedContentSHA256 != "" {
 			if request.Operation != "delete" || request.Expected.IsDir != 0 || len(request.ExpectedContentSHA256) != 64 {
 				return CloudMutationResult{}, ErrIntakeInvalid
@@ -120,6 +142,15 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 				return CloudMutationResult{}, err
 			}
 		}
+		// Repeat the identity check after destination and content checks so a
+		// changed path or object is not mutated based on an older listing.
+		beforeInfo, err = client.GetFileInfo(request.Expected.FsID)
+		if err != nil {
+			return CloudMutationResult{}, err
+		}
+		if !sameCloudIdentity(request.Expected, beforeInfo) {
+			return CloudMutationResult{}, ErrIntakeStale
+		}
 	}
 	client, err = d.intakeClient(scoped, epoch)
 	if err != nil {
@@ -159,22 +190,38 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 			observed = responseAt
 		}
 		if persistErr := d.queue.store.UpdateRemoteOperation(operationID, status, evidence, observed); persistErr != nil {
+			if status == "unknown" {
+				result.Status = "unknown"
+				result.Warning = "远端操作结果未知，SQLite 未能记录 unknown 状态；来源已在当前进程隔离，重启后会恢复"
+				d.quarantineCloudMutationSource(objectID, request.Expected.Path, target)
+				diagnostic := errorSummary(persistErr.Error())
+				if invalidateErr := d.queue.store.InvalidateCloudInventory(client.Fingerprint(), mutationCachePaths(request, target)); invalidateErr != nil {
+					result.Warning += "；本地缓存暂未能标为失效"
+					diagnostic += "; cache invalidation failed: " + errorSummary(invalidateErr.Error())
+				} else {
+					result.Warning += "；本地缓存已标为失效"
+				}
+				if evidenceErr := d.queue.store.RecordRemoteOperationPersistenceFailure(operationID, diagnostic, observed); evidenceErr != nil {
+					result.Warning += "；本地故障证据也未能持久化"
+				}
+			}
 			return result, fmt.Errorf("远端操作结果无法持久化: %w", persistErr)
 		}
 		result.Status = status
 		if status == "unknown" {
-			_ = d.queue.store.InvalidateCloudInventory(client.Fingerprint(), mutationCachePaths(request, target))
-			d.queue.mu.Lock()
-			if objectID > 0 {
-				d.queue.blockedRemoteIDs[objectID] = true
+			invalidateErr := d.queue.store.InvalidateCloudInventory(client.Fingerprint(), mutationCachePaths(request, target))
+			if invalidateErr != nil {
+				result.Warning = "远端操作结果未知，且本地目录缓存暂未能标为失效；重启后会重试缓存恢复"
+				if eventErr := d.queue.store.RecordRemoteCacheRefreshFailure(operationID, errorSummary(invalidateErr.Error())); eventErr != nil {
+					result.Warning += "；缓存失败原因未能写入本地事件记录"
+				}
+			} else if markerErr := d.queue.store.MarkRemoteOperationCacheRecoveryComplete(operationID); markerErr != nil {
+				result.Warning = "远端操作结果未知，目录缓存已失效，但恢复完成证据未能持久化；重启后会重试"
+				if eventErr := d.queue.store.RecordRemoteCacheRefreshFailure(operationID, errorSummary(markerErr.Error())); eventErr != nil {
+					result.Warning += "；缓存失败原因未能写入本地事件记录"
+				}
 			}
-			if request.Expected.Path != "" {
-				d.queue.blockedRemotePaths[request.Expected.Path] = true
-			}
-			if target != "" {
-				d.queue.blockedRemotePaths[target] = true
-			}
-			d.queue.mu.Unlock()
+			d.quarantineCloudMutationSource(objectID, request.Expected.Path, target)
 			if files, checkErr := client.ListDir(queueDir); checkErr == nil {
 				_ = d.queue.reconcileObserved(files, epoch, time.Now().UTC())
 			}
@@ -185,18 +232,108 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 	if err = d.queue.store.UpdateRemoteOperation(operationID, "confirmed", evidence, responseAt); err != nil {
 		return result, fmt.Errorf("远端操作已成功，但结果无法持久化: %w", err)
 	}
-	if err = d.queue.store.InvalidateCloudInventory(client.Fingerprint(), mutationCachePaths(request, target)); err != nil {
-		return result, fmt.Errorf("远端操作已确认，目录缓存失效标记失败: %w", err)
+	result.Status = "confirmed"
+	mutation := taskstore.CloudInventoryMutation{OperationID: operationID, Operation: request.Operation, ResponseObservedAtUTC: responseAt}
+	if request.Operation != "mkdir" {
+		mutation.Before = cloudInventoryEntry(beforeInfo)
+	}
+	var observationErr error
+	cacheRecoveryDurable := true
+	var afterInfo baiduapi.FileInfo
+	var identityObservedAt time.Time
+	switch request.Operation {
+	case "mkdir":
+		var entries []baiduapi.FileInfo
+		entries, observationErr = client.ListDir(request.DestinationDirectory)
+		if observationErr == nil {
+			matches := make([]baiduapi.FileInfo, 0, 1)
+			for _, entry := range entries {
+				if entry.Path == target && entry.ServerFilename == path.Base(target) && entry.IsDir == 1 {
+					matches = append(matches, entry)
+				}
+			}
+			if len(matches) != 1 {
+				observationErr = fmt.Errorf("无法唯一确认新建目录身份")
+			} else {
+				mutation.After = cloudInventoryEntry(matches[0])
+			}
+		}
+	case "rename", "move":
+		afterInfo, observationErr = client.GetFileInfo(request.Expected.FsID)
+		if observationErr == nil {
+			if afterInfo.FsID != request.Expected.FsID || afterInfo.Path != target || afterInfo.ServerFilename != path.Base(target) || afterInfo.IsDir != beforeInfo.IsDir {
+				observationErr = fmt.Errorf("网盘操作后的对象身份或目标路径与请求不符")
+			} else {
+				mutation.After = cloudInventoryEntry(afterInfo)
+				identityObservedAt = time.Now().UTC()
+			}
+		}
+	}
+	if observationErr == nil {
+		var applied bool
+		applied, err = d.queue.store.ApplyConfirmedCloudMutation(account, mutation)
+		if err != nil {
+			observationErr = err
+		} else if !applied {
+			observationErr = fmt.Errorf("本地缓存覆盖或对象身份条件不满足")
+		}
+	}
+	if observationErr != nil {
+		invalidateErr := d.queue.store.InvalidateCloudInventory(account, mutationCachePaths(request, target))
+		cacheRecoveryDurable = invalidateErr == nil
+		result.Warning = "网盘操作已确认，但本地目录缓存未能增量更新，请重新核对或执行全盘扫描"
+		diagnostic := errorSummary(observationErr.Error())
+		if invalidateErr != nil {
+			result.Warning += "；缓存失效标记也失败：" + errorSummary(invalidateErr.Error())
+			diagnostic += "; cache invalidation failed: " + errorSummary(invalidateErr.Error())
+		}
+		if eventErr := d.queue.store.RecordRemoteCacheRefreshFailure(operationID, diagnostic); eventErr != nil {
+			result.Warning += "；缓存失败原因未能写入本地事件记录：" + errorSummary(eventErr.Error())
+		}
+	}
+	if request.Operation == "rename" || request.Operation == "move" {
+		if err = d.queue.applyConfirmedCloudIdentityMutation(beforeInfo, afterInfo, operationID, responseAt, identityObservedAt); err != nil {
+			return result, fmt.Errorf("网盘操作已确认，但本地待执行任务身份更新失败: %w", err)
+		}
+	} else if request.Operation == "delete" {
+		if err = d.queue.cancelConfirmedCloudDelete(beforeInfo, operationID, responseAt); err != nil {
+			return result, fmt.Errorf("网盘删除已确认，但本地待执行任务取消记录失败: %w", err)
+		}
 	}
 	files, scanErr := client.ListDir(queueDir)
 	if scanErr == nil {
 		scanErr = d.queue.reconcileObserved(files, epoch, time.Now().UTC())
 	}
-	result.Status = "confirmed"
 	if scanErr != nil {
 		return result, fmt.Errorf("远端操作已确认，下载队列核对失败: %w", scanErr)
 	}
+	if cacheRecoveryDurable {
+		if err = d.queue.store.MarkRemoteOperationLocalReconciliationComplete(operationID); err != nil {
+			return result, fmt.Errorf("远端操作已确认，但本地同步完成证据无法持久化: %w", err)
+		}
+	}
 	return result, nil
+}
+
+func (d *Downloader) quarantineCloudMutationSource(objectID int64, sourcePath, targetPath string) {
+	d.queue.mu.Lock()
+	if objectID > 0 {
+		d.queue.blockedRemoteIDs[objectID] = true
+	}
+	if sourcePath != "" {
+		d.queue.blockedRemotePaths[sourcePath] = true
+	}
+	if targetPath != "" {
+		d.queue.blockedRemotePaths[targetPath] = true
+	}
+	d.queue.mu.Unlock()
+}
+
+func cloudInventoryEntry(info baiduapi.FileInfo) taskstore.CloudInventoryEntry {
+	return taskstore.CloudInventoryEntry{
+		FsID: info.FsID, Path: info.Path, Name: info.ServerFilename, Directory: info.IsDir == 1,
+		Size: info.Size, ProviderMtime: info.Mtime, ContentMD5: info.MD5,
+	}
 }
 
 func (d *Downloader) PreviewEmptyCloudDirectories(ctx context.Context) ([]taskstore.CloudInventoryEntry, error) {
@@ -211,7 +348,19 @@ func (d *Downloader) PreviewEmptyCloudDirectories(ctx context.Context) ([]taskst
 	if state.Status != "complete" {
 		return nil, fmt.Errorf("%w：全盘缓存扫描尚未完整，不能安全生成空目录清理候选", ErrIntakeConflict)
 	}
-	return d.queue.store.ListCompleteEmptyCloudDirectories(client.Fingerprint())
+	items, err := d.queue.store.ListCompleteEmptyCloudDirectories(client.Fingerprint())
+	if err != nil {
+		return nil, err
+	}
+	queueDir := d.QueueDirectory()
+	filtered := items[:0]
+	for _, item := range items {
+		if insideCloud(item.Path, queueDir) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
 }
 
 func mutationCachePaths(request CloudMutationRequest, target string) []string {

@@ -24,9 +24,12 @@
                 <a href="/oauth" target="_blank" style="margin-left: 10px; color: #667eea; text-decoration: none;">🔑 OAuth管理</a>
                 <a href="/intake" style="margin-left: 10px; color: #667eea; text-decoration: none;">添加网盘项目</a>
                 <a href="/cloud" style="margin-left: 10px; color: #667eea; text-decoration: none;">网盘管理</a>
+                <a href="/monitor-history" style="margin-left: 10px; color: #667eea; text-decoration: none;">自动扫描历史</a>
+                <a href="/task-events" style="margin-left: 10px; color: #667eea; text-decoration: none;">任务事件历史</a>
                 <button type="button" onclick="logoutAdmin()">退出登录</button>
             </div>
         </div>
+        <p id="monitor-status-text" class="monitor-status-text" role="status" aria-live="polite">正在读取云端目录监控状态…</p>
         <p style="font-size:13px;color:#666;">每 2 秒请求一次 /api/status 接口获取任务列表。</p>
         <div style="margin: 8px 0;">
             <span style="font-size: 13px; color: #666; margin-right: 10px;">排序:</span>
@@ -36,9 +39,22 @@
                 <option value="size">文件大小</option>
             </select>
         </div>
+        <div class="task-filter-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0;">
+            <label for="task-status-filter">状态筛选:</label>
+            <select id="task-status-filter">
+                <option value="">全部状态</option><option value="pending">等待中</option><option value="downloading">下载中</option>
+                <option value="paused">已暂停</option><option value="retry_wait">等待重试</option><option value="auth_wait">等待授权</option><option value="source_unknown">来源待核对</option>
+                <option value="failed">失败</option><option value="cancelled">已取消</option><option value="done">已完成</option>
+            </select>
+            <label for="task-search-query">路径/文件名:</label>
+            <input id="task-search-query" type="search" maxlength="256" placeholder="输入关键字后搜索">
+            <button type="button" id="task-search-button">搜索</button><button type="button" id="task-search-clear">清除筛选</button>
+        </div>
         <p style="font-size:13px;color:#666;">主站点（WebSocket 实时版）：<a href="/" target="_blank">/</a></p>
         <button type="button" id="scan-button" onclick="triggerScan()">立即扫描网盘队列</button>
         <p id="task-feedback" class="task-feedback" role="status" aria-live="polite"></p>
+        <p id="queue-health-alert" class="queue-health-alert" role="alert" hidden></p>
+        <div class="queue-pause-controls"><p id="queue-pause-status" role="status" aria-live="polite">正在读取下载队列状态…</p><button type="button" id="queue-pause-toggle" disabled>暂停下载队列</button><p id="queue-pause-feedback" role="status" aria-live="polite"></p></div>
     </div>
     <div class="tasks-container">
         <div class="task-pagination" style="display:flex;gap:12px;align-items:center;justify-content:center;padding:10px;">
@@ -53,14 +69,27 @@
 <script>
     // 添加全局变量存储排序方式，默认为文件名排序
     let currentSort = 'name';
+    let currentStatusFilter = '';
+    let currentTaskQuery = '';
+    let taskRequestID = 0;
+    let taskRequestsInFlight = 0;
     const taskPageSize = 100;
     let taskOffset = 0;
     let taskHasMore = false;
     let taskNextOffset = null;
+    let adminSessionExpiredPolling = false;
+    let taskPollTimer = null;
+    let healthPollTimer = null;
+    function stopAdminSessionPolling() {
+        adminSessionExpiredPolling = true;
+        if (taskPollTimer !== null) { clearInterval(taskPollTimer); taskPollTimer = null; }
+        if (healthPollTimer !== null) { clearInterval(healthPollTimer); healthPollTimer = null; }
+    }
+    globalThis.stopAdminSessionPolling = stopAdminSessionPolling;
 
     function updateTaskPageControls(data) {
         const page = Math.floor((data.offset || 0) / (data.limit || taskPageSize)) + 1;
-        document.getElementById('tasks-page').textContent = `第 ${page} 页 · 共 ${data.total_tasks ?? (data.tasks || []).length} 项`;
+        document.getElementById('tasks-page').textContent = `第 ${page} 页 · 匹配 ${data.total_tasks ?? (data.tasks || []).length} 项 / 全队列 ${data.queue_total_tasks ?? data.total_tasks ?? (data.tasks || []).length} 项`;
         document.getElementById('tasks-prev').disabled = (data.offset || 0) === 0;
         document.getElementById('tasks-next').disabled = !data.has_more;
         taskHasMore = data.has_more === true;
@@ -81,32 +110,72 @@
         taskOffset = 0;
         fetchStatus();
     }
+
+    function applyTaskFilters() {
+        const status = document.getElementById('task-status-filter').value;
+        const query = document.getElementById('task-search-query').value.trim();
+        if (Array.from(query).length > 128) { taskFeedback('搜索词最多 128 个字符。'); return; }
+        currentStatusFilter = status;
+        currentTaskQuery = query;
+        taskOffset = 0;
+        taskFeedback('');
+        fetchStatus();
+    }
+
+    function clearTaskFilters() {
+        document.getElementById('task-status-filter').value = '';
+        document.getElementById('task-search-query').value = '';
+        applyTaskFilters();
+    }
     
     // 检查 Token 状态
     async function checkTokenStatus() {
+        if (adminSessionExpiredPolling) return;
+        const requestID = beginHealthStatusRequest();
+        if (!requestID) return;
         try {
             const response = await fetch('/api/health');
+            if (!isLatestHealthStatusRequest(requestID) || adminSessionExpiredPolling) return;
             if (response.ok) {
                 const data = await response.json();
+                if (!isLatestHealthStatusRequest(requestID) || adminSessionExpiredPolling) return;
                 // HTTP connectivity and Baidu account readiness are distinct.
+                renderMonitorHealth(data);
                 document.getElementById('token-status-text').textContent = credentialStatusText(data.authentication);
                 document.getElementById('token-status-text').style.color = data.authentication?.ready ? '#0f5132' : '#842029';
             } else {
+                if (response.status === 401) adminSessionExpired();
+                renderMonitorHealth(null);
                 document.getElementById('token-status-text').textContent = '连接异常';
                 document.getElementById('token-status-text').style.color = '#842029';
             }
         } catch (error) {
+            if (!isLatestHealthStatusRequest(requestID) || adminSessionExpiredPolling) return;
+            renderMonitorHealth(null);
             document.getElementById('token-status-text').textContent = '无法连接';
             document.getElementById('token-status-text').style.color = '#842029';
+        } finally {
+            finishHealthStatusRequest(requestID);
         }
     }
     
-    async function fetchStatus() {
+    async function fetchStatus(isPeriodicPoll = false) {
+        if (adminSessionExpiredPolling || (isPeriodicPoll && taskRequestsInFlight > 0)) return;
+        taskRequestsInFlight++;
+        const requestID = ++taskRequestID;
+        const expectedOffset = taskOffset;
+        const expectedStatus = currentStatusFilter;
+        const expectedQuery = currentTaskQuery;
         try {
-            const query = new URLSearchParams({offset:String(taskOffset), limit:String(taskPageSize), sort_by:currentSort});
+            const query = new URLSearchParams({offset:String(expectedOffset), limit:String(taskPageSize), sort_by:currentSort});
+            if (expectedStatus) query.set('status', expectedStatus);
+            if (expectedQuery) query.set('q', expectedQuery);
             const res = await fetch('/api/status?' + query.toString());
-            if (!res.ok) throw new Error('获取任务状态失败');
+            if (!res.ok) { if (res.status === 401) adminSessionExpired(); throw new Error('获取任务状态失败'); }
             const data = await res.json();
+            if (requestID !== taskRequestID || expectedOffset !== taskOffset || expectedStatus !== currentStatusFilter || expectedQuery !== currentTaskQuery) return;
+            renderQueueHealth(data.queue_healthy);
+            renderQueuePause(data.queue_pause);
             const tasks = data.tasks || [];
             
             // The server selects a globally sorted page before sending it.
@@ -124,23 +193,33 @@
     ${t.speed && t.status === 'downloading' ? `<div>速度：${formatSpeed(t.speed)}</div>` : ''}
     ${t.local_path?`<div>本地：${escapeHTML(t.local_path)}</div>`:''}
     ${t.error?`<div style="color:#f5576c;">错误：${escapeHTML(t.error)}</div>`:''}
+    ${localStorageDiagnosticMarkup(t.local_storage)}
     ${taskControls(t)}
   </div>
   ${taskEventsControl(t)}
 </div>`).join('');
         } catch (e) {
+            if (requestID !== taskRequestID) return;
             document.getElementById('tasks-list').innerHTML = '<div class="empty" style="color:#f5576c;">获取状态失败</div>';
+            renderQueueUnavailable();
+        } finally {
+            taskRequestsInFlight--;
         }
     }
     
     // 页面加载时检查 Token 状态
     checkTokenStatus();
     bindTaskControls(fetchStatus);
+    bindQueuePauseControl(fetchStatus);
     document.getElementById('tasks-prev').addEventListener('click', () => changeTaskPage(-1));
     document.getElementById('tasks-next').addEventListener('click', () => changeTaskPage(1));
+    document.getElementById('task-status-filter').addEventListener('change', applyTaskFilters);
+    document.getElementById('task-search-button').addEventListener('click', applyTaskFilters);
+    document.getElementById('task-search-clear').addEventListener('click', clearTaskFilters);
+    document.getElementById('task-search-query').addEventListener('keydown', event => { if (event.key === 'Enter') applyTaskFilters(); });
     fetchStatus();
-    setInterval(fetchStatus, 2000);
-    setInterval(checkTokenStatus, 5000);
+    taskPollTimer = setInterval(() => fetchStatus(true), 2000);
+    healthPollTimer = setInterval(checkTokenStatus, 5000);
 </script>
 </body>
 </html>

@@ -33,6 +33,102 @@ func TestClientUsesSharedRequestPacerForProviderCalls(t *testing.T) {
 	}
 }
 
+func TestClientUsesSharedRequestPacerForAllReadOnlyMetadataCalls(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		body := `{"errno":0,"uk":123}`
+		switch r.URL.Query().Get("method") {
+		case "filemetas":
+			if r.URL.Query().Get("dlink") == "1" {
+				body = `{"errno":0,"list":[{"dlink":"https://download.invalid/file"}]}`
+			} else {
+				body = `{"errno":0,"list":[{"fs_id":123,"path":"/file.bin","server_filename":"file.bin"}]}`
+			}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	pacer := &countingRequestPacer{}
+	client := NewClient("token", "app").WithRequestPacer(pacer)
+	if _, err := client.GetFileInfo(123); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetDownloadLink(123); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.UserID(); err != nil {
+		t.Fatal(err)
+	}
+	if pacer.calls != 3 {
+		t.Fatalf("pacer calls=%d, want 3 for metadata, download-link and account reads", pacer.calls)
+	}
+}
+
+func TestGetDownloadLinkRequiresOneUsableFileEntry(t *testing.T) {
+	for _, body := range []string{
+		`{"errno":0,"list":[]}`,
+		`{"errno":0,"list":[{"dlink":"https://download.invalid/one"},{"dlink":"https://download.invalid/two"}]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			original := http.DefaultTransport
+			defer func() { http.DefaultTransport = original }()
+			http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			})
+			_, err := NewClient("token", "app").GetDownloadLink(123)
+			if !errors.Is(err, ErrFileMetadataMissing) {
+				t.Fatalf("missing or ambiguous download-link entry error=%v, want ErrFileMetadataMissing", err)
+			}
+		})
+	}
+}
+
+func TestGetDownloadLinkMissingURLIsClassifiedSeparately(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"errno":0,"list":[{"dlink":""}]}`)), Request: r}, nil
+	})
+	_, err := NewClient("token", "app").GetDownloadLink(123)
+	if !errors.Is(err, ErrDownloadLinkMissing) {
+		t.Fatalf("empty dlink error=%v, want ErrDownloadLinkMissing", err)
+	}
+}
+
+func TestRetryAfterParsesSecondsAndHTTPDateAndCapsWait(t *testing.T) {
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "seconds", value: "15", want: 15 * time.Second},
+		{name: "http date", value: now.Add(20 * time.Second).Format(http.TimeFormat), want: 20 * time.Second},
+		{name: "past date", value: now.Add(-time.Second).Format(http.TimeFormat), want: 0},
+		{name: "invalid", value: "soon", want: 0},
+		{name: "capped", value: "7200", want: time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryAfterDelay(tc.value, now); got != tc.want {
+				t.Fatalf("retryAfterDelay(%q)=%s, want %s", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRetryableHTTPErrorPreservesRetryAfter(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{"30"}}, Body: io.NopCloser(strings.NewReader("{}")), Request: r}, nil
+	})
+	_, _, err := NewClient("token", "app").ListDirPage("/", 0, 10)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !IsRetryable(err) || apiErr.RetryAfter < 29*time.Second || apiErr.RetryAfter > 30*time.Second {
+		t.Fatalf("rate-limit error did not preserve retry schedule: err=%v api=%+v", err, apiErr)
+	}
+}
+
 type apiTransport func(*http.Request) (*http.Response, error)
 
 func (f apiTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
@@ -49,8 +145,12 @@ func TestListDirReadsAllPages(t *testing.T) {
 			for id := int64(1); id <= 1000; id++ {
 				files = append(files, FileInfo{FsID: id})
 			}
-		} else if start == "1000" {
-			files = []FileInfo{{FsID: 1001}}
+		} else if start == "999" {
+			for id := int64(1000); id <= 1999; id++ {
+				files = append(files, FileInfo{FsID: id})
+			}
+		} else if start == "1998" {
+			files = []FileInfo{{FsID: 1999}, {FsID: 2000}, {FsID: 2001}}
 		} else {
 			t.Errorf("unexpected start %q", start)
 		}
@@ -58,8 +158,35 @@ func TestListDirReadsAllPages(t *testing.T) {
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(b))), Request: r}, nil
 	})
 	files, err := NewClient("test", "test").ListDir("/queue")
-	if err != nil || len(files) != 1001 || calls != 2 {
+	if err != nil || len(files) != 2001 || calls != 3 || files[0].FsID != 1 || files[len(files)-1].FsID != 2001 {
 		t.Fatalf("files=%d calls=%d err=%v", len(files), calls, err)
+	}
+}
+
+func TestListDirFailsClosedWhenPageBoundaryMoves(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		start := r.URL.Query().Get("start")
+		files := make([]FileInfo, 0, 1000)
+		if start == "0" {
+			for id := int64(1); id <= 1000; id++ {
+				files = append(files, FileInfo{FsID: id, Path: fmt.Sprintf("/queue/%04d", id), ServerFilename: fmt.Sprintf("%04d", id)})
+			}
+		} else if start == "999" {
+			// Simulate an insertion before the prior boundary between requests.
+			for id := int64(999); id <= 1998; id++ {
+				files = append(files, FileInfo{FsID: id, Path: fmt.Sprintf("/queue/%04d", id), ServerFilename: fmt.Sprintf("%04d", id)})
+			}
+		} else {
+			t.Errorf("unexpected start %q", start)
+		}
+		body, _ := json.Marshal(ListResponse{List: files})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: r}, nil
+	})
+	_, err := NewClient("test", "test").ListDir("/queue")
+	if !errors.Is(err, ErrDirectoryPageBoundaryMoved) {
+		t.Fatalf("drifting queue listing should be rejected before reconciliation, got %v", err)
 	}
 }
 
@@ -86,6 +213,59 @@ func TestListDirPageRequestsOnlyRequestedWindow(t *testing.T) {
 	}
 }
 
+func TestListDirPageWithBoundaryUsesExistingLookahead(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	calls := 0
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Query().Get("start") != "50" || r.URL.Query().Get("limit") != "3" {
+			t.Fatalf("unexpected listing query: %s", r.URL.RawQuery)
+		}
+		files := []FileInfo{
+			{FsID: 51, Path: "/queue/a", ServerFilename: "a"},
+			{FsID: 52, Path: "/queue/b", ServerFilename: "b"},
+			{FsID: 53, Path: "/queue/c", ServerFilename: "c"},
+		}
+		body, _ := json.Marshal(ListResponse{List: files})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: r}, nil
+	})
+	files, hasMore, boundary, err := NewClient("test", "test").ListDirPageWithBoundary("/queue", 50, 2)
+	if err != nil || len(files) != 2 || !hasMore || boundary == nil || boundary.FsID != 53 || calls != 1 {
+		t.Fatalf("files=%+v hasMore=%v boundary=%+v calls=%d err=%v", files, hasMore, boundary, calls, err)
+	}
+}
+
+func TestListDirPageDuplicateErrorExposesTypedFSID(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		body, _ := json.Marshal(ListResponse{List: []FileInfo{{FsID: 71}, {FsID: 72}, {FsID: 71}}})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: r}, nil
+	})
+	_, _, _, err := NewClient("test", "test").ListDirPageWithBoundary("/queue", 50, 2)
+	var duplicate *DuplicatePageItemError
+	if !errors.Is(err, ErrDuplicatePageItem) || !errors.As(err, &duplicate) || duplicate.FsID != 71 {
+		t.Fatalf("duplicate error=%v typed=%+v", err, duplicate)
+	}
+}
+
+func TestFullDirectoryListingBoundaryPageSupportsLargeOffsets(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Query().Get("start") != "1000001" || r.URL.Query().Get("limit") != "2" {
+			t.Fatalf("unexpected internal listing query: %s", r.URL.RawQuery)
+		}
+		body, _ := json.Marshal(ListResponse{List: []FileInfo{{FsID: 1000002}}})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: r}, nil
+	})
+	files, hasMore, boundary, err := NewClient("test", "test").listDirPageWithBoundary("/queue", 1000001, 1)
+	if err != nil || len(files) != 1 || files[0].FsID != 1000002 || hasMore || boundary != nil {
+		t.Fatalf("full listing boundary page rejected a large internal offset: files=%+v more=%v boundary=%+v err=%v", files, hasMore, boundary, err)
+	}
+}
+
 func TestGetFileInfoReadsCurrentIdentityByFSID(t *testing.T) {
 	original := http.DefaultTransport
 	defer func() { http.DefaultTransport = original }()
@@ -100,6 +280,20 @@ func TestGetFileInfoReadsCurrentIdentityByFSID(t *testing.T) {
 	got, err := NewClient("test", "app").GetFileInfo(123)
 	if err != nil || got != (FileInfo{FsID: 123, Path: "/queue/a.txt", ServerFilename: "a.txt", Size: 3, Mtime: 42}) {
 		t.Fatalf("metadata=%+v err=%v", got, err)
+	}
+}
+
+func TestGetFileInfoDerivesFilenameWhenProviderOmitsIt(t *testing.T) {
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+		info := FileInfo{FsID: 124, Path: "/queue/a.txt", Size: 3, Mtime: 42}
+		body, _ := json.Marshal(map[string]any{"errno": 0, "list": []FileInfo{info}})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: r}, nil
+	})
+	got, err := NewClient("test", "app").GetFileInfo(124)
+	if err != nil || got.ServerFilename != "a.txt" {
+		t.Fatalf("metadata=%+v err=%v; filename should derive from provider path", got, err)
 	}
 }
 
@@ -404,6 +598,29 @@ func TestDownloadRangeContract(t *testing.T) {
 				if string(b) != "def" {
 					t.Fatalf("body=%q", b)
 				}
+			}
+		})
+	}
+}
+
+func TestDownloadAPIErrorCarriesRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		wantMin     time.Duration
+	}{
+		{name: "seconds", value: "17", wantMin: 17 * time.Second},
+		{name: "HTTP date", value: time.Now().Add(17 * time.Second).UTC().Format(http.TimeFormat), wantMin: 16 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Retry-After", tc.value)
+				w.WriteHeader(http.StatusTooManyRequests)
+			}))
+			defer srv.Close()
+			_, _, err := NewClient("test", "test").DownloadFileWithRange(srv.URL, 0)
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.RetryAfter < tc.wantMin || apiErr.RetryAfter > 17*time.Second {
+				t.Fatalf("download API error=%#v, Retry-After=%v", err, apiErr)
 			}
 		})
 	}

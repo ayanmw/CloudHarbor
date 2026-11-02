@@ -49,7 +49,7 @@ func (c *Client) UserID() (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "uinfo", Status: resp.StatusCode}
+		return "", apiErrorFromResponse(c, "uinfo", resp, 0, false)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024+1))
 	if err != nil {
@@ -67,13 +67,13 @@ func (c *Client) UserID() (string, error) {
 		return "", fmt.Errorf("invalid uinfo response")
 	}
 	if result.ErrorCode != 0 {
-		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "uinfo", Status: resp.StatusCode, Code: result.ErrorCode}
+		return "", apiErrorFromResponse(c, "uinfo", resp, result.ErrorCode, false)
 	}
 	if result.Errno == nil {
 		return "", fmt.Errorf("uinfo response missing errno")
 	}
 	if *result.Errno != 0 {
-		return "", &APIError{tokenFingerprint: c.Fingerprint(), Operation: "uinfo", Status: resp.StatusCode, Code: *result.Errno, businessErrno: true}
+		return "", apiErrorFromResponse(c, "uinfo", resp, *result.Errno, true)
 	}
 	id, err := result.UK.Int64()
 	if err != nil || id <= 0 {

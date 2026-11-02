@@ -179,6 +179,19 @@ func Open(dir, scope string) (*Store, error) {
 		if err = json.Unmarshal(body, &m); err != nil || m.Scope != scope {
 			return nil, fmt.Errorf("queue manifest corrupt, unsupported, or bound to a different queue")
 		}
+		if m.Version < sqliteSchemaVersion && m.Version != 1 {
+			if recoveredDB, recoveryErr := openSQLiteExisting(filepath.Join(absolute, "queue.sqlite"), scope); recoveryErr == nil {
+				if closeErr := recoveredDB.Close(); closeErr != nil {
+					return nil, closeErr
+				}
+				m.Version = sqliteSchemaVersion
+				body, _ = json.Marshal(m)
+				if err = atomicWrite(manifestName, body); err != nil {
+					return nil, err
+				}
+				migrationAction = "recovered_manifest"
+			}
+		}
 		switch m.Version {
 		case 1:
 			migrationAction = "migrated_v1"
@@ -445,13 +458,160 @@ func Open(dir, scope string) (*Store, error) {
 			}
 		case 14:
 			migrationAction = "migrated_v14"
+		case 15:
+			migrationAction = "migrated_v15"
+		case 16:
+			migrationAction = "migrated_v16"
+		case 17:
+			migrationAction = "migrated_v17"
+		case 18:
+			migrationAction = "migrated_v18"
+		case 19:
+			migrationAction = "migrated_v19"
+		case 20:
+			migrationAction = "migrated_v20"
+		case 21:
+			migrationAction = "migrated_v21"
+		case 22:
+			migrationAction = "migrated_v22"
+		case 23:
+			migrationAction = "migrated_v23"
+		case 24:
+			migrationAction = "migrated_v24"
+		case 25:
+			migrationAction = "migrated_v25"
+		case 26:
+			migrationAction = "migrated_v26"
+		case 27:
+			migrationAction = "migrated_v27"
+		case 28:
+			migrationAction = "migrated_v28"
+		case 29:
+			migrationAction = "migrated_v29"
+		case 30:
+			migrationAction = "migrated_v30"
+		case 31:
+			migrationAction = "migrated_v31"
+		case 32:
+			migrationAction = "migrated_v32"
+		case 33:
+			migrationAction = "migrated_v33"
+		case 34:
+			migrationAction = "migrated_v34"
+		case 35:
+			migrationAction = "migrated_v35"
+		case 36:
+			migrationAction = "migrated_v36"
+		case 37:
+			migrationAction = "migrated_v37"
+		case 38:
+			migrationAction = "migrated_v38"
+		case 39:
+			migrationAction = "migrated_v39"
+		case 40:
+			migrationAction = "migrated_v40"
 		case sqliteSchemaVersion:
 		default:
 			return nil, fmt.Errorf("unsupported queue format version %d", m.Version)
 		}
-		if m.Version < sqliteSchemaVersion {
-			if err = migrateV14(s, scope); err != nil {
-				return nil, err
+		if m.Version < sqliteSchemaVersion && m.Version != 1 {
+			if m.Version < 20 {
+				if err = migrateV14(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV15(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV16(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV17(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV18(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV19(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV20(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV21(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV22(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV23(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV24(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV25(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV26(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV27(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV28(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV29(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV30(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV31(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV32(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV33(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV34(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV35(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV36(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV37(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV38(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV39(s, scope); err != nil {
+					return nil, err
+				}
+				if err = migrateV40(s, scope); err != nil {
+					return nil, err
+				}
+			} else {
+				migrations := []struct {
+					version int
+					apply   func(*Store, string) error
+				}{
+					{20, migrateV20}, {21, migrateV21}, {22, migrateV22}, {23, migrateV23},
+					{24, migrateV24}, {25, migrateV25}, {26, migrateV26}, {27, migrateV27}, {28, migrateV28}, {29, migrateV29}, {30, migrateV30}, {31, migrateV31}, {32, migrateV32}, {33, migrateV33}, {34, migrateV34}, {35, migrateV35}, {36, migrateV36}, {37, migrateV37}, {38, migrateV38}, {39, migrateV39}, {40, migrateV40},
+				}
+				for _, migration := range migrations {
+					if m.Version <= migration.version {
+						if err = migration.apply(s, scope); err != nil {
+							return nil, err
+						}
+					}
+				}
 			}
 		}
 	}

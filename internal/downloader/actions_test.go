@@ -50,3 +50,30 @@ func TestTaskActionSnapshotTracksEligibilityAndActiveCancellation(t *testing.T) 
 		t.Fatal("completed task offers cancellation")
 	}
 }
+
+func TestTaskActionsCannotChangeQueueDuringManagedPathUpdate(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	d.SetAuthentication(d.getClient(), true, time.Now().Add(time.Hour))
+	q := d.queue
+	cancelInfo := file(41, "cancel.txt", 1)
+	retryInfo := file(42, "retry.txt", 1)
+	cancelJob := &queueJob{Version: 1, Info: cancelInfo, Mode: DownloadModeKeep, Status: "pending"}
+	retryJob := &queueJob{Version: 1, Info: retryInfo, Mode: DownloadModeKeep, Status: "failed", Error: "previous failure", Attempts: 1}
+	q.mu.Lock()
+	q.jobs[cancelInfo.FsID] = cancelJob
+	q.jobs[retryInfo.FsID] = retryJob
+	q.eligible[retryInfo.FsID] = &retryInfo
+	q.mu.Unlock()
+	d.pathOperations.Lock()
+	defer d.pathOperations.Unlock()
+
+	if err := d.Cancel(cancelInfo.FsID); err != ErrTaskConflict {
+		t.Fatalf("cancel during a managed path update = %v, want conflict", err)
+	}
+	if err := d.Retry(retryInfo.FsID); err != ErrTaskConflict {
+		t.Fatalf("retry during a managed path update = %v, want conflict", err)
+	}
+	if cancelJob.Status != "pending" || retryJob.Status != "failed" || retryJob.Attempts != 1 || retryJob.Error != "previous failure" {
+		t.Fatalf("task actions changed the queue during maintenance: cancel=%+v retry=%+v", cancelJob, retryJob)
+	}
+}

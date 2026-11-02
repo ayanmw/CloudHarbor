@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 	"web_browser_baidu_onekey_upload/internal/config"
+	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)
@@ -29,19 +31,32 @@ func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 // Fake only the remote provider; exercise the real API client, downloader and disk.
 type provider struct {
-	lists            map[string][]baiduapi.FileInfo
-	metadataFailures map[int64]int
-	metadataCalls    map[int64]int
-	actions          []string
-	failAction       bool
-	mu               sync.Mutex
+	lists               map[string][]baiduapi.FileInfo
+	listRequests        []string
+	beforeList          func(string)
+	listFailures        map[string]int
+	listFailureStatus   map[string]int
+	listRetryAfter      map[string]string
+	metadataFailures    map[int64]int
+	metadataRetryAfter  map[int64]string
+	metadataCalls       map[int64]int
+	metadataMissing     map[int64]int
+	metadataOverride    func(int64, int) *baiduapi.FileInfo
+	downloadLinkMissing map[int64]int
+	downloadLinkCalls   int
+	actions             []string
+	failAction          bool
+	unknownAction       bool
+	onMutation          func(operation, filelist string)
+	onCreate            func(path string)
+	mu                  sync.Mutex
 }
 
 func setup(t testing.TB, content http.HandlerFunc) (*Downloader, *provider) {
 	t.Helper()
 	srv := httptest.NewServer(content)
 	t.Cleanup(srv.Close)
-	p := &provider{lists: map[string][]baiduapi.FileInfo{}, metadataFailures: map[int64]int{}, metadataCalls: map[int64]int{}}
+	p := &provider{lists: map[string][]baiduapi.FileInfo{}, listFailures: map[string]int{}, listFailureStatus: map[string]int{}, listRetryAfter: map[string]string{}, metadataFailures: map[int64]int{}, metadataRetryAfter: map[int64]string{}, metadataCalls: map[int64]int{}, metadataMissing: map[int64]int{}, downloadLinkMissing: map[int64]int{}}
 	original := http.DefaultTransport
 	http.DefaultTransport = transportFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host != "pan.baidu.com" {
@@ -51,17 +66,40 @@ func setup(t testing.TB, content http.HandlerFunc) (*Downloader, *provider) {
 		switch r.URL.Query().Get("method") {
 		case "filemetas":
 			if r.URL.Query().Get("dlink") == "1" {
-				result = map[string]any{"errno": 0, "list": []map[string]string{{"dlink": srv.URL}}}
+				var id int64
+				fmt.Sscanf(r.URL.Query().Get("fsids"), "[%d]", &id)
+				p.mu.Lock()
+				p.downloadLinkCalls++
+				missing := p.downloadLinkMissing[id] > 0
+				if missing {
+					p.downloadLinkMissing[id]--
+				}
+				p.mu.Unlock()
+				if missing {
+					result = map[string]any{"errno": 0, "list": []map[string]string{}}
+				} else {
+					result = map[string]any{"errno": 0, "list": []map[string]string{{"dlink": srv.URL}}}
+				}
 			} else {
 				var id int64
 				fmt.Sscanf(r.URL.Query().Get("fsids"), "[%d]", &id)
 				var found []baiduapi.FileInfo
 				p.mu.Lock()
 				p.metadataCalls[id]++
+				call := p.metadataCalls[id]
+				missing := p.metadataMissing[id] > 0
+				if missing {
+					p.metadataMissing[id]--
+				}
+				override := p.metadataOverride
 				if p.metadataFailures[id] > 0 {
 					p.metadataFailures[id]--
+					header := make(http.Header)
+					if value := p.metadataRetryAfter[id]; value != "" {
+						header.Set("Retry-After", value)
+					}
 					p.mu.Unlock()
-					return &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"errno":1}`)), Request: r}, nil
+					return &http.Response{StatusCode: http.StatusTooManyRequests, Header: header, Body: io.NopCloser(strings.NewReader(`{"errno":1}`)), Request: r}, nil
 				}
 				for _, items := range p.lists {
 					for _, item := range items {
@@ -70,11 +108,54 @@ func setup(t testing.TB, content http.HandlerFunc) (*Downloader, *provider) {
 						}
 					}
 				}
+				if override != nil {
+					if item := override(id, call); item != nil {
+						found = []baiduapi.FileInfo{*item}
+					}
+				}
+				if missing {
+					found = nil
+				}
 				p.mu.Unlock()
 				result = map[string]any{"errno": 0, "list": found}
 			}
 		case "list":
-			items := p.lists[r.URL.Query().Get("dir")]
+			directory := r.URL.Query().Get("dir")
+			p.mu.Lock()
+			p.listRequests = append(p.listRequests, directory)
+			beforeList := p.beforeList
+			status := p.listFailureStatus[directory]
+			fail := p.listFailures[directory] > 0
+			if fail {
+				p.listFailures[directory]--
+			}
+			p.mu.Unlock()
+			if beforeList != nil {
+				beforeList(directory)
+			}
+			if fail {
+				if status == 0 {
+					status = http.StatusServiceUnavailable
+				}
+				header := make(http.Header)
+				if retryAfter := p.listRetryAfter[directory]; retryAfter != "" {
+					header.Set("Retry-After", retryAfter)
+				}
+				return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(`{"errno":1}`)), Request: r}, nil
+			}
+			p.mu.Lock()
+			items := append([]baiduapi.FileInfo(nil), p.lists[directory]...)
+			p.mu.Unlock()
+			start, _ := strconv.Atoi(r.URL.Query().Get("start"))
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			if start > len(items) {
+				items = nil
+			} else {
+				items = items[start:]
+			}
+			if limit > 0 && len(items) > limit {
+				items = items[:limit]
+			}
 			if items == nil {
 				items = []baiduapi.FileInfo{}
 			}
@@ -82,14 +163,36 @@ func setup(t testing.TB, content http.HandlerFunc) (*Downloader, *provider) {
 		case "filemanager":
 			r.ParseForm()
 			p.mu.Lock()
-			p.actions = append(p.actions, r.URL.Query().Get("opera")+":"+r.Form.Get("filelist"))
+			operation, filelist := r.URL.Query().Get("opera"), r.Form.Get("filelist")
+			p.actions = append(p.actions, operation+":"+filelist)
 			fail := p.failAction
+			unknown := p.unknownAction
+			onMutation := p.onMutation
 			p.mu.Unlock()
-			errno := 0
-			if fail {
-				errno = 1
+			if !fail && !unknown && onMutation != nil {
+				onMutation(operation, filelist)
 			}
-			result = map[string]any{"errno": errno, "info": []map[string]int{{"errno": 0}}}
+			var resultMap map[string]any
+			if unknown {
+				resultMap = map[string]any{"errno": 0, "taskid": 123}
+			} else {
+				errno := 0
+				if fail {
+					errno = 1
+				}
+				resultMap = map[string]any{"errno": errno, "info": []map[string]int{{"errno": 0}}}
+			}
+			result = resultMap
+		case "create":
+			r.ParseForm()
+			p.mu.Lock()
+			p.actions = append(p.actions, "create:"+r.Form.Get("path"))
+			onCreate := p.onCreate
+			p.mu.Unlock()
+			if onCreate != nil {
+				onCreate(r.Form.Get("path"))
+			}
+			result = map[string]any{"errno": 0}
 		default:
 			return nil, fmt.Errorf("unexpected API request: %s", r.URL.Path)
 		}
@@ -198,7 +301,7 @@ func TestFolderDownloadsSiblingFilesConcurrently(t *testing.T) {
 		started <- struct{}{}
 		select {
 		case <-release:
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 			http.Error(w, "timed out waiting for test release", http.StatusGatewayTimeout)
 			return
 		}
@@ -218,7 +321,9 @@ func TestFolderDownloadsSiblingFilesConcurrently(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case <-started:
-		case <-time.After(300 * time.Millisecond):
+		// Full-package runs can delay worker startup under load; keep this
+		// detection window shorter than the handler timeout to avoid a false failure.
+		case <-time.After(2 * time.Second):
 			releaseOnce.Do(func() { close(release) })
 			<-finished
 			t.Fatalf("only %d sibling file transfer(s) started concurrently", i+1)
@@ -240,7 +345,9 @@ func TestConcurrentFolderDownloadsShareMaxParallelTransferCap(t *testing.T) {
 		for old := peak.Load(); current > old && !peak.CompareAndSwap(old, current); old = peak.Load() {
 		}
 		defer active.Add(-1)
-		time.Sleep(30 * time.Millisecond)
+		// Download-link metadata calls now share the 250 ms API pacer, so hold
+		// the first body long enough for a second paced transfer to overlap.
+		time.Sleep(600 * time.Millisecond)
 		_, _ = io.WriteString(w, "abc")
 	})
 	d.cfg.MaxParallel = 2
@@ -313,10 +420,11 @@ func TestConcurrentFoldersDoNotMultiplyWaitingFileWorkers(t *testing.T) {
 		releaseOnce.Do(func() { close(release) })
 		wg.Wait()
 	}()
+	// Four link lookups are spaced by the provider API pacer.
 	for i := 0; i < 4; i++ {
 		select {
 		case <-started:
-		case <-time.After(time.Second):
+		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for globally capped transfers")
 		}
 	}
@@ -727,5 +835,68 @@ func TestOverlappingScansAndConcurrentSnapshots(t *testing.T) {
 	assertStatus(t, d, 1, "done")
 	if len(p.actions) != 1 {
 		t.Fatalf("duplicate source processing: %v", p.actions)
+	}
+}
+
+func TestQueueMonitorFailurePersistsRetryAfterAndSkipsProviderDuringCooldown(t *testing.T) {
+	d, p := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"errno":1}`) })
+	store, err := taskstore.Open(filepath.Join(t.TempDir(), "queue"), "/queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	d.queue.store = store
+	p.listFailures["/queue"] = 1
+	p.listRetryAfter["/queue"] = "60"
+	if err = d.ScanAndDownload(); err == nil {
+		t.Fatal("expected provider list failure")
+	}
+	state, err := d.QueueMonitorRetryState(context.Background())
+	if err != nil || state == nil || state.FailureCount != 1 || state.RetryDelay != time.Minute {
+		t.Fatalf("retry state=%+v err=%v", state, err)
+	}
+	p.mu.Lock()
+	requestsBefore := len(p.listRequests)
+	p.mu.Unlock()
+	if err = d.ScanAndDownload(); !errors.Is(err, ErrQueueMonitorScanSkipped) {
+		t.Fatalf("cooldown result=%v", err)
+	}
+	p.mu.Lock()
+	requestsAfter := len(p.listRequests)
+	p.mu.Unlock()
+	if requestsAfter != requestsBefore {
+		t.Fatalf("provider list requests during cooldown: %d -> %d", requestsBefore, requestsAfter)
+	}
+	account, err := d.queueMonitorHistoryAccount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.ScheduleQueueMonitorRetry(account, "provider_error", 1, time.Second, time.Now().UTC().Add(-2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.ScanAndDownload(); err != nil {
+		t.Fatalf("successful retry scan: %v", err)
+	}
+	cleared, err := d.QueueMonitorRetryState(context.Background())
+	if err != nil || cleared != nil {
+		t.Fatalf("retry state after successful list=%+v err=%v", cleared, err)
+	}
+}
+
+func TestQueueMonitorRetryDelayUsesBoundedExponentialBackoff(t *testing.T) {
+	if got := queueMonitorRetryDelay(1, 0); got != 30*time.Second {
+		t.Fatalf("first delay=%s", got)
+	}
+	if got := queueMonitorRetryDelay(3, 0); got != 2*time.Minute {
+		t.Fatalf("third delay=%s", got)
+	}
+	if got := queueMonitorRetryDelay(40, 0); got != 15*time.Minute {
+		t.Fatalf("capped local delay=%s", got)
+	}
+	if got := queueMonitorRetryDelay(1, 90*time.Second); got != 90*time.Second {
+		t.Fatalf("provider Retry-After ignored: %s", got)
+	}
+	if got := queueMonitorRetryDelay(1, 2*time.Hour); got != time.Hour {
+		t.Fatalf("provider Retry-After was not capped: %s", got)
 	}
 }

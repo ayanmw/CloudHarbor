@@ -59,14 +59,33 @@ func cloneIntake(r intakeRecord) intakeRecord {
 	r.Items = append([]IntakeItem(nil), r.Items...)
 	return r
 }
+
+func intakePreviewValid(r intakeRecord, boot string, epoch uint64, now time.Time) bool {
+	return r.State == "preview" && r.Boot == boot && r.Epoch == epoch && now.Before(r.Expires)
+}
+
 func (d *Downloader) GetIntakes() []Intake {
+	d.clientMutex.RLock()
+	epoch := d.authEpoch
+	d.clientMutex.RUnlock()
+	now := time.Now()
+
 	d.intakeMutex.RLock()
 	defer d.intakeMutex.RUnlock()
 	result := make([]Intake, 0, len(d.intakes))
 	for _, r := range d.intakes {
-		result = append(result, cloneIntake(r).Intake)
+		copy := cloneIntake(r)
+		if copy.State == "preview" && !intakePreviewValid(copy, d.intakeBoot, epoch, now) {
+			copy.State = "expired"
+		}
+		result = append(result, copy.Intake)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Created.After(result[j].Created) })
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Created.Equal(result[j].Created) {
+			return result[i].ID > result[j].ID
+		}
+		return result[i].Created.After(result[j].Created)
+	})
 	return result
 }
 func (d *Downloader) refreshIntakeBlocks() {
@@ -135,20 +154,20 @@ func (d *Downloader) loadIntakes() error {
 	}
 	for id, body := range records {
 		var r intakeRecord
-		if json.Unmarshal(body, &r) != nil || r.ID != id || !validIntakeID(r.ID) || r.Version != 1 || r.QueueDir != d.QueueDirectory() || len(r.Items) < 1 || len(r.Items) > 20 || (r.Mode != DownloadModeKeep && r.Mode != DownloadModeDelete) || (r.State != "preview" && r.State != "running" && r.State != "finished") {
+		if json.Unmarshal(body, &r) != nil || r.ID != id || !validIntakeID(r.ID) || r.Version != 1 || !validCloudPath(r.QueueDir) || r.QueueDir == "/" || len(r.Items) < 1 || len(r.Items) > 20 || (r.Mode != DownloadModeKeep && r.Mode != DownloadModeDelete) || (r.State != "preview" && r.State != "running" && r.State != "finished") {
 			return fmt.Errorf("invalid intake record")
 		}
 		paths := make([]string, len(r.Items))
 		for i, item := range r.Items {
 			paths[i] = item.Source.Path
 		}
-		if validateIntakePaths(paths, d.QueueDirectory()) != nil {
+		if validateIntakePaths(paths, r.QueueDir) != nil {
 			return fmt.Errorf("invalid intake paths")
 		}
 		changed := r.State == "running"
 		for i := range r.Items {
 			item := &r.Items[i]
-			if item.Source.FsID <= 0 || item.Source.Size < 0 || (item.Source.IsDir != 0 && item.Source.IsDir != 1) || item.Source.ServerFilename != path.Base(item.Source.Path) || item.SourceID != fmt.Sprint(item.Source.FsID) || item.Target != intakeTarget(d.QueueDirectory(), item.Source.Path) {
+			if item.Source.FsID <= 0 || item.Source.Size < 0 || (item.Source.IsDir != 0 && item.Source.IsDir != 1) || item.Source.ServerFilename != path.Base(item.Source.Path) || item.SourceID != fmt.Sprint(item.Source.FsID) || item.Target != intakeTarget(r.QueueDir, item.Source.Path) {
 				return fmt.Errorf("invalid intake item identity")
 			}
 			switch item.State {

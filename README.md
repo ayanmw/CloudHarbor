@@ -145,7 +145,7 @@ docker run -d \
   -e BAIDU_APP_KEY=your_app_key \
   -e BAIDU_SECRET_KEY=your_secret_key \
   -e BAIDU_SIGN_KEY=your_sign_key \
-  -e ADMIN_PASSWORD=replace_with_a_password_of_at_least_16_bytes \
+  -e ADMIN_PASSWORD=replace_with_a_password_of_at_least_10_bytes \
   -v $(pwd)/downloads:/下载 \
   baidu-nas-downloader
 ```

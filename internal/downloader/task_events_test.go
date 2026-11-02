@@ -88,6 +88,24 @@ func TestCancelAndRetryPersistIntentEvents(t *testing.T) {
 		}
 	})
 
+	t.Run("cancel retry wait records removed deadline", func(t *testing.T) {
+		d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+		deadline := time.Date(2026, 11, 2, 4, 5, 6, 789, time.UTC)
+		job := &queueJob{Version: 1, Info: file(3, "retry-cancel.bin", 1), Mode: DownloadModeKeep, Status: "retry_wait", Attempts: 4, Failures: 2, NextAttempt: deadline}
+		store := seedEventJob(t, d, job)
+		if err := d.Cancel(job.Info.FsID); err != nil {
+			t.Fatal(err)
+		}
+		event, err := latestTaskEvent(t, store, job.Info.FsID, "task_cancelled")
+		if err != nil {
+			t.Fatal(err)
+		}
+		evidence := decodeEventEvidence(t, event)
+		if got := evidence["previous_next_attempt_at_utc"]; got != deadline.Format(time.RFC3339Nano) {
+			t.Fatalf("cancel event lost retry deadline: %#v", evidence)
+		}
+	})
+
 	t.Run("manual retry", func(t *testing.T) {
 		d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 		job := &queueJob{Version: 1, Info: file(2, "two.bin", 1), Mode: DownloadModeKeep, Status: "failed", Attempts: 3, Failures: 3}
@@ -106,6 +124,28 @@ func TestCancelAndRetryPersistIntentEvents(t *testing.T) {
 			t.Fatalf("retry evidence = %#v", evidence)
 		}
 	})
+}
+
+func TestRetryPersistenceFailurePreservesFailedTask(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	store := openEventStore(t, d)
+	info := file(4, "retry-persist-failure.bin", 42)
+	deadline := time.Now().UTC().Add(time.Hour)
+	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeKeep, Status: "failed", Attempts: 3, Failures: 2, Error: "previous download error", NextAttempt: deadline}
+	d.queue.jobs[info.FsID] = job
+	d.SetAuthentication(baiduapi.NewClient("retry-token", "app"), true, time.Now().Add(time.Hour))
+	d.queue.eligible[info.FsID] = &info
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Retry(info.FsID); err == nil {
+		t.Fatal("retry with closed SQLite store unexpectedly succeeded")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "closed") {
+		t.Fatalf("retry did not reach SQLite persistence failure: %v", err)
+	}
+	if job.Status != "failed" || job.Attempts != 3 || job.Failures != 2 || job.Error != "previous download error" || !job.NextAttempt.Equal(deadline) {
+		t.Fatalf("failed retry changed durable task projection in memory: %+v", job)
+	}
 }
 
 func TestAuthenticationWaitEventRecordsGateReasonAndProviderResponse(t *testing.T) {
@@ -249,7 +289,95 @@ func TestReconcilePersistsScanRecoveryAndMissingSourceEvidence(t *testing.T) {
 			if _, ok := evidence["cleared_retry_deadline_at_utc"].(string); !ok {
 				t.Fatalf("legacy deadline removal was not evidenced: %#v", evidence)
 			}
+		} else {
+			var evidence map[string]any
+			if err := json.Unmarshal(event.Evidence, &evidence); err != nil {
+				t.Fatal(err)
+			}
+			if evidence["monitored_queue_dir"] != "/queue" {
+				t.Fatalf("source-missing event must record the queue directory observed successfully: %#v", evidence)
+			}
 		}
+	}
+}
+
+func TestReconcileUpdatesUnstartedJobByFsIDWithoutResettingTaskPolicy(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	store := openEventStore(t, d)
+	created := time.Date(2026, 10, 30, 1, 2, 3, 0, time.UTC)
+	oldInfo := file(88, "old-name.bin", 13)
+	job := &queueJob{Version: 1, Info: oldInfo, Mode: DownloadModeDelete, Status: "pending", Created: created}
+	body, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Save(job.Info.FsID, body); err != nil {
+		t.Fatal(err)
+	}
+	d.queue.jobs[job.Info.FsID] = job
+	d.queue.started = true
+	d.SetAuthentication(baiduapi.NewClient("fresh-token", "app"), true, time.Now().Add(time.Hour))
+	observed := time.Date(2026, 10, 30, 2, 3, 4, 0, time.UTC)
+	newInfo := oldInfo
+	newInfo.Path = "/queue/new-name.bin"
+	newInfo.ServerFilename = "new-name.bin"
+	if err = d.queue.reconcileObserved([]baiduapi.FileInfo{newInfo}, d.authEpoch, observed); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.queue.jobs[oldInfo.FsID]; got != job || got.Info != newInfo || got.Mode != DownloadModeDelete || got.Created != created || got.Attempts != 0 || got.Failures != 0 {
+		t.Fatalf("same fs_id was recreated or task policy/history changed: %+v", got)
+	}
+	event, err := latestTaskEvent(t, store, oldInfo.FsID, "task_cloud_identity_updated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.CloudObservedAtUTC == nil || !event.CloudObservedAtUTC.Equal(observed) || event.OperationID != "" || event.EvidenceType != "successful_cloud_scan" {
+		t.Fatalf("scan identity evidence did not preserve its evidence source/time: %+v", event)
+	}
+	persisted, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored queueJob
+	if err = json.Unmarshal(persisted[oldInfo.FsID], &restored); err != nil || restored.Info != newInfo || restored.Mode != DownloadModeDelete || restored.Created != created {
+		t.Fatalf("updated task projection was not durable: %+v err=%v", restored, err)
+	}
+}
+
+func TestReconcileDoesNotReplacePreviouslyAttemptedJobAfterIdentityChange(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	store := openEventStore(t, d)
+	oldInfo := file(89, "attempted.bin", 13)
+	job := &queueJob{Version: 1, Info: oldInfo, Mode: DownloadModeKeep, Status: "retry_wait", Attempts: 2, Failures: 1}
+	body, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Save(job.Info.FsID, body); err != nil {
+		t.Fatal(err)
+	}
+	d.queue.jobs[job.Info.FsID] = job
+	d.queue.started = true
+	d.SetAuthentication(baiduapi.NewClient("fresh-token", "app"), true, time.Now().Add(time.Hour))
+	changed := oldInfo
+	changed.Path = "/queue/renamed-attempted.bin"
+	changed.ServerFilename = "renamed-attempted.bin"
+	if err = d.queue.reconcileObserved([]baiduapi.FileInfo{changed}, d.authEpoch, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.queue.jobs[oldInfo.FsID]; got != job || got.Info != oldInfo || got.Mode != DownloadModeKeep || got.Status != "retry_wait" || got.Attempts != 2 || got.Failures != 1 {
+		t.Fatalf("changed identity replaced/restarted an attempted task: %+v", got)
+	}
+	if job.candidate != nil {
+		t.Fatal("attempted task with mismatched source identity became runnable")
+	}
+	persisted, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored queueJob
+	if err = json.Unmarshal(persisted[oldInfo.FsID], &restored); err != nil || restored.Info != oldInfo || restored.Attempts != 2 || restored.Failures != 1 {
+		t.Fatalf("original attempted job was not durable: %+v err=%v", restored, err)
 	}
 }
 
@@ -309,6 +437,108 @@ func TestDownloadAttemptEventStoresClassAndFutureRetryTime(t *testing.T) {
 	parsed, err := time.Parse(time.RFC3339Nano, next)
 	if err != nil || !parsed.After(time.Now().Add(-time.Second)) || parsed.Location() != time.UTC || !parsed.Equal(job.NextAttempt.UTC()) {
 		t.Fatalf("retry time is not a future UTC timestamp: %q (%v)", next, err)
+	}
+}
+
+func TestDownloadAttemptPersistsLocalStorageEvidence(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	job := &queueJob{Version: 1, Info: file(1, "one.bin", 1), Mode: DownloadModeKeep, Status: "downloading", Attempts: 1}
+	store := seedEventJob(t, d, job)
+	checkedAt := time.Date(2026, 11, 1, 1, 2, 3, 0, time.UTC)
+	failure := &localStorageSpaceError{Kind: localStorageBlocked, Path: `D:\downloads`, RequiredBytes: 4096, AvailableBytes: 1024, ReservedBytes: 512, CheckedAtUTC: checkedAt}
+	d.queue.complete(job, failure)
+	event, err := latestTaskEvent(t, store, 1, "download_attempt_finished")
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := decodeEventEvidence(t, event)
+	if job.Status != "failed" || !job.NextAttempt.IsZero() {
+		t.Fatalf("storage failure status=%s next_attempt=%v; want terminal/manual retry", job.Status, job.NextAttempt)
+	}
+	if evidence["outcome_class"] != localStorageBlocked || evidence["error_class"] != "local_storage_insufficient" {
+		t.Fatalf("storage attempt classifications = %#v", evidence)
+	}
+	local, ok := evidence["local_storage"].(map[string]any)
+	if !ok || local["path"] != `D:\downloads` || local["required_bytes"] != float64(4096) || local["available_bytes"] != float64(1024) || local["reserved_bytes"] != float64(512) || local["checked_at_utc"] != checkedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("local storage evidence = %#v", evidence["local_storage"])
+	}
+	if event.ResponseObservedAtUTC != nil || event.CloudObservedAtUTC != nil || event.OccurredAtUTC != nil {
+		t.Fatalf("local capacity time was attributed to a provider or cloud observation: %+v", event)
+	}
+}
+
+func TestLocalStorageSummaryIsPersistedOnTaskAndClearedForRetry(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	job := &queueJob{Version: 1, Info: file(1, "one.bin", 1), Mode: DownloadModeKeep, Status: "downloading", Attempts: 1}
+	store := seedEventJob(t, d, job)
+	checkedAt := time.Date(2026, 11, 2, 1, 2, 3, 0, time.UTC)
+	failure := &localStorageSpaceError{Kind: localStorageBlocked, Path: `D:\downloads`, RequiredBytes: 4096, AvailableBytes: -1, ReservedBytes: 512, CheckedAtUTC: checkedAt}
+	d.queue.complete(job, failure)
+
+	page := d.GetTaskPage(0, 10, "name")
+	if len(page.Tasks) != 1 || page.Tasks[0].LocalStorage == nil {
+		t.Fatalf("failed task local storage summary = %+v", page.Tasks)
+	}
+	if page.Tasks[0].LocalStorage.Path != failure.Path || page.Tasks[0].LocalStorage.AvailableBytes != -1 || !page.Tasks[0].LocalStorage.CheckedAtUTC.Equal(checkedAt) {
+		t.Fatalf("task local storage summary = %+v", page.Tasks[0].LocalStorage)
+	}
+
+	// The same optional field must survive SQLite queue JSON and accept records
+	// written before the diagnostic existed.
+	var persisted queueJob
+	records, err := store.Load()
+	body := records[1]
+	if err != nil || json.Unmarshal(body, &persisted) != nil || persisted.LocalStorage == nil || persisted.LocalStorage.Path != failure.Path {
+		t.Fatalf("persisted local storage summary = %+v, load err=%v", persisted, err)
+	}
+	var legacy queueJob
+	if err := json.Unmarshal([]byte(`{"version":1,"file":{"fs_id":2},"mode":"keep","status":"failed"}`), &legacy); err != nil || legacy.LocalStorage != nil {
+		t.Fatalf("legacy queue job decode = %+v, err=%v", legacy, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d.queue.store = nil
+	restored, err := OpenDownloader(d.cfg, d.getClient())
+	if err != nil {
+		t.Fatalf("reopen downloader queue: %v", err)
+	}
+	defer shutdown(t, restored)
+	restartedPage := restored.GetTaskPage(0, 10, "name")
+	if len(restartedPage.Tasks) != 1 || restartedPage.Tasks[0].LocalStorage == nil || restartedPage.Tasks[0].LocalStorage.Path != failure.Path {
+		t.Fatalf("task local storage summary after restart = %+v", restartedPage.Tasks)
+	}
+
+	restored.SetAuthentication(baiduapi.NewClient("token", "app"), true, time.Now().Add(time.Hour))
+	restoredJob := restored.queue.jobs[1]
+	restored.queue.eligible[1] = &restoredJob.Info
+	if err := restored.Retry(1); err != nil {
+		t.Fatal(err)
+	}
+	if restoredJob.LocalStorage != nil {
+		t.Fatalf("manual retry retained stale local storage summary: %+v", restoredJob.LocalStorage)
+	}
+	restoredJob.Status = "downloading"
+	restoredJob.LocalStorage = localStorageDetails(failure)
+	restored.queue.complete(restoredJob, errors.New("unrelated transfer failure"))
+	if restoredJob.LocalStorage != nil {
+		t.Fatalf("non-storage failure retained stale local storage summary: %+v", restoredJob.LocalStorage)
+	}
+}
+
+func TestLocalStorageErrorsDoNotScheduleProviderRetry(t *testing.T) {
+	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
+	d.cfg.MaxRetries = 8
+	job := &queueJob{Version: 1, Info: file(1, "one.bin", 1), Mode: DownloadModeKeep, Status: "downloading", Attempts: 1}
+	store := seedEventJob(t, d, job)
+	d.queue.complete(job, &localStorageSpaceError{Kind: localStorageFull, Path: "downloads", RequiredBytes: 1, AvailableBytes: 0, CheckedAtUTC: time.Now().UTC()})
+	event, err := latestTaskEvent(t, store, 1, "download_attempt_finished")
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := decodeEventEvidence(t, event)
+	if job.Status != "failed" || job.Failures != 0 || evidence["outcome_class"] != localStorageFull || evidence["error_class"] != localStorageFull {
+		t.Fatalf("local storage error entered provider retry: job=%+v evidence=%#v", job, evidence)
 	}
 }
 

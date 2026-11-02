@@ -16,8 +16,8 @@ func (s *Store) AdministratorKey(configured string) (string, error) {
 		return "", os.ErrClosed
 	}
 	if configured != "" {
-		if len(configured) < 16 || len(configured) > 4096 {
-			return "", fmt.Errorf("ADMIN_PASSWORD must contain 16..4096 bytes")
+		if len(configured) < 10 || len(configured) > 4096 {
+			return "", fmt.Errorf("ADMIN_PASSWORD must contain 10..4096 bytes")
 		}
 		return configured, nil
 	}
@@ -30,8 +30,11 @@ func (s *Store) AdministratorKey(configured string) (string, error) {
 		Key     string `json:"key"`
 	}
 	if body != nil {
-		if json.Unmarshal(body, &record) != nil || record.Version != 1 || len(record.Key) != 43 {
+		if json.Unmarshal(body, &record) != nil || record.Version != 1 || len(record.Key) < 10 || len(record.Key) > 4096 {
 			return "", fmt.Errorf("invalid administrator key record")
+		}
+		if len(record.Key) != 43 {
+			return record.Key, nil
 		}
 		decoded, decodeErr := base64.RawURLEncoding.DecodeString(record.Key)
 		if decodeErr != nil || len(decoded) != 32 {

@@ -21,26 +21,29 @@ import (
 )
 
 type queueJob struct {
-	Version           int               `json:"version"`
-	Info              baiduapi.FileInfo `json:"file"`
-	Mode              DownloadMode      `json:"mode"`
-	Status            string            `json:"status"`
-	SourceState       string            `json:"source_state,omitempty"`
-	SourceOperationID string            `json:"source_operation_id,omitempty"`
-	SourceAttemptID   string            `json:"source_attempt_id,omitempty"`
-	Attempts          int               `json:"attempts"`
-	AttemptID         string            `json:"attempt_id,omitempty"`
-	Failures          int               `json:"failures"`
-	NextAttempt       time.Time         `json:"next_attempt,omitempty"`
-	Error             string            `json:"error,omitempty"`
-	Created           time.Time         `json:"created"`
-	Updated           time.Time         `json:"updated"`
+	Version           int                   `json:"version"`
+	Info              baiduapi.FileInfo     `json:"file"`
+	Mode              DownloadMode          `json:"mode"`
+	Status            string                `json:"status"`
+	SourceState       string                `json:"source_state,omitempty"`
+	SourceOperationID string                `json:"source_operation_id,omitempty"`
+	SourceAttemptID   string                `json:"source_attempt_id,omitempty"`
+	Attempts          int                   `json:"attempts"`
+	AttemptID         string                `json:"attempt_id,omitempty"`
+	Failures          int                   `json:"failures"`
+	NextAttempt       time.Time             `json:"next_attempt,omitempty"`
+	Error             string                `json:"error,omitempty"`
+	LocalStorage      *LocalStorageEvidence `json:"local_storage,omitempty"`
+	PausedFromStatus  string                `json:"paused_from_status,omitempty"`
+	Created           time.Time             `json:"created"`
+	Updated           time.Time             `json:"updated"`
 	candidate         *candidateEntry
 }
 
 const (
 	maxNewJobPersistenceBatch = 1024
 	retryClockRecheckInterval = 30 * time.Second
+	taskSourceMissingError    = "源项目已离开队列或已被标记；请核对网盘与本地结果，恢复源位置后手动重试"
 )
 
 type scheduler struct {
@@ -63,6 +66,8 @@ type scheduler struct {
 	wg                 sync.WaitGroup
 	started            bool
 	maintenance        bool
+	userPaused         bool
+	pauseUpdatedAtUTC  time.Time
 	activeChanged      chan struct{}
 	stopping           bool
 	err                error
@@ -169,9 +174,11 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 	}
 	if len(settings) > 0 {
 		var saved struct {
-			Mode         DownloadMode `json:"download_mode"`
-			QueueDir     string       `json:"managed_queue_dir,omitempty"`
-			LocalDownDir string       `json:"managed_local_download_dir,omitempty"`
+			Mode                DownloadMode `json:"download_mode"`
+			QueueDir            string       `json:"managed_queue_dir,omitempty"`
+			LocalDownDir        string       `json:"managed_local_download_dir,omitempty"`
+			QueuePaused         bool         `json:"queue_paused,omitempty"`
+			QueuePauseUpdatedAt time.Time    `json:"queue_pause_updated_at_utc,omitempty"`
 		}
 		if err = json.Unmarshal(settings, &saved); err != nil || (saved.Mode != "" && saved.Mode != DownloadModeKeep && saved.Mode != DownloadModeDelete) {
 			store.Close()
@@ -181,6 +188,8 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		if saved.Mode != "" {
 			d.downloadMode = saved.Mode
 		}
+		d.queue.userPaused = saved.QueuePaused
+		d.queue.pauseUpdatedAtUTC = saved.QueuePauseUpdatedAt.UTC()
 		if saved.QueueDir != "" && !cfg.QueueDirExplicit {
 			if !validCloudPath(saved.QueueDir) || saved.QueueDir == "/" {
 				store.Close()
@@ -199,10 +208,12 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 			d.localDownDir = local
 		}
 	}
-	if cfg.StateDir != "" && pathsOverlap(d.localDownDir, cfg.StateDir) {
-		store.Close()
-		d.cancel()
-		return nil, fmt.Errorf("local download path overlaps application state directory")
+	if cfg.StateDir != "" {
+		if err = validateLocalPathOutsideState(d.localDownDir, cfg.StateDir); err != nil {
+			store.Close()
+			d.cancel()
+			return nil, fmt.Errorf("invalid local download path: %w", err)
+		}
 	}
 	var recoveredJobs []*queueJob
 	var recoveryEvents []taskstore.Event
@@ -213,6 +224,13 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		mode, modeValid := canonicalJobMode(job.Mode)
 		if decodeErr != nil || job.Version != 1 || job.Info.FsID != id || !statusValid || !validSourceRecord(&job) || job.Attempts < 0 || job.Failures < 0 || !modeValid {
 			return fmt.Errorf("invalid persisted job %d", id)
+		}
+		if status == "paused" {
+			if job.SourceState != "" || (job.PausedFromStatus != "pending" && job.PausedFromStatus != "retry_wait" && job.PausedFromStatus != "downloading") {
+				return fmt.Errorf("invalid persisted paused job %d", id)
+			}
+		} else if job.PausedFromStatus != "" {
+			return fmt.Errorf("invalid persisted pause origin %d", id)
 		}
 		job.Status = status
 		job.Mode = mode
@@ -278,6 +296,8 @@ func canonicalJobStatus(status string) (string, bool) {
 		return "pending", true
 	case "downloading":
 		return "downloading", true
+	case "paused":
+		return "paused", true
 	case "retry_wait":
 		return "retry_wait", true
 	case "auth_wait":
@@ -317,6 +337,109 @@ func shareFileInfoStrings(info baiduapi.FileInfo) baiduapi.FileInfo {
 
 func retainFileInfo(info baiduapi.FileInfo) *baiduapi.FileInfo {
 	return &info
+}
+
+func canRebaseUnstartedJob(job *queueJob, active bool) bool {
+	return !active && job.SourceState == "" && job.SourceOperationID == "" && job.SourceAttemptID == "" &&
+		job.Attempts == 0 && job.Failures == 0 && (job.Status == "pending" || job.Status == "auth_wait" || job.Status == "paused")
+}
+
+func canResolveChangedSourceIdentity(job *queueJob, active bool) bool {
+	return !active && job.SourceState == "changed" && job.SourceOperationID == "" && job.SourceAttemptID == "" && job.Status == "failed"
+}
+
+func canRebaseReturnedSourceJob(job *queueJob, active bool) bool {
+	return !active && job.SourceState == "" && job.SourceOperationID == "" && job.SourceAttemptID == "" &&
+		job.Status == "failed" && job.Attempts == 0 && job.Failures == 0 && job.Error == taskSourceMissingError
+}
+
+func sameQueuedCloudContent(a, b baiduapi.FileInfo) bool {
+	if a.FsID != b.FsID || a.IsDir != b.IsDir {
+		return false
+	}
+	if a.IsDir == 1 {
+		return true
+	}
+	return a.Size == b.Size && a.Mtime == b.Mtime && (a.MD5 == "" || strings.EqualFold(a.MD5, b.MD5))
+}
+
+func queueIdentityEvidence(reason string, previousStatus string, previous, current baiduapi.FileInfo, attempts, failures int) json.RawMessage {
+	body, _ := json.Marshal(struct {
+		Reason         string            `json:"reason"`
+		PreviousStatus string            `json:"previous_status"`
+		PreviousInfo   baiduapi.FileInfo `json:"previous_info"`
+		CurrentInfo    baiduapi.FileInfo `json:"current_info"`
+		Attempts       int               `json:"attempts"`
+		Failures       int               `json:"failures"`
+	}{reason, previousStatus, previous, current, attempts, failures})
+	return body
+}
+
+// applyConfirmedCloudIdentityMutation keeps an untouched queue job attached to
+// the same provider object after its path changes. The caller already verified
+// the provider response and holds queue maintenance, so no worker can claim it.
+func (q *scheduler) applyConfirmedCloudIdentityMutation(before, after baiduapi.FileInfo, operationID string, responseObservedAt, cloudObservedAt time.Time) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job := q.jobs[before.FsID]
+	active := q.active[before.FsID] != nil
+	if job == nil || (!canRebaseUnstartedJob(job, active) && !canRebaseReturnedSourceJob(job, active)) ||
+		!sameQueuedCloudContent(job.Info, before) || before.FsID != after.FsID || before.IsDir != after.IsDir {
+		return nil
+	}
+	previous := job.Info
+	previousStatus, previousError, previousUpdated := job.Status, job.Error, job.Updated
+	if canRebaseReturnedSourceJob(job, active) {
+		job.Error = "网盘源项已重新进入监控目录，可手动重试"
+	}
+	q.removeCandidate(job)
+	job.Info = shareFileInfoStrings(after)
+	reason, evidenceType := "confirmed_cloud_mutation", "confirmed_cloud_mutation"
+	if previousError == taskSourceMissingError {
+		reason, evidenceType = "source_returned_after_confirmed_mutation", "source_returned_after_confirmed_mutation"
+	}
+	evidence := queueIdentityEvidence(reason, previousStatus, previous, job.Info, job.Attempts, job.Failures)
+	responseAt, observedAt := responseObservedAt.UTC(), cloudObservedAt.UTC()
+	event := taskstore.Event{Kind: "task_cloud_identity_updated", OperationID: operationID, ResponseObservedAtUTC: &responseAt, CloudObservedAtUTC: &observedAt, EvidenceType: evidenceType, Evidence: evidence}
+	if err := q.persistWithEvent(job, event); err != nil {
+		job.Info, job.Status, job.Error, job.Updated = previous, previousStatus, previousError, previousUpdated
+		return err
+	}
+	q.owner.taskCatalogGeneration.Add(1)
+	q.reflect(job)
+	return nil
+}
+
+func (q *scheduler) cancelConfirmedCloudDelete(info baiduapi.FileInfo, operationID string, responseObservedAt time.Time) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job := q.jobs[info.FsID]
+	if job == nil || !canRebaseUnstartedJob(job, q.active[info.FsID] != nil) || !sameQueuedCloudContent(job.Info, info) ||
+		job.Info.Path != info.Path || job.Info.ServerFilename != info.ServerFilename {
+		return nil
+	}
+	previousStatus, previousError, previousNext, previousUpdated := job.Status, job.Error, job.NextAttempt, job.Updated
+	previous := job.Info
+	job.Status = "cancelled"
+	job.Error = "网盘项目已由远端管理删除"
+	job.NextAttempt = time.Time{}
+	responseAt := responseObservedAt.UTC()
+	evidence, _ := json.Marshal(struct {
+		Reason         string            `json:"reason"`
+		PreviousStatus string            `json:"previous_status"`
+		Status         string            `json:"status"`
+		PreviousInfo   baiduapi.FileInfo `json:"previous_info"`
+		Attempts       int               `json:"attempts"`
+		Failures       int               `json:"failures"`
+	}{"confirmed_cloud_delete", previousStatus, job.Status, previous, job.Attempts, job.Failures})
+	if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_source_deleted_remotely", OperationID: operationID, ResponseObservedAtUTC: &responseAt, EvidenceType: "confirmed_cloud_delete", Evidence: evidence}); err != nil {
+		job.Status, job.Error, job.NextAttempt, job.Updated = previousStatus, previousError, previousNext, previousUpdated
+		return err
+	}
+	q.removeCandidate(job)
+	q.owner.taskCatalogGeneration.Add(1)
+	q.reflect(job)
+	return nil
 }
 
 func (q *scheduler) persist(job *queueJob) error {
@@ -382,8 +505,15 @@ func (q *scheduler) persistNewJobs(jobs []*queueJob, cloudObservedAt time.Time) 
 				return q.err
 			}
 		}
+		// Publish each committed batch immediately so a later batch failure
+		// cannot hide jobs that are already durable in SQLite from the task view.
+		for _, job := range jobs[start:end] {
+			q.jobs[job.Info.FsID] = job
+			q.owner.taskCatalogGeneration.Add(1)
+			q.reflect(job)
+		}
+		q.owner.taskStatsGeneration.Add(uint64(end - start))
 	}
-	q.owner.taskStatsGeneration.Add(uint64(len(jobs)))
 	return nil
 }
 
@@ -464,10 +594,15 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 	}
 	q.owner.clientMutex.RLock()
 	validScan := q.owner.authenticationReadyLocked() && q.owner.authEpoch == epoch
+	account := ""
+	if validScan {
+		account = q.owner.client.Fingerprint()
+	}
 	q.owner.clientMutex.RUnlock()
 	if !validScan {
 		return ErrAuthenticationWaiting
 	}
+	monitoredQueueDir := q.owner.QueueDirectory()
 	eligible := make(map[int64]*baiduapi.FileInfo)
 	newJobs := make([]*queueJob, 0)
 	seen := make(map[int64]struct{}, len(files))
@@ -487,17 +622,42 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 		}
 		seen[f.FsID] = struct{}{}
 		old := q.jobs[f.FsID]
-		if old != nil && old.Info == f {
-			eligible[f.FsID] = &old.Info
-			continue
-		}
-		// A provider may show the same ID under another name while its old
-		// mutation is unresolved. Preserve the journal and its original paths.
-		if old != nil && (old.SourceState == "sending" || old.SourceState == "unknown") {
-			eligible[f.FsID] = retainFileInfo(f)
-			continue
-		}
-		if old != nil && q.active[f.FsID] != nil {
+		if old != nil {
+			if old.Info == f {
+				eligible[f.FsID] = &old.Info
+				continue
+			}
+			resolveChangedSource := canResolveChangedSourceIdentity(old, q.active[f.FsID] != nil)
+			reactivateReturnedSource := canRebaseReturnedSourceJob(old, q.active[f.FsID] != nil) && sameQueuedCloudContent(old.Info, f)
+			if (canRebaseUnstartedJob(old, q.active[f.FsID] != nil) && sameQueuedCloudContent(old.Info, f)) || resolveChangedSource || reactivateReturnedSource {
+				previous, previousStatus := old.Info, old.Status
+				previousSourceState, previousError, previousNextAttempt, previousUpdated := old.SourceState, old.Error, old.NextAttempt, old.Updated
+				q.removeCandidate(old)
+				old.Info = f
+				reason := "successful_cloud_scan"
+				if resolveChangedSource {
+					reason = "resolved_changed_source_after_successful_scan"
+					old.SourceState = ""
+					old.Status = "pending"
+					old.Error = ""
+					old.NextAttempt = time.Time{}
+				} else if reactivateReturnedSource {
+					reason = "source_returned_after_successful_scan"
+					old.Error = "网盘源项已重新进入监控目录，可手动重试"
+				}
+				evidence := queueIdentityEvidence(reason, previousStatus, previous, f, old.Attempts, old.Failures)
+				observedAt := cloudObservedAt.UTC()
+				if err := q.persistWithEvent(old, taskstore.Event{Kind: "task_cloud_identity_updated", CloudObservedAtUTC: &observedAt, EvidenceType: "successful_cloud_scan", Evidence: evidence}); err != nil {
+					old.Info, old.Status, old.SourceState, old.Error, old.NextAttempt, old.Updated = previous, previousStatus, previousSourceState, previousError, previousNextAttempt, previousUpdated
+					return err
+				}
+				q.owner.taskCatalogGeneration.Add(1)
+				q.reflect(old)
+				eligible[f.FsID] = &old.Info
+				continue
+			}
+			// Preserve the original task policy/history when the same ID has
+			// changed content or the prior task is not safe to rebase.
 			eligible[f.FsID] = retainFileInfo(f)
 			continue
 		}
@@ -510,11 +670,6 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 	if err := q.persistNewJobs(newJobs, cloudObservedAt); err != nil {
 		return err
 	}
-	for _, job := range newJobs {
-		q.jobs[job.Info.FsID] = job
-		q.owner.taskCatalogGeneration.Add(1)
-		q.reflect(job)
-	}
 	q.eligible = eligible
 	q.clearCandidates()
 	for id, job := range q.jobs {
@@ -523,7 +678,7 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 			continue
 		}
 		if job.Status == "auth_wait" && eligible[id] != nil && *eligible[id] == job.Info && q.active[id] == nil {
-			previousStatus := job.Status
+			previousStatus, previousError, previousNextAttempt, previousUpdated := job.Status, job.Error, job.NextAttempt, job.Updated
 			var clearedRetryDeadline *time.Time
 			if !job.NextAttempt.IsZero() {
 				value := job.NextAttempt.UTC()
@@ -541,6 +696,7 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 			}{previousStatus, job.Status, "authentication_ready_after_successful_scan", epoch, clearedRetryDeadline})
 			observedAt := cloudObservedAt.UTC()
 			if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_recovered_after_scan", CloudObservedAtUTC: &observedAt, EvidenceType: "successful_cloud_scan", Evidence: evidence}); err != nil {
+				job.Status, job.Error, job.NextAttempt, job.Updated = previousStatus, previousError, previousNextAttempt, previousUpdated
 				return err
 			}
 			q.reflect(job)
@@ -550,20 +706,65 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 			continue
 		}
 		if job.Status == "pending" || job.Status == "retry_wait" || job.Status == "auth_wait" {
-			previousStatus := job.Status
+			queueRoot := path.Clean(q.owner.QueueDirectory())
+			jobPath := path.Clean(job.Info.Path)
+			insideQueue := jobPath == queueRoot || strings.HasPrefix(jobPath, strings.TrimSuffix(queueRoot, "/")+"/")
+			if q.store != nil && insideQueue && canRebaseUnstartedJob(job, q.active[id] != nil) {
+				receipt, err := q.store.ConfirmedRemoteDeleteForSource(account, job.Info.FsID, job.Info.Path, job.Created)
+				if err != nil {
+					return fmt.Errorf("读取已确认的远端删除凭据失败: %w", err)
+				}
+				if receipt != nil {
+					var prepared struct {
+						Expected baiduapi.FileInfo `json:"expected"`
+					}
+					if json.Unmarshal(receipt.PreparedEvidence, &prepared) == nil &&
+						receipt.AccountFingerprint == account && receipt.ObjectID == job.Info.FsID &&
+						receipt.SourcePath == job.Info.Path && prepared.Expected.Path == job.Info.Path &&
+						prepared.Expected.ServerFilename == job.Info.ServerFilename &&
+						sameQueuedCloudContent(job.Info, prepared.Expected) {
+						previousStatus, previousError, previousNext, previousUpdated := job.Status, job.Error, job.NextAttempt, job.Updated
+						previous := job.Info
+						job.Status = "cancelled"
+						job.Error = "网盘项目已由远端管理删除"
+						job.NextAttempt = time.Time{}
+						responseAt := receipt.ResponseObservedAtUTC.UTC()
+						evidence, _ := json.Marshal(struct {
+							Reason         string            `json:"reason"`
+							PreviousStatus string            `json:"previous_status"`
+							Status         string            `json:"status"`
+							PreviousInfo   baiduapi.FileInfo `json:"previous_info"`
+							Attempts       int               `json:"attempts"`
+							Failures       int               `json:"failures"`
+						}{"recovered_confirmed_cloud_delete", previousStatus, job.Status, previous, job.Attempts, job.Failures})
+						if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_source_deleted_remotely", OperationID: receipt.OperationID, ResponseObservedAtUTC: &responseAt, EvidenceType: "confirmed_cloud_delete_recovered", Evidence: evidence}); err != nil {
+							job.Status, job.Error, job.NextAttempt, job.Updated = previousStatus, previousError, previousNext, previousUpdated
+							return err
+						}
+						q.removeCandidate(job)
+						q.owner.taskCatalogGeneration.Add(1)
+						q.reflect(job)
+						continue
+					}
+				}
+			}
+			previousStatus, previousError, previousNext, previousUpdated := job.Status, job.Error, job.NextAttempt, job.Updated
 			job.Status = "failed"
-			job.Error = "源项目已离开队列或已被标记；请核对网盘与本地结果，恢复源位置后手动重试"
+			job.Error = taskSourceMissingError
 			job.NextAttempt = time.Time{}
 			evidence, _ := json.Marshal(struct {
-				PreviousStatus string `json:"previous_status"`
-				Status         string `json:"status"`
-				Reason         string `json:"reason"`
-				ScanEpoch      uint64 `json:"scan_epoch"`
-				Attempts       int    `json:"attempts"`
-				Failures       int    `json:"failures"`
-			}{previousStatus, job.Status, "source_not_eligible_after_successful_scan", epoch, job.Attempts, job.Failures})
+				PreviousStatus    string `json:"previous_status"`
+				Status            string `json:"status"`
+				Reason            string `json:"reason"`
+				ScanEpoch         uint64 `json:"scan_epoch"`
+				MonitoredQueueDir string `json:"monitored_queue_dir"`
+				Attempts          int    `json:"attempts"`
+				Failures          int    `json:"failures"`
+			}{previousStatus, job.Status, "source_not_eligible_after_successful_scan", epoch, monitoredQueueDir, job.Attempts, job.Failures})
 			observedAt := cloudObservedAt.UTC()
 			if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_source_missing", CloudObservedAtUTC: &observedAt, EvidenceType: "successful_cloud_scan", Evidence: evidence}); err != nil {
+				job.Status, job.Error, job.NextAttempt, job.Updated = previousStatus, previousError, previousNext, previousUpdated
+				q.reflect(job)
 				return err
 			}
 			q.reflect(job)
@@ -591,7 +792,7 @@ func (q *scheduler) claim() (*queueJob, context.Context, time.Duration) {
 func (q *scheduler) claimAt(now time.Time) (*queueJob, context.Context, time.Duration) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.stopping || q.maintenance || q.err != nil || q.owner.ctx.Err() != nil {
+	if q.stopping || q.maintenance || q.userPaused || q.err != nil || q.owner.ctx.Err() != nil {
 		return nil, nil, 0
 	}
 	if !q.owner.AuthenticationReady() {
@@ -619,15 +820,20 @@ func (q *scheduler) claimAt(now time.Time) (*queueJob, context.Context, time.Dur
 		q.owner.cancel()
 		return nil, nil, 0
 	}
+	previousStatus, previousAttempts, previousAttemptID := chosen.Status, chosen.Attempts, chosen.AttemptID
+	previousNextAttempt, previousError, previousStorage, previousUpdated := chosen.NextAttempt, chosen.Error, chosen.LocalStorage, chosen.Updated
 	chosen.Status = "downloading"
 	chosen.Attempts++
 	chosen.AttemptID = attemptID
 	chosen.NextAttempt = time.Time{}
+	chosen.LocalStorage = nil
 	attemptEvidence, _ := json.Marshal(struct {
 		Attempt int    `json:"attempt"`
 		Status  string `json:"status"`
 	}{chosen.Attempts, chosen.Status})
 	if err := q.persistWithEvent(chosen, taskstore.Event{Kind: "download_attempt_started", AttemptID: attemptID, EvidenceType: "local_scheduler_claim", Evidence: attemptEvidence}); err != nil {
+		chosen.Status, chosen.Attempts, chosen.AttemptID = previousStatus, previousAttempts, previousAttemptID
+		chosen.NextAttempt, chosen.Error, chosen.LocalStorage, chosen.Updated = previousNextAttempt, previousError, previousStorage, previousUpdated
 		return nil, nil, 0
 	}
 	ctx, cancel := context.WithCancel(q.owner.ctx)
@@ -686,6 +892,7 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 	delete(q.owner.inFlight, id)
 	q.owner.taskMutex.Unlock()
 	job := q.jobs[id]
+	previouslyPersisted := *job
 	if job.SourceState == "sending" || job.SourceState == "unknown" {
 		job.SourceState = "unknown"
 		job.Status = "source_unknown"
@@ -694,6 +901,15 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 	} else if job.SourceState == "confirmed" {
 		job.Status = "done"
 		job.Error = ""
+	} else if job.Status == "paused" {
+		// A durable user pause outranks the context.Canceled result from the
+		// active transfer. Resume will retry interrupted work through the normal
+		// partial verification and scheduler path.
+		if job.PausedFromStatus == "downloading" {
+			job.PausedFromStatus = "pending"
+		}
+		job.Error = ""
+		job.NextAttempt = time.Time{}
 	} else if job.Status != "cancelled" {
 		job.Status = "done"
 		job.Error = ""
@@ -739,6 +955,10 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 			}
 		}
 	}
+	job.LocalStorage = nil
+	if job.Status == "failed" {
+		job.LocalStorage = localStorageDetails(err)
+	}
 	var nextAttempt *time.Time
 	if job.Status == "retry_wait" && !job.NextAttempt.IsZero() {
 		utc := job.NextAttempt.UTC()
@@ -754,24 +974,31 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 		}
 	}
 	resultEvidence, _ := json.Marshal(struct {
-		Status             string     `json:"status"`
-		OutcomeClass       string     `json:"outcome_class"`
-		Attempts           int        `json:"attempts"`
-		Failures           int        `json:"failures"`
-		SourceState        string     `json:"source_state,omitempty"`
-		NextAttemptAtUTC   *time.Time `json:"next_attempt_at_utc"`
-		ProviderOperation  string     `json:"provider_operation,omitempty"`
-		ProviderHTTPStatus int        `json:"provider_http_status,omitempty"`
-		ProviderErrorCode  int        `json:"provider_error_code,omitempty"`
-		ErrorClass         string     `json:"error_class,omitempty"`
-	}{job.Status, downloadOutcomeClass(job, err, q.stopping), job.Attempts, job.Failures, job.SourceState, nextAttempt, providerOperation, providerHTTPStatus, providerErrorCode, errorClass(err)})
+		Status             string                `json:"status"`
+		OutcomeClass       string                `json:"outcome_class"`
+		Attempts           int                   `json:"attempts"`
+		Failures           int                   `json:"failures"`
+		SourceState        string                `json:"source_state,omitempty"`
+		NextAttemptAtUTC   *time.Time            `json:"next_attempt_at_utc"`
+		ProviderOperation  string                `json:"provider_operation,omitempty"`
+		ProviderHTTPStatus int                   `json:"provider_http_status,omitempty"`
+		ProviderErrorCode  int                   `json:"provider_error_code,omitempty"`
+		ErrorClass         string                `json:"error_class,omitempty"`
+		LocalStorage       *LocalStorageEvidence `json:"local_storage,omitempty"`
+	}{job.Status, downloadOutcomeClass(job, err, q.stopping), job.Attempts, job.Failures, job.SourceState, nextAttempt, providerOperation, providerHTTPStatus, providerErrorCode, errorClass(err), localStorageDetails(err)})
 	if saveErr := q.persistWithEvent(job, taskstore.Event{Kind: "download_attempt_finished", AttemptID: executed.AttemptID, ResponseObservedAtUTC: responseObservedAt, EvidenceType: "local_attempt_result", Evidence: resultEvidence}); saveErr != nil {
-		job.Status = "failed"
-		job.Error = q.err.Error()
 		if job.SourceState == "sending" || job.SourceState == "unknown" {
 			job.Status = "source_unknown"
 			job.Error = ErrSourceOperationUnknown.Error() + "; " + q.err.Error()
+		} else if previouslyPersisted.SourceState == "confirmed" || previouslyPersisted.Status == "paused" || previouslyPersisted.Status == "cancelled" || previouslyPersisted.Status == "auth_wait" || previouslyPersisted.Status == "pending" {
+			*job = previouslyPersisted
+		} else {
+			job.Status = "failed"
+			job.Error = q.err.Error()
 		}
+	}
+	if executed.Info.IsDir == 1 && (job.Status == "paused" || (job.Status == "cancelled" && job.Error == "用户取消")) {
+		q.owner.reconcileInterruptedDirectoryTasks(job.Info, job.Status)
 	}
 	q.reflect(job)
 	q.enqueueCandidate(job)
@@ -820,6 +1047,13 @@ func (d *Downloader) EndMaintenance() {
 }
 
 func downloadOutcomeClass(job *queueJob, err error, stopping bool) string {
+	if job.Status == "paused" {
+		return "user_paused"
+	}
+	var storageErr *localStorageSpaceError
+	if errors.As(err, &storageErr) {
+		return storageErr.Kind
+	}
 	switch job.Status {
 	case "done":
 		return "succeeded"
@@ -859,6 +1093,18 @@ func errorClass(err error) string {
 	if err == nil {
 		return ""
 	}
+	var storageErr *localStorageSpaceError
+	if errors.As(err, &storageErr) {
+		switch storageErr.Kind {
+		case localStorageFull:
+			return localStorageFull
+		default:
+			if storageErr.AvailableBytes < 0 {
+				return "local_storage_space_unavailable"
+			}
+			return "local_storage_insufficient"
+		}
+	}
 	if apiError(err) != nil {
 		return "provider_api_error"
 	}
@@ -889,6 +1135,10 @@ var ErrTaskNotFound = errors.New("task not found")
 var ErrTaskConflict = errors.New("task cannot be changed in its current state")
 
 func (d *Downloader) Cancel(id int64) error {
+	if !d.pathOperations.TryRLock() {
+		return ErrTaskConflict
+	}
+	defer d.pathOperations.RUnlock()
 	q := d.queue
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -903,28 +1153,80 @@ func (d *Downloader) Cancel(id int64) error {
 		return ErrTaskConflict
 	}
 	previousStatus := job.Status
+	previousError, previousNext := job.Error, job.NextAttempt
+	previousPausedFrom, previousUpdated := job.PausedFromStatus, job.Updated
+	var previousNextUTC *time.Time
+	if !previousNext.IsZero() {
+		value := previousNext.UTC()
+		previousNextUTC = &value
+	}
 	attempts, failures := job.Attempts, job.Failures
 	job.Status = "cancelled"
 	job.Error = "用户取消"
 	job.NextAttempt = time.Time{}
+	job.PausedFromStatus = ""
 	evidence, _ := json.Marshal(struct {
-		PreviousStatus string `json:"previous_status"`
-		Status         string `json:"status"`
-		Attempts       int    `json:"attempts"`
-		Failures       int    `json:"failures"`
-		Reason         string `json:"reason"`
-	}{previousStatus, job.Status, attempts, failures, "user_request"})
+		PreviousStatus           string     `json:"previous_status"`
+		Status                   string     `json:"status"`
+		Attempts                 int        `json:"attempts"`
+		Failures                 int        `json:"failures"`
+		Reason                   string     `json:"reason"`
+		PreviousNextAttemptAtUTC *time.Time `json:"previous_next_attempt_at_utc,omitempty"`
+	}{previousStatus, job.Status, attempts, failures, "user_request", previousNextUTC})
 	if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_cancelled", EvidenceType: "local_user_action", Evidence: evidence}); err != nil {
+		job.Status, job.Error, job.NextAttempt = previousStatus, previousError, previousNext
+		job.PausedFromStatus, job.Updated = previousPausedFrom, previousUpdated
 		return err
 	}
 	q.removeCandidate(job)
 	if cancel := q.active[id]; cancel != nil {
 		cancel()
 	}
+	if job.Info.IsDir == 1 {
+		d.reconcileInterruptedDirectoryTasks(job.Info, "cancelled")
+	}
 	q.reflect(job)
 	return nil
 }
+
+// Reconcile only descendants interrupted by the user's root pause/cancel.
+// Child tasks are an in-memory view; the durable queue state remains on root.
+func (d *Downloader) reconcileInterruptedDirectoryTasks(root baiduapi.FileInfo, status string) {
+	prefix := strings.TrimSuffix(root.Path, "/") + "/"
+	changed := false
+	d.taskMutex.Lock()
+	for _, task := range d.tasks {
+		if !strings.HasPrefix(task.FileInfo.Path, prefix) {
+			continue
+		}
+		interrupted := task.Status == "failed" && task.Error == context.Canceled.Error()
+		if status == "paused" && interrupted {
+			task.Status = "paused"
+		} else if status == "cancelled" && (task.Status == "paused" || interrupted) {
+			task.Status = "cancelled"
+		} else {
+			continue
+		}
+		task.Error = ""
+		task.Speed = 0
+		if status == "cancelled" {
+			task.FinishTime = time.Now()
+		} else {
+			task.FinishTime = time.Time{}
+		}
+		changed = true
+	}
+	if changed {
+		d.taskStatsGeneration.Add(1)
+	}
+	d.taskMutex.Unlock()
+}
+
 func (d *Downloader) Retry(id int64) error {
+	if !d.pathOperations.TryRLock() {
+		return ErrTaskConflict
+	}
+	defer d.pathOperations.RUnlock()
 	q := d.queue
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -938,11 +1240,13 @@ func (d *Downloader) Retry(id int64) error {
 	}
 	previousStatus := job.Status
 	previousAttempts, previousFailures := job.Attempts, job.Failures
+	previousError, previousNext, previousStorage, previousUpdated := job.Error, job.NextAttempt, job.LocalStorage, job.Updated
 	job.Status = "pending"
 	job.Attempts = 0
 	job.Failures = 0
 	job.Error = ""
 	job.NextAttempt = time.Time{}
+	job.LocalStorage = nil
 	evidence, _ := json.Marshal(struct {
 		PreviousStatus   string `json:"previous_status"`
 		Status           string `json:"status"`
@@ -953,6 +1257,8 @@ func (d *Downloader) Retry(id int64) error {
 		Reason           string `json:"reason"`
 	}{previousStatus, job.Status, previousAttempts, job.Attempts, previousFailures, job.Failures, "manual_retry"})
 	if err := q.persistWithEvent(job, taskstore.Event{Kind: "task_retry_requested", EvidenceType: "local_user_action", Evidence: evidence}); err != nil {
+		job.Status, job.Attempts, job.Failures = previousStatus, previousAttempts, previousFailures
+		job.Error, job.NextAttempt, job.LocalStorage, job.Updated = previousError, previousNext, previousStorage, previousUpdated
 		return err
 	}
 	q.reflect(job)
@@ -964,11 +1270,15 @@ func (d *Downloader) Shutdown(ctx context.Context) error {
 	q := d.queue
 	q.shutdownOnce.Do(func() {
 		d.cancel()
+		d.localMigrationMu.Lock()
+		d.localMigrationShutdown = true
+		d.localMigrationMu.Unlock()
 		go func() {
 			q.mu.Lock()
 			q.stopping = true
 			q.mu.Unlock()
 			q.wg.Wait()
+			d.localMigrationWG.Wait()
 			if q.store != nil {
 				q.closeErr = q.store.Close()
 			}
@@ -986,4 +1296,12 @@ func (d *Downloader) QueueError() error {
 	d.queue.mu.Lock()
 	defer d.queue.mu.Unlock()
 	return d.queue.err
+}
+
+// QueueOperational reports whether the scheduler can accept and process queue work.
+// Keep the underlying persistence error private to health diagnostics.
+func (d *Downloader) QueueOperational() bool {
+	d.queue.mu.Lock()
+	defer d.queue.mu.Unlock()
+	return d.queue.err == nil && !d.queue.stopping && d.ctx.Err() == nil
 }

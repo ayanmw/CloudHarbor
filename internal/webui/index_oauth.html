@@ -34,18 +34,23 @@ body{font-family:system-ui,sans-serif;background:#f4f6fa;color:#243047;margin:0;
 <script>
 let deviceCode = null;
 let polling = null;
+let statusPollingTimer = null;
+function stopAdminSessionPolling() {
+    if (statusPollingTimer !== null) { clearInterval(statusPollingTimer); statusPollingTimer = null; }
+}
+globalThis.stopAdminSessionPolling = stopAdminSessionPolling;
 function safeBaiduURL(value) {
     try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password && (u.hostname === 'baidu.com' || u.hostname.endsWith('.baidu.com')) ? u.href : ''; } catch { return ''; }
 }
 function message(text) { document.getElementById('message').textContent = text; }
 async function request(path, body, signal) {
     const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body || {}), signal});
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new Error(response.status === 401 ? adminSessionExpired() : (await response.text()));
     return response.json();
 }
 async function updateStatus() {
     try {
-        const response = await fetch('/api/oauth/status'); if (!response.ok) throw new Error('状态查询失败');
+        const response = await fetch('/api/oauth/status'); if (!response.ok) { if (response.status === 401) { adminSessionExpired(); if (statusPollingTimer !== null) { clearInterval(statusPollingTimer); statusPollingTimer = null; } } throw new Error('状态查询失败'); }
         const auth = await response.json();
         document.getElementById('state').textContent = credentialStatusText(auth);
         document.getElementById('expiry').textContent = auth.expires_at ? new Date(auth.expires_at).toLocaleString() : '未知';
@@ -80,14 +85,14 @@ async function refreshCredential() {
     const button = document.getElementById('refresh'); button.disabled = true; message('正在续期并保存凭证…');
     try { await request('/api/oauth/refresh'); message('续期完成，后台将重新扫描任务。'); } catch (error) { message(error.message); } finally { updateStatus(); }
 }
-updateStatus(); setInterval(updateStatus, 5000);
+updateStatus(); statusPollingTimer = setInterval(updateStatus, 5000);
 async function loadAppConfig() {
     const note = document.getElementById('app-config-note');
     const form = document.getElementById('app-config-form');
     const masks = document.getElementById('app-config-masks');
     try {
         const response = await fetch('/api/app-config');
-        if (!response.ok) throw new Error('读取应用配置状态失败');
+        if (!response.ok) throw new Error(response.status === 401 ? adminSessionExpired() : '读取应用配置状态失败');
         const value = await response.json();
         form.hidden = !value.editable;
         masks.hidden = !value.configured;
@@ -101,7 +106,7 @@ async function loadAppConfig() {
             note.textContent = '应用凭证尚未配置，请检查 .env 或 queue 配置文件。';
         }
         document.getElementById('device').disabled = !value.configured;
-    } catch (_) { note.textContent = '无法读取应用配置状态'; }
+    } catch (error) { if (error.message !== '管理员登录已失效，请重新登录。') note.textContent = '无法读取应用配置状态'; }
 }
 document.getElementById('app-config-form').addEventListener('submit', async event => {
     event.preventDefault();
@@ -110,7 +115,7 @@ document.getElementById('app-config-form').addEventListener('submit', async even
     const button = document.getElementById('save-app-config'); button.disabled = true;
     try {
         const response = await fetch('/api/app-config', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});
-        if (!response.ok) throw new Error(await response.text());
+        if (!response.ok) throw new Error(response.status === 401 ? adminSessionExpired() : (await response.text()));
         form.reset();
         message('应用凭证已安全保存并立即启用。');
         await loadAppConfig();

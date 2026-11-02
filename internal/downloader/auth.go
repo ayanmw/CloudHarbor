@@ -93,7 +93,7 @@ func (q *scheduler) parkAuthenticationWaiting(reason string, cause error) {
 		if job.Status != "pending" && job.Status != "retry_wait" {
 			continue
 		}
-		previousStatus := job.Status
+		previousStatus, previousError, previousNext, previousUpdated := job.Status, job.Error, job.NextAttempt, job.Updated
 		var cancelledRetryDeadline *time.Time
 		if !job.NextAttempt.IsZero() {
 			value := job.NextAttempt.UTC()
@@ -124,6 +124,7 @@ func (q *scheduler) parkAuthenticationWaiting(reason string, cause error) {
 			event.ResponseObservedAtUTC = &observedAt
 		}
 		if q.persistWithEvent(job, event) != nil {
+			job.Status, job.Error, job.NextAttempt, job.Updated = previousStatus, previousError, previousNext, previousUpdated
 			return
 		}
 		q.reflect(job)
