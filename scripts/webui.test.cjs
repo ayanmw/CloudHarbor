@@ -1536,7 +1536,10 @@ test('cloud management page exposes live browsing, cache sizing, scan controls a
  assert.equal(scripts.length,1);
  new vm.Script(scripts[0]);
  assert.ok(html.includes('/api/cloud-inventory/size?dir='));
- assert.ok(html.includes('x.size_complete?formatBytes(x.size):\'缓存大小未完成\''));
+ const browser=page('index_cloud.html',[],{directory:'/', 'browse-source':'live'});
+ const row=vm.runInContext('cloudEntryMarkup',browser.context);
+ assert.match(row({directory:true,path:'/folder',name:'folder',size:42,size_complete:false},'live'),/未统计/);
+ assert.match(row({directory:true,path:'/folder',name:'folder',size:42,size_complete:true},'live'),/42 B/);
  assert.ok(html.includes('size:x.provider_size??x.size'));
  assert.ok(html.includes('d.cached_at_utc'));
  assert.ok(html.includes('云端最近观测'));
@@ -2205,7 +2208,7 @@ test('cloud browser switches to local cache explicitly, labels coverage and keep
 	assert.ok(!p.get('entries').innerHTML.includes('data-move='));
 	assert.ok(!p.get('entries').innerHTML.includes('data-delete='));
 	assert.match(p.get('entries').innerHTML,/42 B/,'cached directory should display its locally aggregated size');
-	assert.match(p.get('entries').innerHTML,/缓存大小未完成/,'incomplete cached directory size must not look complete');
+	assert.match(p.get('entries').innerHTML,/未统计/,'incomplete cached directory size must not look complete');
 	cached={directory:'/cached',entries:[{fs_id:701,path:'/cached/file.txt',name:'file.txt',directory:false,size:5}],metadata:{path:'/cached',status:'failed',observed_at_utc:null},total:1,offset:0,next_offset:null};
 	await vm.runInContext('browse()',p.context);
 	assert.match(p.get('browse-source-status').textContent,/缓存不完整（上次扫描失败）/);

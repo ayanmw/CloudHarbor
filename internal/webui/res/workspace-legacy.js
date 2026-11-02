@@ -21,7 +21,19 @@
   const first=cards[0];if(first)main.insertBefore(bar,first);
   select(new URLSearchParams(location.search).get('ui_tab')&&groups.some(g=>g[0]===new URLSearchParams(location.search).get('ui_tab'))?new URLSearchParams(location.search).get('ui_tab'):'files');
   const entries=document.getElementById('entries');
-  if(entries){const convert=()=>{const rows=[...entries.children].filter(n=>n.classList.contains('entry')&&n.tagName==='DIV');if(!rows.length)return;const table=document.createElement('table');table.className='workspace-file-table';table.innerHTML='<thead><tr><th>名称</th><th>信息</th><th>操作</th></tr></thead><tbody></tbody>';const tbody=table.querySelector('tbody');for(const entry of rows){const tr=document.createElement('tr');tr.className=entry.className;for(const attr of entry.attributes){if(attr.name!=='class')tr.setAttribute(attr.name,attr.value)}for(const child of [...entry.children]){const td=document.createElement('td');td.append(child);tr.append(td)}tbody.append(tr);entry.remove()}entries.append(table)};new MutationObserver(convert).observe(entries,{childList:true});convert()}
+  if(entries){
+   const convert=()=>{
+    if(entries.children.length===1&&entries.firstElementChild.matches('table.workspace-file-table')&&entries.childNodes.length===1)return;
+    const rows=[...entries.children].filter(n=>n.classList.contains('entry')&&n.tagName==='DIV');
+    const table=document.createElement('table');table.className='workspace-file-table';table.setAttribute('aria-label','网盘目录内容');
+    table.innerHTML='<thead><tr><th scope="col">名称</th><th scope="col">大小</th><th scope="col">操作</th></tr></thead><tbody></tbody>';
+    const tbody=table.querySelector('tbody');
+    for(const entry of rows){const tr=document.createElement('tr');tr.className=entry.className;for(const attr of entry.attributes){if(attr.name!=='class')tr.setAttribute(attr.name,attr.value)}for(const child of [...entry.children]){const td=document.createElement('td');td.append(child);tr.append(td)}tbody.append(tr)}
+    if(!rows.length){const row=tbody.insertRow(),cell=row.insertCell();cell.colSpan=3;cell.className='cloud-empty';cell.textContent=entries.textContent.trim()||'目录内容暂不可用，请刷新列表';cell.setAttribute('role','status')}
+    entries.replaceChildren(table);
+   };
+   new MutationObserver(convert).observe(entries,{childList:true});convert();
+  }
  }
  // Existing event delegation stays on each list container. Move its nodes
  // rather than copying HTML, retaining click handlers and escaped evidence.
