@@ -1,0 +1,164 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { JSDOM } from "jsdom";
+const html = await readFile(
+  new URL("../../internal/webui/app/index.html", import.meta.url),
+  "utf8",
+);
+const asset = html.match(/src="\/app\/(assets\/[^\"]+\.js)"/)[1];
+const bundle = await readFile(
+  new URL("../../internal/webui/app/" + asset, import.meta.url),
+  "utf8",
+);
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+const root = {
+  id: "9007199254740993",
+  name: "课程目录",
+  path: "/queue/课程目录",
+  local_path: "D:/Downloads/课程目录",
+  status: "downloading",
+  size: 1000,
+  progress: 500,
+  speed: 100,
+  files: 3,
+  folders: 4,
+  completed: 1,
+  active: 1,
+  prepared: true,
+  mode: "keep",
+  can_pause: true,
+  can_cancel: true,
+};
+const files = [
+  {
+    ...root,
+    id: "2",
+    name: "下载中.bin",
+    path: root.path + "/下载中.bin",
+    status: "downloading",
+    size: 600,
+    progress: 300,
+    can_pause: false,
+  },
+  {
+    ...root,
+    id: "3",
+    name: "待下载.bin",
+    path: root.path + "/待下载.bin",
+    status: "pending",
+    size: 200,
+    progress: 0,
+    can_pause: false,
+  },
+  {
+    ...root,
+    id: "4",
+    name: "已完成.bin",
+    path: root.path + "/已完成.bin",
+    status: "done",
+    size: 200,
+    progress: 200,
+    can_pause: false,
+  },
+];
+async function render() {
+  const dom = new JSDOM(html, {
+    url: "http://localhost/",
+    runScripts: "outside-only",
+  });
+  let fail = false;
+  const requests = [];
+  dom.window.setInterval = () => 1;
+  dom.window.clearInterval = () => {};
+  dom.window.fetch = async (url) => {
+    requests.push(String(url));
+    if (fail)
+      return { ok: false, status: 503, text: async () => "本地服务暂不可用" };
+    const u = new URL(url, "http://localhost");
+    let data;
+    if (u.pathname === "/api/health")
+      data = {
+        authentication: { ready: true },
+        queue_pause: { paused: false },
+        queue_healthy: true,
+      };
+    else {
+      const detail = !!u.searchParams.get("root"),
+        status = u.searchParams.get("status");
+      const all = detail ? files : [root],
+        items = status ? all.filter((t) => t.status === status) : all;
+      data = {
+        items,
+        root: detail ? root : null,
+        total: items.length,
+        root_count: 1,
+        counts: { downloading: 1, pending: 1, done: 1 },
+      };
+    }
+    return { ok: true, status: 200, json: async () => data };
+  };
+  dom.window.eval(bundle);
+  await tick();
+  await tick();
+  return {
+    dom,
+    requests,
+    setFailure: () => {
+      fail = true;
+    },
+  };
+}
+
+test("built Vue workspace opens a root detail, shows only file rows and filters completed files", async () => {
+  const { dom, requests } = await render();
+  try {
+    const doc = dom.window.document;
+    assert.equal(doc.querySelectorAll("tbody tr").length, 1);
+    doc.querySelector(".file-name").click();
+    await tick();
+    await tick();
+    assert.ok(requests.some((u) => u.includes("root=9007199254740993")));
+    assert.equal(doc.querySelectorAll("tbody tr").length, 3);
+    assert.match(doc.querySelector("tbody").textContent, /下载中.bin/);
+    assert.doesNotMatch(doc.querySelector("tbody").textContent, /4 个文件夹/);
+    const done = [...doc.querySelectorAll("[role=tab]")].find((t) =>
+      t.textContent.startsWith("已完成"),
+    );
+    done.click();
+    await tick();
+    await tick();
+    assert.equal(doc.querySelectorAll("tbody tr").length, 1);
+    assert.match(doc.querySelector("tbody").textContent, /已完成.bin/);
+    assert.ok(requests.some((u) => u.includes("status=done")));
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("failed refresh preserves visible data and disables queue and task mutation controls", async () => {
+  const { dom, setFailure } = await render();
+  try {
+    setFailure();
+    const doc = dom.window.document;
+    [...doc.querySelectorAll("button")]
+      .find((b) => b.textContent === "刷新")
+      .click();
+    await tick();
+    await tick();
+    assert.match(
+      doc.querySelector("[role=alert]").textContent,
+      /本地服务暂不可用/,
+    );
+    assert.equal(doc.querySelector("tbody .row-actions button").disabled, true);
+    assert.equal(
+      [...doc.querySelectorAll("button")].find(
+        (b) => b.textContent === "暂停队列",
+      ).disabled,
+      true,
+    );
+    assert.equal(doc.querySelectorAll("tbody tr").length, 1);
+  } finally {
+    dom.window.close();
+  }
+});

@@ -564,7 +564,8 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 		default:
 		}
 	})
-	mux.HandleFunc("/", ui.HandlePageWS)
+	mux.HandleFunc("/", ui.HandleWorkspace)
+	mux.HandleFunc("/app/", ui.HandleWorkspaceAssets)
 	mux.HandleFunc("/login", ui.HandlePageLogin)
 	mux.HandleFunc("/api/login", gate.HandleLogin)
 	mux.HandleFunc("/api/logout", gate.HandleLogout)
@@ -578,6 +579,8 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/task-events", ui.HandlePageTaskEvents)
 	mux.HandleFunc("/res/", ui.HandleRes)
 	mux.HandleFunc("/api/health", handleHealth)
+	mux.HandleFunc("/api/task-workspace", handleTaskWorkspace)
+	mux.HandleFunc("/api/download-settings", handleDownloadSettings)
 	mux.HandleFunc("/api/monitor-scans", intakeHTTP.HandleQueueMonitorScanRuns)
 	mux.HandleFunc("/api/monitor-scans/events", intakeHTTP.HandleQueueMonitorScanEvents)
 	mux.HandleFunc("/api/monitor-scans/{id}/export", intakeHTTP.HandleQueueMonitorScanExport)
@@ -708,6 +711,8 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"done":             doneCount,
 		"failed":           failedCount,
 		"scan_in_progress": scanInProgress.Load(),
+		"queue_pause":      dl.QueuePauseStatus(),
+		"queue_healthy":    dl.QueueOperational(),
 	}
 	if lastScanUnix.Load() == 0 {
 		response["last_scan_time"] = ""

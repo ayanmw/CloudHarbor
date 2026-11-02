@@ -19,28 +19,29 @@ import (
 )
 
 type Task struct {
-	FileInfo         baiduapi.FileInfo
-	Status           string // pending, downloading, done, failed
-	LocalPath        string
-	Error            string
-	StartTime        time.Time
-	FinishTime       time.Time
-	Progress         int64
-	LastProgress     int64
-	LastProgressTime time.Time
-	Speed            int64 // bytes/sec
-	ResumeSupported  bool
-	MD5              string // provider metadata only; not assumed to be a plain content MD5
-	Attempts         int
-	NextAttempt      time.Time
-	Root             bool
-	DownloadMode     DownloadMode
-	TaskID           string
-	CanCancel        bool
-	CanPause         bool
-	CanResume        bool
-	CanRetry         bool
-	LocalStorage     *LocalStorageEvidence `json:"local_storage,omitempty"`
+	FileInfo          baiduapi.FileInfo
+	Status            string // pending, downloading, done, failed
+	LocalPath         string
+	Error             string
+	StartTime         time.Time
+	FinishTime        time.Time
+	Progress          int64
+	LastProgress      int64
+	LastProgressTime  time.Time
+	Speed             int64 // bytes/sec
+	ResumeSupported   bool
+	MD5               string // provider metadata only; not assumed to be a plain content MD5
+	Attempts          int
+	NextAttempt       time.Time
+	Root              bool
+	DirectoryPrepared bool // current attempt finished enumerating and creating its local tree
+	DownloadMode      DownloadMode
+	TaskID            string
+	CanCancel         bool
+	CanPause          bool
+	CanResume         bool
+	CanRetry          bool
+	LocalStorage      *LocalStorageEvidence `json:"local_storage,omitempty"`
 }
 
 type TaskPage struct {
@@ -279,6 +280,7 @@ func (d *Downloader) beginTask(info baiduapi.FileInfo, local string) {
 	task := &Task{FileInfo: info, LocalPath: local, Status: "downloading", StartTime: time.Now(), LastProgressTime: time.Now(), ResumeSupported: true, MD5: info.MD5}
 	catalogChanged, statsChanged := true, true
 	if old := d.tasks[info.FsID]; old != nil {
+		task.DirectoryPrepared = old.DirectoryPrepared
 		catalogChanged = !old.Root || old.FileInfo != info
 		statsChanged = !old.Root && old.Status != task.Status
 		task.Attempts = old.Attempts
@@ -368,7 +370,7 @@ func (d *Downloader) runRoot(ctx context.Context, info baiduapi.FileInfo, mode D
 	return err
 }
 
-func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.FileInfo, relative string) error {
+func (d *Downloader) downloadPreparedFolder(ctx context.Context, info baiduapi.FileInfo, relative string, lists map[string][]baiduapi.FileInfo) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -381,14 +383,9 @@ func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.File
 		d.finish(info.FsID, err)
 		return err
 	}
-	client, _, err := d.authorizedClient(ctx)
-	if err != nil {
-		return err
-	}
-	children, err := client.ListDir(info.Path)
-	if err != nil {
-		d.finish(info.FsID, err)
-		return err
+	children, exists := lists[info.Path]
+	if !exists {
+		return fmt.Errorf("本地目录准备记录缺失")
 	}
 	var failures []error
 	files := make([]baiduapi.FileInfo, 0, len(children))
@@ -505,7 +502,7 @@ func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.File
 		}
 	}
 	for _, child := range directories {
-		if err = d.downloadLocalFolder(ctx, child, filepath.Join(relative, child.ServerFilename)); err != nil {
+		if err = d.downloadPreparedFolder(ctx, child, filepath.Join(relative, child.ServerFilename), lists); err != nil {
 			if errors.Is(err, ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(err) {
 				d.finish(info.FsID, err)
 				return err

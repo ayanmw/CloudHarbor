@@ -26,6 +26,12 @@ try {
     New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $stagingRoot | Out-Null
     Set-Location $repoRoot
+    npm --prefix frontend ci --no-fund --no-audit
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency install failed.' }
+    npm --prefix frontend run build
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
+    npm --prefix frontend test
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend interaction tests failed.' }
     $baseRevision = (git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read source revision.' }
     $status = @(git status --porcelain)

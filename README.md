@@ -4,6 +4,21 @@
 
 ## 项目简介
 
+### 新版下载工作台（preview.150）
+
+默认首页采用 Vue 3 + TypeScript，显示根任务总览；点击任务进入文件详情，支持状态筛选、搜索和分页。目录仅汇总数量，不再作为 0 B 文件传输行。网盘管理、路径设置、清理与历史使用统一导航和表格布局。
+
+前端资源由 Vite 编译后嵌入 Go 程序，运行不依赖 CDN 或 Node.js。修改前端或从源码重新生成资源时：
+
+```powershell
+npm --prefix frontend ci --no-fund --no-audit
+npm --prefix frontend run build
+npm --prefix frontend test
+go build .
+```
+
+发布脚本会自动完成前端构建和交互回归。`/poll` 保留兼容视图。旧版未持久保存的历史子文件明细不会被虚构为空目录；当前根任务完成记录仍保留。
+
 百度网盘 NAS 一键下载系统是一个自动化文件下载解决方案，专为 NAS 用户设计。通过油猴脚本和 Go 服务端的协同工作，实现从百度网盘到本地 NAS 的自动文件传输。
 
 ## 核心功能

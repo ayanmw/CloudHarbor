@@ -2,3 +2,5 @@
 downloads/
 *.log
 *.exe
+node_modules/
+.ui-review/
