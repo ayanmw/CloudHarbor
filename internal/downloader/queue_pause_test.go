@@ -85,6 +85,9 @@ func TestQueuePauseReadsLegacySettingsWithoutPauseFields(t *testing.T) {
 func TestQueuePauseStopsClaimsButKeepsMonitoringAndDoesNotClearMaintenance(t *testing.T) {
 	d, _ := setup(t, func(http.ResponseWriter, *http.Request) {})
 	openEventStore(t, d)
+	// Full-suite runs exposed a race between workers and this test's manual claims.
+	// Keep claims under test control; reconciliation must still maintain candidates.
+	d.queue.started = true
 	client := baiduapi.NewClient("token", "app")
 	d.SetAuthentication(client, true, time.Now().Add(time.Hour))
 	info := file(701, "queued.bin", 3)
@@ -125,11 +128,15 @@ func TestQueuePauseStopsClaimsButKeepsMonitoringAndDoesNotClearMaintenance(t *te
 		t.Fatalf("maintenance gate allowed a claim after resume: %+v", job)
 	}
 	d.EndMaintenance()
-	claimed, ctx, _ := d.queue.claimAt(time.Now())
-	if claimed == nil || claimed.Info.FsID != info.FsID || ctx == nil {
-		t.Fatalf("queue did not resume after both gates cleared: job=%+v ctx=%v", claimed, ctx)
+	want := map[int64]bool{info.FsID: true, newInfo.FsID: true}
+	for range 2 {
+		claimed, ctx, _ := d.queue.claimAt(time.Now())
+		if claimed == nil || ctx == nil || !want[claimed.Info.FsID] {
+			t.Fatalf("queue did not resume after both gates cleared: job=%+v ctx=%v", claimed, ctx)
+		}
+		delete(want, claimed.Info.FsID)
+		d.queue.complete(claimed, errors.New("test cleanup"))
 	}
-	d.queue.complete(claimed, errors.New("test cleanup"))
 }
 
 func TestQueuePausePersistenceFailureDoesNotChangeState(t *testing.T) {
