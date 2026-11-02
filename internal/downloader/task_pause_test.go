@@ -204,6 +204,18 @@ func TestPauseActiveDownloadPreservesPartialAndResumeUsesRange(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("download did not start")
 	}
+	// Flushing the provider response does not prove the client has written it.
+	// Pause only after the intended prefix is local, including under SQLite load.
+	prefixDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if task := d.GetTaskByFsID(info.FsID); task != nil && task.Progress == 4096 {
+			break
+		}
+		if time.Now().After(prefixDeadline) {
+			t.Fatal("client did not write the expected prefix before pause")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err := d.PauseTask(info.FsID); err != nil {
 		t.Fatal(err)
 	}
