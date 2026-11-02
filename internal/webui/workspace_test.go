@@ -53,3 +53,22 @@ func TestWorkspaceServesEmbeddedBundleAndLegacyShell(t *testing.T) {
 		t.Fatal("unknown route served workspace")
 	}
 }
+
+func TestCloudWorkspaceModulesAreEmbeddedAndServed(t *testing.T) {
+	s := NewServer(nil)
+	page := httptest.NewRecorder()
+	s.HandlePageCloud(page, httptest.NewRequest("GET", "/cloud", nil))
+	for _, module := range []struct{ file, symbol string }{
+		{"cloud_browse_route.js", "CloudBrowseRoute"}, {"cloud_properties.js", "CloudProperties"},
+		{"cloud_actions.js", "CloudActions"}, {"cloud_progress.js", "CloudProgress"}, {"cloud_scan_limits.js", "CloudScanLimits"},
+	} {
+		if !strings.Contains(page.Body.String(), `src="/res/`+module.file+`"`) {
+			t.Fatalf("cloud page omitted %s", module.file)
+		}
+		response := httptest.NewRecorder()
+		s.HandleRes(response, httptest.NewRequest("GET", "/res/"+module.file, nil))
+		if response.Code != 200 || !strings.Contains(response.Header().Get("Content-Type"), "javascript") || !strings.Contains(response.Body.String(), "globalThis."+module.symbol) {
+			t.Fatalf("embedded module %s: HTTP %d MIME %s", module.file, response.Code, response.Header().Get("Content-Type"))
+		}
+	}
+}

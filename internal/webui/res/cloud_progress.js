@@ -2,7 +2,7 @@
   const get = id => document.getElementById(id);
   const panel = get('cloud-progress'), body = get('cloud-progress-body');
   const states = new Map();
-  let minimised = false;
+  let minimised = false, lastMarkup = '';
   try { minimised = localStorage.getItem('nas:cloud-progress:minimised') === 'true'; } catch {}
   const relevant = s => s.worker_active || ((s.status === 'paused' || s.status === 'running') && s.pending_count > 0) || (s.status === 'failed' && s.run_id);
   const labels = { running: '扫描中', paused: '已暂停', failed: '扫描失败', complete: '已完成' };
@@ -15,7 +15,7 @@
     get('cloud-progress-toggle').textContent = minimised ? '展开' : '收起';
     get('cloud-progress-toggle').ariaExpanded = String(!minimised);
     get('cloud-progress-title').textContent = items.length ? `后台扫描 · ${items.some(([,s])=>s.unreadable)?'状态暂不可读':items.some(([,s])=>s.worker_active)?'运行中':'等待处理'}` : '后台扫描';
-    body.innerHTML = items.map(([kind,s]) => {
+    const markup = items.map(([kind,s]) => {
       const unavailable = s.unreadable;
       const active = !!s.worker_active;
       const title = kind === 'full' ? '全盘缓存扫描' : '目录缓存刷新';
@@ -23,6 +23,17 @@
       const controls = active ? `<button type="button" data-progress-kind="${kind}" data-progress-action="pause" ${unavailable?'disabled':''}>暂停</button>` : s.pending_count > 0 ? `<button type="button" data-progress-kind="${kind}" data-progress-action="resume" ${unavailable?'disabled':''}>${s.request_budget>0?'设置并继续':'继续'}</button>` : '';
       return `<section class="cloud-progress-item"><strong>${title} · ${status}</strong>${active&&!unavailable?'<progress aria-label="扫描中，总量尚未确定"></progress>':''}<p>${s.pages_processed||0} 页 · ${s.items_processed||0} 项 · 待扫 ${s.pending_count||0} 个目录</p><p class="truncate" title="${escapeHTML(s.current_directory||'')}">${escapeHTML(s.current_directory||s.root_path||'/')}</p><p>${escapeHTML(phases[s.phase]||'处理中')} · 请求 ${s.requests_used||0} / ${s.request_budget>0?s.request_budget:'不限次数'}</p>${s.retry_at_utc?`<p>下次重试 UTC ${escapeHTML(s.retry_at_utc)}</p>`:''}<div class="cloud-progress-actions">${controls}<button type="button" data-progress-kind="${kind}" data-progress-action="details">查看详情</button></div></section>`;
     }).join('');
+    // Polling must not repeatedly destroy a keyboard user's focused controls.
+    if (markup !== lastMarkup) {
+      const active = document.activeElement;
+      const focused = active && body.contains(active) ? active.closest('[data-progress-action]') : null;
+      const focus = focused ? { kind:focused.dataset.progressKind, action:focused.dataset.progressAction } : null;
+      body.innerHTML = markup; lastMarkup = markup;
+      if (focus) {
+        const next = body.querySelector(`[data-progress-kind="${focus.kind}"][data-progress-action="${focus.action}"]`);
+        (next && !next.disabled ? next : get('cloud-progress-toggle')).focus();
+      }
+    }
   }
   function update(kind, state) { states.set(kind, { ...state, unreadable: false }); render(); }
   function fail(kind) {

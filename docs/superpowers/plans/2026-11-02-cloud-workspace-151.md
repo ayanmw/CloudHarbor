@@ -37,7 +37,7 @@
   - Add optional validated limit mode without changing legacy request_budget=0 behavior.
   - Apply explicit finite/unlimited transitions and resume evidence atomically; preserve RequestsUsed and restart semantics.
   - Default UI to scan-to-completion, keep numeric limits in advanced controls and expose finite-to-unlimited explicitly.
-- [ ] 6. Review, release and verification.
+- [x] 6. Review, release and verification.
   - Review the whole change with fresh context, resolve findings, run complete gates once final source stabilises.
   - Produce .151 only after all five outcomes pass; ZIP/private-state checks and Chinese validation record.
   - Verify read-only desktop/mobile UI, clean temporary test services and restore temporary viewport settings.
@@ -50,3 +50,9 @@
 - Implementation: all five outcomes are connected. Frontend complete-page tests 17/17 and legacy WebUI 172/172 pass; downloader scan-family tests 41.726s, intakeapi full package, new SQLite atomic-cap rollback/reopen test and vet pass. No new real-account operations.
 - Review: one P2 found and fixed: limit choices were page-global instead of checkpoint-specific. Added runID-bound intent, unedited same-run cap synchronisation, and scan/refresh regressions. Independent reviewer reran the three mode tests and closed the finding.
 - Release gate pending: final full-repository tests, three builds, synthetic browser visual QA, package hashes/private-state check. Keep current .150 runtime/state untouched.
+
+- First complete release gate: full Go test suite passed (downloader 213.479s, taskstore 134.833s), vet, frontend 17/17, legacy 172/172, userscript 3/3 and three-platform builds. Candidate 12816f1 produced a clean-source package.
+- Native browser QA used an explicitly labelled synthetic-data fixture, no Baidu calls: path refresh/back, properties, rename form, minimise/tab switch, pause and finite-mode chooser. Fixed reset-induced top-left modal placement and negative mobile overlay margins; measured mobile properties/progress x=12..363 in a 375px client viewport. Restored viewport and closed the test tab/service.
+- Poll focus regression fixed and independently reviewed: identical polls retain nodes, changing counters retain equivalent keyboard focus. Targeted frontend and legacy suites passed again.
+- A separate no-credentials executable startup command was automatically rejected (blocked by policy); it created neither process nor state directory. Replaced available coverage with in-process embedded HTTP module/MIME checks and main authentication-route coverage. Independent packaged executable startup remains an explicit validation boundary, not a claimed result.
+- Final repack uses the UI fixes above; source and final ZIP/hash records are in the releases sibling validation file. Real .150 service and unique account state stay unchanged.

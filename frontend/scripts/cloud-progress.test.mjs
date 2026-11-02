@@ -32,6 +32,11 @@ test("background scan panel survives tabs/minimising and reuses the existing pau
     await tick(); await tick();
     const panel = doc.querySelector('#cloud-progress');
     assert.equal(panel.hidden, false); assert.match(panel.textContent, /125/);
+    const pause = panel.querySelector('[data-progress-action="pause"]'); pause.focus();
+    win.CloudProgress.update('full',state);
+    assert.equal(panel.querySelector('[data-progress-action="pause"]'),pause,'unchanged polls must retain the focused control');
+    win.CloudProgress.update('full',{...state,items_processed:126});
+    assert.equal(doc.activeElement.dataset.progressAction,'pause','counter updates must retain keyboard focus');
     assert.equal(panel.querySelector('progress').hasAttribute('value'), false, 'unknown total must not become a percentage');
     const before = calls.length;
     doc.querySelector('#cloud-progress-toggle').click();
