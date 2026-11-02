@@ -47,9 +47,21 @@ func (d *Downloader) reserveCloudInventoryScan(maintenanceError string) error {
 	return nil
 }
 
+// ValidateInventoryRequestLimit keeps legacy zero-budget calls compatible.
+func ValidateInventoryRequestLimit(budget int64, mode string) error {
+	if budget < 0 || budget > taskstore.CloudInventoryRefreshRequestBudgetLimit || (mode != "" && mode != "limited" && mode != "unlimited") || (mode == "unlimited" && budget != 0) || (mode == "limited" && budget == 0) {
+		return fmt.Errorf("请求次数模式无效：unlimited 只能使用 0，limited 须为 1 至 100000")
+	}
+	return nil
+}
+
 func (d *Downloader) StartCloudInventoryScan(ctx context.Context, requestBudget int64) (taskstore.CloudScanState, error) {
-	if requestBudget < 0 || requestBudget > taskstore.CloudInventoryRefreshRequestBudgetLimit {
-		return taskstore.CloudScanState{}, fmt.Errorf("全盘扫描请求额度必须介于 0 和 %d 之间", taskstore.CloudInventoryRefreshRequestBudgetLimit)
+	return d.StartCloudInventoryScanWithLimit(ctx, requestBudget, "")
+}
+
+func (d *Downloader) StartCloudInventoryScanWithLimit(ctx context.Context, requestBudget int64, mode string) (taskstore.CloudScanState, error) {
+	if err := ValidateInventoryRequestLimit(requestBudget, mode); err != nil {
+		return taskstore.CloudScanState{}, err
 	}
 	if err := d.reserveCloudInventoryScan("下载队列正在维护，暂不能启动全盘扫描"); err != nil {
 		return taskstore.CloudScanState{}, err
@@ -129,6 +141,9 @@ func (d *Downloader) StartCloudInventoryScan(ctx context.Context, requestBudget 
 	} else if state.PendingCount == 0 {
 		done()
 		return taskstore.CloudScanState{}, fmt.Errorf("网盘扫描队列为空但状态尚未完成，需要重新核对扫描状态")
+	}
+	if !freshRun && mode == "unlimited" {
+		state.RequestBudget = 0
 	}
 	if !freshRun && requestBudget > 0 {
 		maxInt64 := int64(^uint64(0) >> 1)
@@ -266,11 +281,15 @@ func (d *Downloader) CloudScanHistoryExport(ctx context.Context, runID string) (
 }
 
 func (d *Downloader) StartCloudInventoryRefresh(ctx context.Context, directory string, requestBudget int64) (taskstore.CloudInventoryRefreshState, error) {
+	return d.StartCloudInventoryRefreshWithLimit(ctx, directory, requestBudget, "")
+}
+
+func (d *Downloader) StartCloudInventoryRefreshWithLimit(ctx context.Context, directory string, requestBudget int64, mode string) (taskstore.CloudInventoryRefreshState, error) {
 	if directory == "" || len(directory) > 4096 || !strings.HasPrefix(directory, "/") || path.Clean(directory) != directory || strings.Contains(directory, "\\") {
 		return taskstore.CloudInventoryRefreshState{}, fmt.Errorf("invalid cloud inventory refresh directory")
 	}
-	if requestBudget < 0 || requestBudget > taskstore.CloudInventoryRefreshRequestBudgetLimit {
-		return taskstore.CloudInventoryRefreshState{}, fmt.Errorf("目录刷新请求额度必须在 0 到 %d 之间", taskstore.CloudInventoryRefreshRequestBudgetLimit)
+	if err := ValidateInventoryRequestLimit(requestBudget, mode); err != nil {
+		return taskstore.CloudInventoryRefreshState{}, err
 	}
 	if err := d.reserveCloudInventoryScan("下载队列正在维护，暂不能刷新网盘目录缓存"); err != nil {
 		return taskstore.CloudInventoryRefreshState{}, err
@@ -321,6 +340,10 @@ func (d *Downloader) StartCloudInventoryRefresh(ctx context.Context, directory s
 		if state.RootPath != directory {
 			done()
 			return taskstore.CloudInventoryRefreshState{}, fmt.Errorf("已有目录刷新待恢复，当前范围是 %s；请先恢复该范围", state.RootPath)
+		}
+		if mode == "unlimited" {
+			state.RequestBudget = 0
+			state.RequestBudgetAdded = 0
 		}
 		if requestBudget > 0 {
 			state.RequestBudgetAdded = requestBudget

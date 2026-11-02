@@ -252,6 +252,16 @@ function page(name, tasks = [], initialValues = {}, fetchImpl = null) {
     });
     for (const [id, value] of Object.entries(initialValues)) get(id).value = value;
     vm.runInContext(fs.readFileSync(path.join(root, 'res', 'shared.js'), 'utf8'), context);
+    if(name==='index_cloud.html'){
+      context.location.href='http://localhost'+context.location.pathname+context.location.search;
+      context.addEventListener=(event,fn)=>listeners.set('window:'+event,fn);
+      context.history={pushState(_state,_title,url){const value=new URL(url,context.location.href);context.location.href=value.href;context.location.pathname=value.pathname;context.location.search=value.search;},replaceState(_state,_title,url){this.pushState(_state,_title,url)}};
+      vm.runInContext(fs.readFileSync(path.join(root,'res','cloud_browse_route.js'),'utf8'),context);
+      vm.runInContext(fs.readFileSync(path.join(root,'res','cloud_properties.js'),'utf8'),context);
+      vm.runInContext(fs.readFileSync(path.join(root,'res','cloud_actions.js'),'utf8'),context);
+      vm.runInContext(fs.readFileSync(path.join(root,'res','cloud_progress.js'),'utf8'),context);
+      vm.runInContext(fs.readFileSync(path.join(root,'res','cloud_scan_limits.js'),'utf8'),context);
+    }
     const html = fs.readFileSync(path.join(root, name), 'utf8');
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) vm.runInContext(match[1], context);
     if(html.includes('/res/intake.js'))vm.runInContext(fs.readFileSync(path.join(root,'res','intake.js'),'utf8'),context);
@@ -517,9 +527,9 @@ test('full scan status distinguishes an inactive persisted checkpoint from an ac
 test('full scan submits request budget and displays durable usage and boundary rechecks',async()=>{
  const p=page('index_cloud.html',[],{'directory':'/','browse-source':'live'});await new Promise(resolve=>setImmediate(resolve));
  const calls=[];p.context.fetch=async(url,options={})=>{calls.push({url:String(url),options});return{ok:true,json:async()=>String(url)==='/api/cloud-inventory/scan'?{status:'paused',phase:'request_budget_reached',request_budget:12,requests_used:12,pending_count:1,current_directory:'/large',pages_processed:12,items_processed:1200,boundary_restart_count:1}:{}};};
- p.get('scan-budget').value='12';await vm.runInContext("$('scan-start').onclick()",p.context);await waitForPollIdle(p,'scanStatusInFlight');
+ p.get('scan-limit-mode').value='limited';p.get('scan-budget').value='12';await vm.runInContext("$('scan-start').onclick()",p.context);await waitForPollIdle(p,'scanStatusInFlight');
  assert.equal(calls.length,2,'start submits once and refreshes scan status');
- assert.deepEqual(JSON.parse(calls[0].options.body),{request_budget:12});
+ assert.deepEqual(JSON.parse(calls[0].options.body),{request_budget:12,request_limit_mode:'limited'});
  assert.match(p.get('scan-summary').textContent,/已预留 12 \/ 12 次/);assert.match(p.get('scan-summary').textContent,/额度用尽/);assert.match(p.get('scan-summary').textContent,/边界重扫 1 \/ 2/);
  assert.match(p.get('scan-progress').textContent,/已预留百度列表请求：12 \/ 12/);
  assert.match(p.get('scan-progress').textContent,/边界自动重扫：1 \/ 2/);
@@ -1568,9 +1578,9 @@ test('cloud management page exposes live browsing, cache sizing, scan controls a
 	assert.ok(html.includes('require_empty_directory:true'));
 	assert.ok(html.includes('已确认删除'));
  assert.ok(html.includes('/api/cloud/mutations'));
- assert.ok(html.includes("mutate('delete',x)"));
+ assert.ok(html.includes("openCloudAction('delete',x)"));
  assert.ok(html.includes('onclick=()=>openMovePicker(x)'));
- assert.ok(html.includes("mutate('rename',x"));
+ assert.ok(html.includes("openCloudAction('rename',x"));
  assert.ok(html.includes('result.warning'));
  assert.ok(!/<input[^>]+type=["']file/i.test(html));
  assert.ok(html.includes('id="scan-start"'));
@@ -1616,14 +1626,14 @@ test('cloud refresh offers a same-scope resume action for paused or persisted in
  status='paused';active=false;
  await vm.runInContext('directoryRefreshStatus()',p.context);
  assert.equal(p.get('resume-directory-refresh').hidden,false,'paused checkpoint should be resumable after browsing elsewhere');
- assert.match(p.get('resume-directory-refresh').textContent,/追加额度并继续刷新/);
+ assert.match(p.get('resume-directory-refresh').textContent,/设置次数并继续刷新/);
  assert.match(p.get('directory-refresh-summary').textContent,/已预留额度 2 \/ 10/);
  assert.match(p.get('directory-refresh-progress').textContent,/额度已耗尽/);
  assert.equal(!!p.get('scan-start').disabled,false);
  assert.equal(!!p.get('refresh-directory').disabled,false);
- p.get('directory-refresh-budget').value='8';
+ p.get('directory-refresh-limit-mode').value='limited';p.get('directory-refresh-budget').value='8';
  await p.get('resume-directory-refresh').onclick();
- assert.deepEqual(submitted,{directory:'/target',request_budget:8});
+ assert.deepEqual(submitted,{directory:'/target',request_budget:8,request_limit_mode:'limited'});
  assert.equal(p.get('directory').value,'/','resuming a saved scope keeps the current browse path');
  assert.equal(vm.runInContext('activeDirectoryRefreshRoot',p.context),'/target');
  assert.equal(p.get('resume-directory-refresh').hidden,true);
@@ -1679,7 +1689,7 @@ test('failed cloud refresh can start a fresh verification for the saved scope',a
  assert.match(retry.textContent,/重新刷新失败范围/);
  assert.match(p.get('directory-refresh-progress').textContent,/从头开始新一轮/);
  await retry.onclick();
- assert.deepEqual(submitted,{directory:'/target',request_budget:0});
+ assert.deepEqual(submitted,{directory:'/target',request_budget:0,request_limit_mode:'unlimited'});
  assert.equal(p.get('directory').value,'/','restarting a failed scope must not navigate away from the current browse path');
  assert.equal(vm.runInContext('activeDirectoryRefreshRoot',p.context),'/target');
  assert.equal(retry.hidden,true);
@@ -2356,6 +2366,8 @@ test('cloud cache full-inventory search navigates to cached or fresh live parent
 		if(String(url).startsWith('/api/cloud-inventory/size?'))return{ok:true,json:async()=>({path:'/',bytes:0,files:0,directories:0,complete:true})};
 		return{ok:true,json:async()=>({status:'idle',entries:[],groups:[]})};
 	};
+	// Route restoration owns initial form values; simulate typing after page load.
+	p.get('cache-search-query').value='AI报告';
 	await p.get('cache-search-form').onsubmit({preventDefault(){}});
 	assert.ok(calls.some(url=>url==='/api/cloud-inventory/search?q=AI%E6%8A%A5%E5%91%8A&offset=0&limit=100'));
 	assert.ok(!calls.some(url=>url.startsWith('/api/cloud?')),'cache search called the live provider');

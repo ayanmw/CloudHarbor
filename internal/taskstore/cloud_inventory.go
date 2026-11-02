@@ -3163,8 +3163,8 @@ func (s *Store) SaveCloudScanCheckpoint(state CloudScanState) error {
 		return err
 	}
 	var oldRunID, oldDirectory, oldStatus, oldPhase string
-	var oldOffset int64
-	lookupErr := tx.QueryRow(`SELECT run_id,current_directory,next_offset,status,phase FROM cloud_inventory_scan_state WHERE account_fingerprint=?`, state.AccountFingerprint).Scan(&oldRunID, &oldDirectory, &oldOffset, &oldStatus, &oldPhase)
+	var oldOffset, oldBudget int64
+	lookupErr := tx.QueryRow(`SELECT run_id,current_directory,next_offset,status,phase,request_budget FROM cloud_inventory_scan_state WHERE account_fingerprint=?`, state.AccountFingerprint).Scan(&oldRunID, &oldDirectory, &oldOffset, &oldStatus, &oldPhase, &oldBudget)
 	if lookupErr != nil && lookupErr != sql.ErrNoRows {
 		_ = tx.Rollback()
 		return lookupErr
@@ -3197,6 +3197,11 @@ func (s *Store) SaveCloudScanCheckpoint(state CloudScanState) error {
 			return err
 		}
 		kind := cloudScanTransitionEvent(oldStatus, oldPhase, state)
+		// A resumed worker can retain running/backoff after a restart. Its explicit
+		// limit change still needs evidence in the same transaction as the new cap.
+		if kind == "" && oldBudget != state.RequestBudget {
+			kind = "resumed"
+		}
 		if inserted && state.Status == "running" {
 			kind = "resumed"
 		}

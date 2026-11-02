@@ -22,6 +22,7 @@
   for(const [id,label] of groups){const button=document.createElement('button');button.type='button';button.textContent=label;button.dataset.group=id;button.addEventListener('click',()=>select(id));bar.append(button)}
   const first=cards[0];if(first)main.insertBefore(bar,first);
   select(new URLSearchParams(location.search).get('ui_tab')&&groups.some(g=>g[0]===new URLSearchParams(location.search).get('ui_tab'))?new URLSearchParams(location.search).get('ui_tab'):'files');
+  window.addEventListener('popstate',()=>{const group=new URLSearchParams(location.search).get('ui_tab');select(groups.some(g=>g[0]===group)?group:'files')});
   const entries=document.getElementById('entries');
   if(entries){
    const convert=()=>{

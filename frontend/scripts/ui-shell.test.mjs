@@ -16,6 +16,8 @@ test("cloud browser keeps a compact size column and navigation in empty director
   let failListing = false;
   try {
     const win = dom.window, doc = win.document;
+    win.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+    win.HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new win.Event("close")); };
     win.setInterval = () => 0;
     win.fetch = async (url, options = {}) => {
       assert.ok(!options.method || options.method === "GET", "browsing must not mutate remote files");
@@ -29,6 +31,11 @@ test("cloud browser keeps a compact size column and navigation in empty director
       return { ok: true, json: async () => ({ directory: dir, entries, next_offset: null, metadata: { status: "complete" }, coverage: { status: "complete" }, authentication: { ready: true } }) };
     };
     win.eval(shared);
+    win.eval(await readFile(new URL("../../internal/webui/res/cloud_browse_route.js", import.meta.url), "utf8"));
+    win.eval(await readFile(new URL("../../internal/webui/res/cloud_properties.js", import.meta.url), "utf8"));
+    win.eval(await readFile(new URL("../../internal/webui/res/cloud_actions.js", import.meta.url), "utf8"));
+    win.eval(await readFile(new URL("../../internal/webui/res/cloud_progress.js", import.meta.url), "utf8"));
+    win.eval(await readFile(new URL("../../internal/webui/res/cloud_scan_limits.js", import.meta.url), "utf8"));
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) win.eval(match[1]);
     win.eval(shell);
     await tick(); await tick();
@@ -40,6 +47,18 @@ test("cloud browser keeps a compact size column and navigation in empty director
     assert.equal(doc.querySelector("#entries img"), null);
     assert.equal(doc.querySelector("#browser-cache-tools").open, false);
     assert.equal(doc.querySelector("#up").disabled, true);
+    const beforeProperties = requests.length;
+    let copiedPath = '';
+    Object.defineProperty(win.navigator, 'clipboard', { value: { writeText: async value => { copiedPath = value; } }, configurable: true });
+    rows[1].querySelector('[data-properties]').click();
+    assert.equal(doc.querySelector('#cloud-properties').open, true);
+    assert.match(doc.querySelector('#cloud-property-fields').textContent, /4.00 KiB/);
+    assert.match(doc.querySelector('#cloud-property-source').textContent, /实时/);
+    assert.equal(doc.querySelector('#cloud-properties img'), null);
+    assert.equal(requests.length, beforeProperties, 'properties must use the observed list, not request fresh provider data');
+    doc.querySelector('#cloud-property-copy').click(); await tick();
+    assert.equal(copiedPath, '/<img src=x>.txt');
+    assert.match(doc.querySelector('#cloud-property-message').textContent, /已复制/);
     doc.querySelector('#entries [data-open="/子目录"]').click();
     await tick(); await tick();
     assert.equal(doc.querySelector("#directory").value, "/子目录");
@@ -47,6 +66,7 @@ test("cloud browser keeps a compact size column and navigation in empty director
     assert.match(doc.querySelector("#browse-breadcrumbs").textContent, /全部文件.*子目录/);
     assert.equal(doc.querySelectorAll("#entries th").length, 3);
     assert.match(doc.querySelector("#entries tbody").textContent, /此目录为空/);
+    assert.equal(doc.querySelector('#cloud-properties').open, false, 'navigation must invalidate the old selection');
     assert.ok(doc.querySelector("#empty-cleanup-card").classList.contains("workspace-section-hidden"));
     assert.ok(doc.querySelector("#duplicate-cleanup-card").classList.contains("workspace-section-hidden"));
     doc.querySelector("#up").click(); await tick(); await tick();
@@ -62,6 +82,10 @@ test("cloud browser keeps a compact size column and navigation in empty director
     const source = doc.querySelector("#browse-source");
     source.value = "cache"; source.dispatchEvent(new win.Event("change"));
     await tick(); await tick();
+    doc.querySelector('#entries .cloud-actions [data-properties="/子目录"]').click();
+    assert.match(doc.querySelector('#cloud-property-source').textContent, /本地缓存快照/);
+    assert.match(doc.querySelector('#cloud-property-fields').textContent, /未完整统计/);
+    doc.querySelector('#cloud-property-close').click();
     doc.querySelector('#entries [data-open="/子目录"]').click();
     await tick(); await tick();
     doc.querySelector('#browse-breadcrumbs [data-browse-directory="/"]').click();

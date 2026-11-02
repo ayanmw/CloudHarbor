@@ -38,3 +38,28 @@
 .workspace-legacy .workspace-cloud>.workspace-section-tabs{margin:12px 0 16px!important}
 .workspace-legacy .workspace-cloud>p{margin-bottom:12px!important}
 .workspace-legacy .workspace-cloud>section.card{padding:20px!important}
+
+.workspace-legacy #cloud-properties{position:fixed;inset:20px 20px 20px auto;margin:0;width:390px;max-width:calc(100vw - 24px);max-height:calc(100vh - 40px);padding:20px!important;overflow:auto}
+.workspace-legacy .cloud-property-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.workspace-legacy .cloud-property-heading h2{margin:0!important}
+.workspace-legacy #cloud-property-fields{grid-template-columns:92px minmax(0,1fr);gap:12px;font-size:12px;line-height:1.6;margin:24px 0}
+.workspace-legacy #cloud-property-fields dd{white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
+
+.workspace-legacy #cloud-action-dialog{width:480px}
+.workspace-legacy #cloud-action-target{overflow-wrap:anywhere;color:var(--ink)}
+.workspace-legacy #cloud-action-name-field{display:grid;gap:8px}
+.workspace-legacy #cloud-action-name{width:100%}
+.workspace-legacy #cloud-action-delete-field{display:flex;align-items:flex-start;gap:8px;color:#b44c4c}
+.workspace-legacy #cloud-action-form>.row{justify-content:flex-end}
+
+.workspace-legacy .cloud-progress-panel{position:fixed;right:20px;bottom:20px;z-index:45;width:360px;max-width:calc(100vw - 24px);background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 40px #23324b24;font-size:12px}
+.workspace-legacy .cloud-progress-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px}
+.workspace-legacy #cloud-progress-body{max-height:50vh;overflow:auto;border-top:1px solid var(--line)}
+.workspace-legacy .cloud-progress-item{padding:12px 14px;border-bottom:1px solid var(--line)}
+.workspace-legacy .cloud-progress-item p{margin:5px 0;font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.workspace-legacy .cloud-progress-item .truncate{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.workspace-legacy .cloud-progress-item progress{width:100%;height:4px;accent-color:var(--accent)}
+.workspace-legacy .cloud-progress-actions{display:flex;justify-content:flex-end;gap:4px}
+
+.workspace-legacy .scan-limit-fields{display:inline-flex;align-items:center;gap:8px}
+.workspace-legacy #scan-limit-hint,.workspace-legacy #directory-refresh-limit-hint{flex-basis:100%;font-size:11px}

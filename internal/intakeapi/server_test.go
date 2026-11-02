@@ -18,6 +18,9 @@ import (
 )
 
 type fakeBackend struct {
+	inventoryLimitMode string
+	refreshLimitMode   string
+
 	commits                      int
 	previews                     int
 	cloudCalls                   int
@@ -248,6 +251,14 @@ func (f *fakeBackend) CloudInventoryScanStatus() (taskstore.CloudScanState, erro
 func (f *fakeBackend) StartCloudInventoryScan(_ context.Context, budget int64) (taskstore.CloudScanState, error) {
 	f.inventoryScanBudget = budget
 	return taskstore.CloudScanState{Status: "running"}, nil
+}
+func (f *fakeBackend) StartCloudInventoryScanWithLimit(ctx context.Context, budget int64, mode string) (taskstore.CloudScanState, error) {
+	f.inventoryLimitMode = mode
+	return f.StartCloudInventoryScan(ctx, budget)
+}
+func (f *fakeBackend) StartCloudInventoryRefreshWithLimit(ctx context.Context, directory string, budget int64, mode string) (taskstore.CloudInventoryRefreshState, error) {
+	f.refreshLimitMode = mode
+	return f.StartCloudInventoryRefresh(ctx, directory, budget)
 }
 func (f *fakeBackend) CloudScanHistoryRuns(_ context.Context, _ int64, filter taskstore.CloudScanRunFilter, _ int) ([]taskstore.CloudScanRun, int64, bool, error) {
 	f.scanHistoryFilter = filter

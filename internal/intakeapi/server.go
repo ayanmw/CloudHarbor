@@ -33,6 +33,7 @@ type Backend interface {
 	GetCachedCloudDirectorySize(context.Context, string) (taskstore.CloudDirectorySize, error)
 	CloudInventoryScanStatus() (taskstore.CloudScanState, error)
 	StartCloudInventoryScan(context.Context, int64) (taskstore.CloudScanState, error)
+	StartCloudInventoryScanWithLimit(context.Context, int64, string) (taskstore.CloudScanState, error)
 	CloudScanHistoryRuns(context.Context, int64, taskstore.CloudScanRunFilter, int) ([]taskstore.CloudScanRun, int64, bool, error)
 	CloudScanHistoryEvents(context.Context, string, int64, int) ([]taskstore.CloudScanEvent, int64, bool, error)
 	CloudScanHistoryExport(context.Context, string) (taskstore.CloudScanEvidenceBundle, error)
@@ -49,6 +50,7 @@ type Backend interface {
 	CloudInventoryRefreshEvidenceExport(context.Context, string) (taskstore.CloudInventoryRefreshEvidenceBundle, error)
 	CloudInventoryRefreshRunSummariesExport(context.Context, taskstore.CloudInventoryRefreshRunFilter) ([]taskstore.CloudInventoryRefreshRun, error)
 	StartCloudInventoryRefresh(context.Context, string, int64) (taskstore.CloudInventoryRefreshState, error)
+	StartCloudInventoryRefreshWithLimit(context.Context, string, int64, string) (taskstore.CloudInventoryRefreshState, error)
 	PauseCloudInventoryRefresh()
 	CloudDuplicateScanStatus() (taskstore.CloudDuplicateScanState, error)
 	CloudDuplicateScanEstimate() (taskstore.CloudDuplicateHashCandidateEstimate, error)
@@ -779,16 +781,17 @@ func (s *Server) HandleInventoryScan(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(state)
 	case http.MethodPost:
 		var request struct {
-			RequestBudget int64 `json:"request_budget"`
+			RequestBudget    int64  `json:"request_budget"`
+			RequestLimitMode string `json:"request_limit_mode"`
 		}
 		if !decode(w, r, &request, true) {
 			return
 		}
-		if request.RequestBudget < 0 || request.RequestBudget > taskstore.CloudInventoryRefreshRequestBudgetLimit {
-			http.Error(w, "request_budget must be between 0 and 100000", http.StatusBadRequest)
+		if err := downloader.ValidateInventoryRequestLimit(request.RequestBudget, request.RequestLimitMode); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		state, err := s.backend.StartCloudInventoryScan(r.Context(), request.RequestBudget)
+		state, err := s.backend.StartCloudInventoryScanWithLimit(r.Context(), request.RequestBudget, request.RequestLimitMode)
 		if err != nil {
 			failure(w, err)
 			return
@@ -1012,17 +1015,18 @@ func (s *Server) HandleInventoryRefresh(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, state)
 	case http.MethodPost:
 		var request struct {
-			Directory     string `json:"directory"`
-			RequestBudget int64  `json:"request_budget"`
+			Directory        string `json:"directory"`
+			RequestBudget    int64  `json:"request_budget"`
+			RequestLimitMode string `json:"request_limit_mode"`
 		}
 		if !decode(w, r, &request, false) {
 			return
 		}
-		if request.RequestBudget < 0 || request.RequestBudget > taskstore.CloudInventoryRefreshRequestBudgetLimit {
-			http.Error(w, "request_budget must be between 0 and 100000", http.StatusBadRequest)
+		if err := downloader.ValidateInventoryRequestLimit(request.RequestBudget, request.RequestLimitMode); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		state, err := s.backend.StartCloudInventoryRefresh(r.Context(), request.Directory, request.RequestBudget)
+		state, err := s.backend.StartCloudInventoryRefreshWithLimit(r.Context(), request.Directory, request.RequestBudget, request.RequestLimitMode)
 		if err != nil {
 			failure(w, err)
 			return
