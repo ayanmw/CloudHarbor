@@ -47,6 +47,8 @@ test("cloud browser keeps a compact size column and navigation in empty director
     assert.match(doc.querySelector("#browse-breadcrumbs").textContent, /全部文件.*子目录/);
     assert.equal(doc.querySelectorAll("#entries th").length, 3);
     assert.match(doc.querySelector("#entries tbody").textContent, /此目录为空/);
+    assert.ok(doc.querySelector("#empty-cleanup-card").classList.contains("workspace-section-hidden"));
+    assert.ok(doc.querySelector("#duplicate-cleanup-card").classList.contains("workspace-section-hidden"));
     doc.querySelector("#up").click(); await tick(); await tick();
     assert.equal(doc.querySelector("#directory").value, "/");
     assert.equal(doc.querySelectorAll("#entries tbody tr").length, 2);

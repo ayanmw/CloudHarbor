@@ -16,7 +16,8 @@
   const groups=[['files','网盘文件',['目录浏览']],['settings','下载设置',['自动下载路径']],['cache','缓存与统计',['全盘目录缓存']],['cleanup','重复与空目录',['空文件夹','重复文件']],['history','刷新记录',['目录缓存刷新历史']]];
   for(const card of cards){const title=card.querySelector('h2')?.textContent||'';card.dataset.workspaceGroup=groups.find(([, ,titles])=>titles.some(x=>title.includes(x)))?.[0]||'files'}
   const bar=document.createElement('nav');bar.className='workspace-section-tabs';bar.setAttribute('aria-label','网盘管理功能');
-  function select(group){for(const card of cards)card.hidden=card.dataset.workspaceGroup!==group;for(const button of bar.querySelectorAll('button')){const active=button.dataset.group===group;button.classList.toggle('selected',active);button.setAttribute('aria-selected',String(active))}const url=new URL(location.href);url.searchParams.set('ui_tab',group);history.replaceState(null,'',url)}
+  // Live browsing updates hidden for source permissions; keep tab visibility independent.
+  function select(group){for(const card of cards){card.hidden=card.dataset.workspaceGroup!==group;card.classList.toggle('workspace-section-hidden',card.dataset.workspaceGroup!==group)}for(const button of bar.querySelectorAll('button')){const active=button.dataset.group===group;button.classList.toggle('selected',active);button.setAttribute('aria-selected',String(active))}const url=new URL(location.href);url.searchParams.set('ui_tab',group);history.replaceState(null,'',url)}
   for(const [id,label] of groups){const button=document.createElement('button');button.type='button';button.textContent=label;button.dataset.group=id;button.addEventListener('click',()=>select(id));bar.append(button)}
   const first=cards[0];if(first)main.insertBefore(bar,first);
   select(new URLSearchParams(location.search).get('ui_tab')&&groups.some(g=>g[0]===new URLSearchParams(location.search).get('ui_tab'))?new URLSearchParams(location.search).get('ui_tab'):'files');
