@@ -60,7 +60,7 @@ const labels: Record<string, string> = {
   done: "已完成",
   failed: "下载失败",
   auth_wait: "等待授权",
-  source_unknown: "来源待核对",
+  source_unknown: "网盘后处理待核对",
   cancelled: "已取消",
 };
 const tabs = [
@@ -88,6 +88,15 @@ let refreshInFlight = false;
 let timer: ReturnType<typeof setInterval> | undefined,
   controller: AbortController | undefined,
   generation = 0;
+function completionText(t: Task): string {
+  if (t.status === "source_unknown")
+    return t.mode === "delete"
+      ? "本地阶段已结束 · 网盘删除结果待核对"
+      : "本地阶段已结束 · 网盘改名结果待核对";
+  if (t.files) return `${t.completed} / ${t.files} 个已发现文件`;
+  if (t.prepared) return "空文件夹";
+  return t.status === "done" ? "历史文件明细未记录" : "正在等待目录内容";
+}
 const monitorLabel = computed(() => {
   const h = health.value;
   if (!h) return "正在连接监控";
@@ -352,9 +361,9 @@ onUnmounted(() => {
                 保存至 {{ root.local_path || "正在准备本地目录" }}
               </p>
               <div class="summary-meta">
-                <span>{{ root.files }} 个已发现文件</span
-                ><span>{{ root.folders }} 个文件夹</span
-                ><span>{{ root.completed }} 个文件已完成</span
+                <span>{{ completionText(root) }}</span
+                ><span v-if="root.files || root.prepared"
+                  >{{ root.folders }} 个文件夹</span
                 ><span>{{
                   root.mode === "delete"
                     ? "完成后删除网盘项"
@@ -387,10 +396,18 @@ onUnmounted(() => {
             </div>
           </section>
           <p
-            v-if="root.status === 'done' && !root.prepared && !root.files"
+            v-if="
+              (root.status === 'done' || root.status === 'source_unknown') &&
+              !root.prepared &&
+              !root.files
+            "
             class="discovery-note"
           >
-            历史文件明细未记录，任务完成记录仍保留。
+            {{
+              root.status === "source_unknown"
+                ? completionText(root) + "；历史子文件明细未记录。"
+                : "历史文件明细未记录，任务完成记录仍保留。"
+            }}
           </p>
           <div v-else class="metrics">
             <div>
@@ -418,7 +435,10 @@ onUnmounted(() => {
               }}</strong>
             </div>
           </div>
-          <p v-if="root.status !== 'done'" class="discovery-note">
+          <p
+            v-if="root.status !== 'done' && root.status !== 'source_unknown'"
+            class="discovery-note"
+          >
             目录内容在遍历时逐步发现，当前文件数与容量可能继续增加。文件夹会在文件传输前创建，不单独占用下载行。
           </p>
         </template>
@@ -491,7 +511,7 @@ onUnmounted(() => {
               <option value="">更多状态</option>
               <option value="retry_wait">等待重试</option>
               <option value="auth_wait">等待授权</option>
-              <option value="source_unknown">来源待核对</option>
+              <option value="source_unknown">网盘后处理待核对</option>
               <option value="cancelled">已取消</option>
             </select>
             <form
@@ -588,16 +608,13 @@ onUnmounted(() => {
                           :class="{ complete: t.status === 'done' }"
                         ></span></div></template
                     ><template v-else
-                      ><span>{{
-                        t.files
-                          ? `${t.completed} / ${t.files} 个已发现文件`
-                          : t.prepared
-                            ? "空文件夹"
-                            : t.status === "done"
-                              ? "历史文件明细未记录"
-                              : "正在等待目录内容"
-                      }}</span
-                      ><small v-if="t.files || t.folders" class="cell-sub"
+                      ><span>{{ completionText(t) }}</span
+                      ><small
+                        v-if="
+                          (t.files || t.folders) &&
+                          (t.status !== 'source_unknown' || t.files > 0)
+                        "
+                        class="cell-sub"
                         >{{ t.folders }} 个文件夹<span v-if="t.progress">
                           · {{ bytes(t.progress) }} 已传输</span
                         ></small

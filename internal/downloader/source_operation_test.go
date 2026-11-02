@@ -14,6 +14,41 @@ import (
 	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
+func TestUnknownSourceOutcomeEvidenceKeepsIsolationAndResponseObservation(t *testing.T) {
+	base, _ := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "abc") })
+	d, err := OpenDownloader(base.cfg, base.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, d)
+	info := file(702, "folder", 0)
+	info.IsDir = 1
+	job := &queueJob{Version: 1, Info: info, Mode: DownloadModeDelete, Status: "downloading", Created: time.Now()}
+	d.queue.jobs[info.FsID] = job
+	if err = d.queue.persist(job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.beginSourceOperation(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	err = d.finishSourceOperation(info, &baiduapi.SourceOutcomeError{Reason: "async_task", HTTPStatus: 200, TaskID: "123"})
+	if !errors.Is(err, baiduapi.ErrSourceOperationUnconfirmed) || job.Status != "source_unknown" || job.SourceState != "unknown" {
+		t.Fatalf("isolation lost: %+v err=%v", job, err)
+	}
+	events, err := d.queue.store.Events(info.FsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := events[len(events)-1]
+	var evidence map[string]any
+	if err = json.Unmarshal(event.Evidence, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if event.Kind != "source_operation_unknown" || event.ResponseObservedAtUTC == nil || evidence["unconfirmed_reason"] != "async_task" || evidence["provider_task_id"] != "123" || evidence["provider_http_status"] != float64(200) {
+		t.Fatalf("unknown response evidence=%s event=%+v", event.Evidence, event)
+	}
+}
+
 func TestSourceOperationFailureEventRecordsStructuredProviderEvidence(t *testing.T) {
 	base, _ := setup(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "abc") })
 	d, err := OpenDownloader(base.cfg, base.client)

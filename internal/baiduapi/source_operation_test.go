@@ -8,6 +8,37 @@ import (
 	"testing"
 )
 
+func TestUnknownSourceOutcomeRetainsSafeReasonAndNumericAsyncID(t *testing.T) {
+	previous := http.DefaultTransport
+	defer func() { http.DefaultTransport = previous }()
+	for _, tc := range []struct{ body, reason, id string }{
+		{`{"errno":0}`, "missing_item_receipt", ""},
+		{`{"errno":0,"info":[{}]}`, "missing_item_result", ""},
+		{`{"errno":0,"taskid":123,"info":[{"errno":0}]}`, "async_task", "123"},
+		{`{"errno":111}`, "async_running", ""},
+		{`{"info":[]}`, "missing_result_code", ""},
+		{`not-json`, "invalid_response_json", ""},
+		{`{"errno":0,"taskid":"https://private.example/?token=secret"}`, "async_task", ""},
+	} {
+		calls := 0
+		http.DefaultTransport = apiTransport(func(r *http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body)), Request: r}, nil
+		})
+		err := NewClient("token", "").DeleteFile("/folder")
+		var outcome *SourceOutcomeError
+		if !errors.Is(err, ErrSourceOperationUnconfirmed) || !errors.As(err, &outcome) || outcome.Reason != tc.reason || outcome.TaskID != tc.id || outcome.HTTPStatus != 200 {
+			t.Fatalf("outcome for %s: %+v %v", tc.body, outcome, err)
+		}
+		if calls != 1 {
+			t.Fatal("unknown source request replayed")
+		}
+		if strings.Contains(err.Error(), "secret") {
+			t.Fatal("provider task data leaked into error")
+		}
+	}
+}
+
 func TestSourceOperationRequiresSingleSynchronousReceipt(t *testing.T) {
 	base := http.DefaultTransport
 	defer func() { http.DefaultTransport = base }()

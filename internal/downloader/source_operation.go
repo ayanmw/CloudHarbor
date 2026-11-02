@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"path"
 	"time"
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
@@ -80,11 +81,19 @@ func sourceOperationEvidence(info baiduapi.FileInfo, state string) json.RawMessa
 }
 
 func sourceOperationResultEvidence(info baiduapi.FileInfo, state string, operationErr error) json.RawMessage {
+	reason, taskID := "", ""
+	var outcome *baiduapi.SourceOutcomeError
+	if errors.As(operationErr, &outcome) {
+		reason, taskID = outcome.Reason, outcome.TaskID
+	}
 	providerOperation, providerHTTPStatus, providerErrorCode := "", 0, 0
 	if providerErr := apiError(operationErr); providerErr != nil {
 		providerOperation = providerErr.Operation
 		providerHTTPStatus = providerErr.Status
 		providerErrorCode = providerErr.Code
+	}
+	if providerHTTPStatus == 0 && outcome != nil {
+		providerHTTPStatus = outcome.HTTPStatus
 	}
 	body, _ := json.Marshal(struct {
 		State              string `json:"state"`
@@ -98,7 +107,9 @@ func sourceOperationResultEvidence(info baiduapi.FileInfo, state string, operati
 		ProviderOperation  string `json:"provider_operation,omitempty"`
 		ProviderHTTPStatus int    `json:"provider_http_status,omitempty"`
 		ProviderErrorCode  int    `json:"provider_error_code,omitempty"`
-	}{state, info.FsID, info.Path, info.Size, info.Mtime, info.IsDir, info.ServerFilename, errorClass(operationErr), providerOperation, providerHTTPStatus, providerErrorCode})
+		UnconfirmedReason  string `json:"unconfirmed_reason,omitempty"`
+		ProviderTaskID     string `json:"provider_task_id,omitempty"`
+	}{state, info.FsID, info.Path, info.Size, info.Mtime, info.IsDir, info.ServerFilename, errorClass(operationErr), providerOperation, providerHTTPStatus, providerErrorCode, reason, taskID})
 	return body
 }
 func (q *scheduler) rebuildSourceBlocks() {
@@ -177,6 +188,10 @@ func (d *Downloader) finishSourceOperation(info baiduapi.FileInfo, operationErr 
 	if providerErr := apiError(operationErr); providerErr != nil && providerErr.Status != 0 {
 		event.ResponseObservedAtUTC = &responseObservedAt
 	}
+	var outcome *baiduapi.SourceOutcomeError
+	if errors.As(operationErr, &outcome) && outcome.HTTPStatus > 0 {
+		event.ResponseObservedAtUTC = &responseObservedAt
+	}
 	switch {
 	case errors.Is(operationErr, ErrSourceIdentityChanged):
 		job.SourceState = "changed"
@@ -232,6 +247,9 @@ func (d *Downloader) finishSourceOperation(info baiduapi.FileInfo, operationErr 
 	}
 	q.rebuildSourceBlocks()
 	q.reflect(job)
+	if outcome != nil {
+		log.Printf("[SourceOperation] at_utc=%s batch_id=%q operation_id=%q attempt_id=%q fsid=%d path=%q event=%s unconfirmed_reason=%s http_status=%d provider_task_id=%q", time.Now().UTC().Format(time.RFC3339Nano), job.AttemptID, operationID, attemptID, info.FsID, info.Path, event.Kind, outcome.Reason, outcome.HTTPStatus, outcome.TaskID)
+	}
 	return operationErr
 }
 

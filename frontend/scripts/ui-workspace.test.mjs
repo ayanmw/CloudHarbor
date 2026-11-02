@@ -62,7 +62,8 @@ const files = [
     can_pause: false,
   },
 ];
-async function render() {
+async function render(overrides = {}) {
+  const currentRoot = { ...root, ...overrides };
   const dom = new JSDOM(html, {
     url: "http://localhost/",
     runScripts: "outside-only",
@@ -86,11 +87,15 @@ async function render() {
     else {
       const detail = !!u.searchParams.get("root"),
         status = u.searchParams.get("status");
-      const all = detail ? files : [root],
+      const all = detail
+          ? currentRoot.status === "source_unknown"
+            ? []
+            : files
+          : [currentRoot],
         items = status ? all.filter((t) => t.status === status) : all;
       data = {
         items,
-        root: detail ? root : null,
+        root: detail ? currentRoot : null,
         total: items.length,
         root_count: 1,
         counts: { downloading: 1, pending: 1, done: 1 },
@@ -158,6 +163,36 @@ test("failed refresh preserves visible data and disables queue and task mutation
       true,
     );
     assert.equal(doc.querySelectorAll("tbody tr").length, 1);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("unknown source operation is shown as postprocessing, not waiting for directory download", async () => {
+  const { dom } = await render({
+    status: "source_unknown",
+    mode: "delete",
+    files: 0,
+    folders: 1,
+    prepared: false,
+    active: 0,
+    speed: 0,
+    can_pause: false,
+    can_cancel: false,
+  });
+  try {
+    const doc = dom.window.document;
+    const table = doc.querySelector("tbody");
+    assert.match(table.textContent, /网盘删除结果待核对/);
+    assert.doesNotMatch(table.textContent, /正在等待目录内容|1 个文件夹/);
+    doc.querySelector(".file-name").click();
+    await tick();
+    await tick();
+    assert.match(
+      doc.querySelector(".discovery-note").textContent,
+      /本地阶段已结束/,
+    );
+    assert.equal(doc.querySelector(".metrics"), null);
   } finally {
     dom.window.close();
   }

@@ -12,15 +12,30 @@ import (
 
 var ErrSourceOperationUnconfirmed = errors.New("source operation result is unconfirmed")
 
-// Uncertainty preserves safe error causes for diagnostics, but the scheduler
-// must not use a transient cause as permission to replay a source mutation.
-func uncertainSource(cause error) error {
-	if cause == nil {
-		return ErrSourceOperationUnconfirmed
-	}
-	return fmt.Errorf("%w: %w", ErrSourceOperationUnconfirmed, cause)
+// Only fixed reason codes and validated numeric task IDs survive the response;
+// raw provider bodies and credential-bearing URLs are never persisted.
+type SourceOutcomeError struct {
+	Reason     string
+	HTTPStatus int
+	TaskID     string
+	cause      error
 }
 
+func (e *SourceOutcomeError) Error() string {
+	return fmt.Sprintf("source operation result is unconfirmed: reason=%s status=%d", e.Reason, e.HTTPStatus)
+}
+func (e *SourceOutcomeError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{ErrSourceOperationUnconfirmed}
+	}
+	return []error{ErrSourceOperationUnconfirmed, e.cause}
+}
+func sourceOutcome(reason string, status int, taskID string, cause error) error {
+	return &SourceOutcomeError{Reason: reason, HTTPStatus: status, TaskID: taskID, cause: cause}
+}
+
+// The scheduler must not use a preserved transient cause as permission to
+// replay a mutation; SourceOutcomeError always unwraps to the unknown sentinel.
 func (c *Client) sourceOperation(operation string, item map[string]string) error {
 	items, _ := json.Marshal([]map[string]string{item})
 	query := url.Values{"method": {"filemanager"}, "opera": {operation}, "access_token": {c.AccessToken}}
@@ -33,7 +48,7 @@ func (c *Client) sourceOperation(operation string, item map[string]string) error
 	client := &http.Client{Timeout: metadataHTTPClient.Timeout, Transport: metadataHTTPClient.Transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
-		return uncertainSource(requestError(err))
+		return sourceOutcome("transport_error", 0, "", requestError(err))
 	}
 	defer resp.Body.Close()
 	apiError := func(code int, business bool) error {
@@ -43,14 +58,14 @@ func (c *Client) sourceOperation(operation string, item map[string]string) error
 		if resp.StatusCode == 401 {
 			return apiError(0, false)
 		}
-		return uncertainSource(apiError(0, false))
+		return sourceOutcome("http_status_unconfirmed", resp.StatusCode, "", apiError(0, false))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024+1))
 	if err != nil {
-		return uncertainSource(err)
+		return sourceOutcome("response_read_failed", resp.StatusCode, "", err)
 	}
 	if len(body) > 64*1024 {
-		return ErrSourceOperationUnconfirmed
+		return sourceOutcome("response_too_large", resp.StatusCode, "", nil)
 	}
 	var result struct {
 		Errno     *int            `json:"errno"`
@@ -61,30 +76,37 @@ func (c *Client) sourceOperation(operation string, item map[string]string) error
 		} `json:"info"`
 	}
 	if json.Unmarshal(body, &result) != nil {
-		return ErrSourceOperationUnconfirmed
+		return sourceOutcome("invalid_response_json", resp.StatusCode, "", nil)
 	}
 	if len(result.TaskID) > 0 && string(result.TaskID) != "0" && string(result.TaskID) != "null" {
-		return ErrSourceOperationUnconfirmed
+		id := strings.Trim(string(result.TaskID), "\"")
+		if len(id) > 64 || strings.IndexFunc(id, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			id = ""
+		}
+		return sourceOutcome("async_task", resp.StatusCode, id, nil)
 	}
 	if result.Errno != nil && *result.Errno == 111 {
-		return ErrSourceOperationUnconfirmed
+		return sourceOutcome("async_running", resp.StatusCode, "", nil)
 	}
 	for _, item := range result.Info {
 		if item.Errno != nil && *item.Errno == 111 {
-			return ErrSourceOperationUnconfirmed
+			return sourceOutcome("async_running", resp.StatusCode, "", nil)
 		}
 	}
 	if result.ErrorCode != 0 {
 		return apiError(result.ErrorCode, false)
 	}
 	if result.Errno == nil {
-		return ErrSourceOperationUnconfirmed
+		return sourceOutcome("missing_result_code", resp.StatusCode, "", nil)
 	}
 	if *result.Errno != 0 {
 		return apiError(*result.Errno, true)
 	}
-	if len(result.Info) != 1 || result.Info[0].Errno == nil {
-		return ErrSourceOperationUnconfirmed
+	if len(result.Info) != 1 {
+		return sourceOutcome("missing_item_receipt", resp.StatusCode, "", nil)
+	}
+	if result.Info[0].Errno == nil {
+		return sourceOutcome("missing_item_result", resp.StatusCode, "", nil)
 	}
 	if *result.Info[0].Errno != 0 {
 		return apiError(*result.Info[0].Errno, true)
