@@ -399,6 +399,27 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	if info.Size < 0 {
 		return fmt.Errorf("negative cloud file size")
 	}
+	if err := recordDownloadManifestState(ctx, info, relative, "downloading", ""); err != nil {
+		return err
+	}
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		status, summary := "failed", "文件处理失败，请查看任务事件与下载日志"
+		if errors.Is(resultErr, context.Canceled) {
+			status, summary = "cancelled", "本次下载已中断"
+		} else if errors.Is(resultErr, ErrAuthenticationWaiting) || baiduapi.IsAuthenticationError(resultErr) {
+			status, summary = "auth_wait", "等待重新授权"
+		}
+		// Keep only a bounded, sanitized status after cancellation. The worker
+		// still owns its immutable manifest binding until this defer completes.
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := recordDownloadManifestState(saveCtx, info, relative, status, summary); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
 	if err := ensureDirectory(filepath.Dir(local)); err != nil {
 		return err
 	}
@@ -448,7 +469,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		removeVerifiedPublishedPartial(ctx, stat, record, expected, partialName, metaName)
 		d.updateProgress(info.FsID, info.Size)
 		trace("local_verified", "bytes=%d reused=true", info.Size)
-		return nil
+		return recordDownloadManifestResult(ctx, info, relative, "local_verified", digest)
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return statErr
 	}
@@ -650,5 +671,5 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	}
 	d.updateProgress(info.FsID, info.Size)
 	trace("local_published", "bytes=%d verified=true", info.Size)
-	return nil
+	return recordDownloadManifestResult(ctx, info, relative, "published", expected.SHA256)
 }

@@ -41,8 +41,13 @@ func (s *Server) HandleDuplicateScanRuns(w http.ResponseWriter, r *http.Request)
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效。", http.StatusBadRequest)
+		return
+	}
 	query := r.URL.Query()
-	allowed := map[string]bool{"before_start_sequence": true, "limit": true, "status": true, "started_from_utc": true, "started_through_utc": true}
+	allowed := map[string]bool{"identity_format": true, "before_start_sequence": true, "limit": true, "status": true, "started_from_utc": true, "started_through_utc": true}
 	for key, values := range query {
 		if !allowed[key] || len(values) != 1 {
 			http.Error(w, "重复扫描历史参数无效。", http.StatusBadRequest)
@@ -73,6 +78,10 @@ func (s *Server) HandleDuplicateScanRuns(w http.ResponseWriter, r *http.Request)
 	runs, nextBefore, more, err := s.backend.CloudDuplicateScanRuns(r.Context(), before, filter, limit)
 	if err != nil {
 		http.Error(w, "重复扫描运行历史读取失败，请稍后重试。", http.StatusServiceUnavailable)
+		return
+	}
+	if exact {
+		jsonResponse(w, hashHistoryRuns(runs, nextBefore, more))
 		return
 	}
 	items := make([]duplicateScanRunDTO, 0, len(runs))
@@ -131,9 +140,14 @@ func (s *Server) HandleDuplicateScanRunEvents(w http.ResponseWriter, r *http.Req
 		http.NotFound(w, r)
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效。", http.StatusBadRequest)
+		return
+	}
 	query := r.URL.Query()
 	for key, values := range query {
-		if (key != "before_sequence" && key != "limit") || len(values) != 1 {
+		if (key != "identity_format" && key != "before_sequence" && key != "limit") || len(values) != 1 {
 			http.Error(w, "重复扫描事件分页参数无效。", http.StatusBadRequest)
 			return
 		}
@@ -165,6 +179,10 @@ func (s *Server) HandleDuplicateScanRunEvents(w http.ResponseWriter, r *http.Req
 	}
 	if err = maskDuplicateScanEvents(events); err != nil {
 		http.Error(w, "重复扫描事件证据读取失败，请稍后重试。", http.StatusServiceUnavailable)
+		return
+	}
+	if exact {
+		jsonResponse(w, hashHistoryEvents(events, runID, nextBefore, more))
 		return
 	}
 	var next *int64

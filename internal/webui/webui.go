@@ -88,13 +88,11 @@ func (s *Server) HandlePagePoll(w http.ResponseWriter, r *http.Request) {
 
 // HandlePageOAuth 返回 OAuth 授权页面
 func (s *Server) HandlePageOAuth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writeWorkspacePage(w, indexOAuth)
+	writeEmbeddedWorkspace(w)
 }
 
 func (s *Server) HandlePageIntake(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writeWorkspacePage(w, indexIntake)
+	writeEmbeddedWorkspace(w)
 }
 
 func (s *Server) HandlePageLogin(w http.ResponseWriter, r *http.Request) {
@@ -108,18 +106,15 @@ func (s *Server) HandlePageCloud(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) HandlePageOperations(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writeWorkspacePage(w, indexOperations)
+	writeEmbeddedWorkspace(w)
 }
 
 func (s *Server) HandlePageMonitorHistory(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writeWorkspacePage(w, indexMonitorHistory)
+	writeEmbeddedWorkspace(w)
 }
 
 func (s *Server) HandlePageTaskEvents(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writeWorkspacePage(w, indexTaskEvents)
+	writeEmbeddedWorkspace(w)
 }
 
 // HandleRes 静态资源文件服务

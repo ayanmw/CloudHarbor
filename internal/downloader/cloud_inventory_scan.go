@@ -105,6 +105,12 @@ func (d *Downloader) StartCloudInventoryScanWithLimit(ctx context.Context, reque
 		return taskstore.CloudScanState{}, refreshErr
 	}
 	state, err := d.queue.store.LoadCloudScanState(account)
+	if err == nil || errors.Is(err, sql.ErrNoRows) {
+		if confirmErr := checkInventoryExpectedRun(ctx, state.RunID); confirmErr != nil {
+			done()
+			return taskstore.CloudScanState{}, confirmErr
+		}
+	}
 	freshRun := false
 	if errors.Is(err, sql.ErrNoRows) {
 		runID, idErr := newSourceOperationID()
@@ -331,6 +337,12 @@ func (d *Downloader) StartCloudInventoryRefreshWithLimit(ctx context.Context, di
 		return taskstore.CloudInventoryRefreshState{}, fullErr
 	}
 	state, stateErr := d.queue.store.LoadCloudInventoryRefreshState(account)
+	if stateErr == nil || errors.Is(stateErr, sql.ErrNoRows) {
+		if confirmErr := checkInventoryExpectedRun(ctx, state.RunID); confirmErr != nil {
+			done()
+			return taskstore.CloudInventoryRefreshState{}, confirmErr
+		}
+	}
 	freshRun := errors.Is(stateErr, sql.ErrNoRows)
 	if stateErr != nil && !freshRun {
 		done()

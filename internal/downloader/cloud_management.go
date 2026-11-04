@@ -15,12 +15,13 @@ import (
 )
 
 type CloudMutationRequest struct {
-	Operation             string            `json:"operation"`
-	Expected              baiduapi.FileInfo `json:"expected"`
-	DestinationDirectory  string            `json:"destination_directory,omitempty"`
-	NewName               string            `json:"new_name,omitempty"`
-	RequireEmptyDirectory bool              `json:"require_empty_directory,omitempty"`
-	ExpectedContentSHA256 string            `json:"expected_content_sha256,omitempty"`
+	Operation             string             `json:"operation"`
+	Expected              baiduapi.FileInfo  `json:"expected"`
+	DestinationDirectory  string             `json:"destination_directory,omitempty"`
+	NewName               string             `json:"new_name,omitempty"`
+	RequireEmptyDirectory bool               `json:"require_empty_directory,omitempty"`
+	ExpectedContentSHA256 string             `json:"expected_content_sha256,omitempty"`
+	ExpectedRetained      *baiduapi.FileInfo `json:"expected_retained,omitempty"`
 }
 
 type CloudMutationResult struct {
@@ -142,6 +143,11 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 				return CloudMutationResult{}, err
 			}
 		}
+		if request.ExpectedRetained != nil {
+			if err = verifyCleanupRetainedCopy(scoped, client, *request.ExpectedRetained, request.ExpectedContentSHA256); err != nil {
+				return CloudMutationResult{}, err
+			}
+		}
 		// Repeat the identity check after destination and content checks so a
 		// changed path or object is not mutated based on an older listing.
 		beforeInfo, err = client.GetFileInfo(request.Expected.FsID)
@@ -162,7 +168,11 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 	}
 	objectID := request.Expected.FsID
 	storeOperation := taskstore.RemoteOperation{ID: operationID, AccountFingerprint: client.Fingerprint(), Kind: request.Operation, ObjectID: objectID, SourcePath: request.Expected.Path, DestinationPath: target, Status: "prepared", CreatedAtUTC: time.Now().UTC()}
-	storeOperation.Evidence, _ = json.Marshal(map[string]any{"expected": request.Expected, "destination_directory": request.DestinationDirectory, "new_name": request.NewName, "auth_epoch": epoch})
+	preparedEvidence := map[string]any{"expected": request.Expected, "destination_directory": request.DestinationDirectory, "new_name": request.NewName, "auth_epoch": epoch}
+	if request.ExpectedContentSHA256 != "" || request.RequireEmptyDirectory {
+		preparedEvidence["cleanup_verification"] = map[string]any{"expected_content_sha256": request.ExpectedContentSHA256, "expected_retained": request.ExpectedRetained, "require_empty_directory": request.RequireEmptyDirectory, "checks_completed_at_utc": time.Now().UTC()}
+	}
+	storeOperation.Evidence, _ = json.Marshal(preparedEvidence)
 	if err = d.queue.store.CreateRemoteOperation(storeOperation); err != nil {
 		return CloudMutationResult{}, err
 	}
@@ -379,6 +389,15 @@ func mutationCachePaths(request CloudMutationRequest, target string) []string {
 }
 
 func validateCloudMutation(request CloudMutationRequest) (string, error) {
+	if retained := request.ExpectedRetained; retained != nil {
+		if request.Operation != "delete" || request.Expected.IsDir != 0 || retained.IsDir != 0 || retained.FsID <= 0 || retained.FsID == request.Expected.FsID || retained.Path == request.Expected.Path || !validCloudPath(retained.Path) || retained.Path == "/" || !validName(retained.ServerFilename) || retained.Size != request.Expected.Size || len(request.ExpectedContentSHA256) != 64 {
+			return "", ErrIntakeInvalid
+		}
+		if _, err := hex.DecodeString(request.ExpectedContentSHA256); err != nil {
+			return "", ErrIntakeInvalid
+		}
+	}
+
 	switch request.Operation {
 	case "mkdir":
 		if !validCloudPath(request.DestinationDirectory) || !validName(request.NewName) {

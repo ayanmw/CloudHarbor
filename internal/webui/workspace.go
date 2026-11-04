@@ -30,10 +30,14 @@ func writeWorkspacePage(w http.ResponseWriter, content []byte) {
 var workspaceFiles embed.FS
 
 func (s *Server) HandleWorkspace(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.URL.Path != "/" && r.URL.Path != "/settings/paths" && r.URL.Path != "/settings/migrations" && r.URL.Path != "/cloud/files" && r.URL.Path != "/cloud/cache" && r.URL.Path != "/cloud/cleanup" && r.URL.Path != "/cloud/history" && r.URL.Path != "/intake-history" && r.URL.Path != "/uploads" {
 		http.NotFound(w, r)
 		return
 	}
+	writeEmbeddedWorkspace(w)
+}
+
+func writeEmbeddedWorkspace(w http.ResponseWriter) {
 	content, err := workspaceFiles.ReadFile("app/index.html")
 	if err != nil {
 		http.Error(w, "frontend unavailable", 500)

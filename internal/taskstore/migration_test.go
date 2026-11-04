@@ -63,7 +63,9 @@ func TestOpenMigratesV40QueueMonitorRetryStateWithoutInventingCooldown(t *testin
 	if err = store.db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil {
 		t.Fatal(err)
 	}
-	if version != "41" || integrity != "ok" {
+	// Open applies all subsequent migrations, including the download manifest
+	// schema; the cooldown evidence must remain absent at the current version.
+	if version != fmt.Sprint(sqliteSchemaVersion) || integrity != "ok" {
 		t.Fatalf("version=%s integrity=%s", version, integrity)
 	}
 }

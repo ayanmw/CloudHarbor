@@ -2,11 +2,14 @@
  const page=location.pathname;
  document.body.classList.add('workspace-legacy');
  if(page==='/login'){document.body.classList.add('workspace-login');return}
- const nav=[['/','↓','下载任务'],['/cloud','▤','网盘文件'],['/intake','＋','添加网盘项目'],['/operations','◷','操作记录'],['/monitor-history','◉','监控历史'],['/task-events','≡','任务事件'],['/oauth','⚙','账号与授权']];
+ const modules=[['transfers','传输','/','传输任务',[['/','↓','下载任务'],['/uploads','↑','上传任务']]],['cloud','网盘','/cloud/files','网盘管理',[['/cloud/files','▤','网盘文件'],['/cloud/cache','▦','缓存与目录刷新'],['/cloud/cleanup','◇','重复与空目录'],['/cloud/history','◷','扫描历史'],['/cloud','⚙','高级管理']]],['history','记录','/intake-history','记录与诊断',[['/intake-history','≡','入队记录'],['/operations','◷','操作记录'],['/monitor-history','◉','监控历史'],['/task-events','≡','任务事件']]],['settings','设置','/settings/paths','系统设置',[['/settings/paths','▣','路径与存储'],['/settings/migrations','◷','目录迁移记录'],['/oauth','⚙','账号与授权']]]];
+ const section=page.startsWith('/cloud')||page==='/intake'?modules[1]:['/intake-history','/operations','/monitor-history','/task-events'].includes(page)?modules[2]:page==='/oauth'||page.startsWith('/settings/')?modules[3]:modules[0];
+ const header=document.createElement('header');header.className='workspace-app-header';
+ header.innerHTML='<a class="workspace-brand" href="/" aria-label="NAS Downloader"><b>↓</b><span>NAS Downloader<small>百度网盘自动下载</small></span></a><nav aria-label="核心功能">'+modules.map(([key,label,url])=>`<a href="${url}" class="workspace-module ${key===section[0]?'selected':''}" ${key===section[0]?'aria-current="page"':''}>${label}</a>`).join('')+'</nav><div class="workspace-header-actions"><a href="/oauth">账号</a><button type="button" id="workspace-logout">退出登录</button></div>';
  const aside=document.createElement('aside');aside.className='workspace-sidebar';
- aside.innerHTML='<a class="workspace-brand" href="/"><b>↓</b><span>NAS Downloader<small>百度网盘自动下载</small></span></a><div class="workspace-nav-label">工作空间</div>'+nav.map(([url,icon,label])=>`<a class="workspace-nav-link ${page===url?'active':''}" href="${url}" aria-label="${label}"><i>${icon}</i><span>${label}</span></a>`).join('')+'<div class="workspace-sidebar-foot"><span>● 本地服务</span><button type="button" id="workspace-logout">退出登录</button></div>';
- document.body.prepend(aside);
- aside.querySelector('#workspace-logout').addEventListener('click',async()=>{try{await fetch('/api/logout',{method:'POST'})}finally{location.assign('/login')}});
+ aside.innerHTML='<div class="workspace-nav-label">'+section[3]+'</div>'+section[4].map(([url,icon,label])=>`<a class="workspace-nav-link ${page===url?'active':''}" href="${url}" aria-label="${label}" title="${label}" ${page===url?'aria-current="page"':''}><i aria-hidden="true">${icon}</i><span>${label}</span></a>`).join('')+'<div class="workspace-sidebar-foot">NAS Downloader · 管理控制台</div>';
+ document.body.prepend(header,aside);
+ header.querySelector('#workspace-logout').addEventListener('click',async()=>{try{const response=await fetch('/api/logout',{method:'POST',credentials:'same-origin'});if(!response.ok)throw Error('退出登录失败，请重试');location.assign('/login')}catch{let message=header.querySelector('[role="alert"]');if(!message){message=document.createElement('span');message.setAttribute('role','alert');header.append(message)}message.textContent='退出登录失败，请重试'}});
  const main=document.querySelector('main')||document.querySelector('.container');
  if(!main)return;
  main.classList.add('workspace-page');

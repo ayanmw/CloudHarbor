@@ -21,6 +21,7 @@ import (
 )
 
 type queueJob struct {
+	Destination       *RootDestination      `json:"destination,omitempty"`
 	TransferStats     *TransferStatistics   `json:"transfer_statistics,omitempty"`
 	Version           int                   `json:"version"`
 	Info              baiduapi.FileInfo     `json:"file"`

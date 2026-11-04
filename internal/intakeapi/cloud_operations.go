@@ -1,9 +1,11 @@
 package intakeapi
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,6 +20,11 @@ const remoteOperationPageLimit = 50
 
 func (s *Server) HandleCloudOperations(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodGet) {
+		return
+	}
+	stringIdentities, err := operationStringIdentity(r.URL.Query())
+	if err != nil {
+		http.Error(w, "invalid operation identity format", http.StatusBadRequest)
 		return
 	}
 	filter, err := parseRemoteOperationFilter(r.URL.Query())
@@ -50,7 +57,7 @@ func (s *Server) HandleCloudOperations(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "操作历史读取失败，请稍后重试。", http.StatusServiceUnavailable)
 			return
 		}
-		jsonResponse(w, map[string]any{"operations": items, "total": total, "limit": limit, "next_cursor": next})
+		jsonResponse(w, map[string]any{"operations": operationSummaryResponse(items, stringIdentities), "total": total, "limit": limit, "next_cursor": next})
 		return
 	}
 	offset, limit, err := pagination(r, 20)
@@ -69,7 +76,7 @@ func (s *Server) HandleCloudOperations(w http.ResponseWriter, r *http.Request) {
 		nextOffset = &next
 	}
 	jsonResponse(w, map[string]any{
-		"operations":  items,
+		"operations":  operationSummaryResponse(items, stringIdentities),
 		"total":       total,
 		"offset":      offset,
 		"limit":       limit,
@@ -187,6 +194,11 @@ func (s *Server) HandleCloudOperationEvents(w http.ResponseWriter, r *http.Reque
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	stringIdentities, identityErr := operationStringIdentity(r.URL.Query())
+	if identityErr != nil {
+		http.Error(w, "invalid operation identity format", http.StatusBadRequest)
+		return
+	}
 	query := r.URL.Query()
 	if len(query["offset"]) > 1 || len(query["before_sequence"]) > 1 || len(query["limit"]) > 1 {
 		http.Error(w, "invalid remote operation event filters", http.StatusBadRequest)
@@ -235,6 +247,15 @@ func (s *Server) HandleCloudOperationEvents(w http.ResponseWriter, r *http.Reque
 	var next *int64
 	if more {
 		next = &nextBefore
+	}
+	if stringIdentities {
+		var cursor *string
+		if more {
+			value := strconv.FormatInt(nextBefore, 10)
+			cursor = &value
+		}
+		jsonResponse(w, map[string]any{"events": operationEventStringResponse(events), "next_before_sequence": cursor})
+		return
 	}
 	jsonResponse(w, map[string]any{"events": events, "next_before_sequence": next})
 }
@@ -383,8 +404,16 @@ func (s *Server) HandleCloudOperationEvidenceExport(w http.ResponseWriter, r *ht
 
 func MaskSensitiveEvidence(raw json.RawMessage) (json.RawMessage, error) {
 	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
+	// Keep numeric evidence exact: float64 decoding would alter fs_ids before
+	// the browser or an exported evidence file ever receives them.
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
 		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("invalid trailing evidence JSON")
 	}
 	maskRemoteEvidenceValue(value)
 	return json.Marshal(value)

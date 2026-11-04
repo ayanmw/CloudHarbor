@@ -19,6 +19,10 @@ import (
 )
 
 type Task struct {
+	FileEvidence      *DownloadFileEvidence `json:"file_evidence,omitempty"`
+	DownloadHistory   *RootDownloadHistory  `json:"download_history,omitempty"`
+	AttemptID         string                `json:"attempt_id,omitempty"`
+	Destination       *RootDestination      `json:"destination,omitempty"`
 	TransferStats     *TransferStatistics
 	FileInfo          baiduapi.FileInfo
 	Status            string // pending, downloading, done, failed
@@ -113,6 +117,8 @@ type Downloader struct {
 	// managedPathsAdmissionHook and cloudMutationAdmissionHook synchronize path snapshot race regression tests.
 	managedPathsAdmissionHook  func()
 	cloudMutationAdmissionHook func()
+	// managedPathsMaintenanceHook synchronizes migration publication before queue admission.
+	managedPathsMaintenanceHook func()
 	// localMigrationCopyStartHook synchronizes migration progress drift regression tests.
 	localMigrationCopyStartHook func()
 	localMigrationRemoveAllHook func(string) error
@@ -357,11 +363,24 @@ func (d *Downloader) runRoot(ctx context.Context, info baiduapi.FileInfo, mode D
 		d.beginTask(info, "")
 		return fmt.Errorf("cloud root path does not match queue: %s", info.Path)
 	}
-	var err error
+	local, err := d.localPath(info.ServerFilename)
+	if err != nil {
+		return err
+	}
+	if err = d.recordRootDestination(info, local); err != nil {
+		return err
+	}
 	if info.IsDir == 1 {
 		err = d.downloadLocalFolder(ctx, info, info.ServerFilename)
 	} else {
-		err = d.downloadLocalFile(ctx, info, info.ServerFilename)
+		recorder, prepareErr := d.beginDownloadManifest(ctx, info, info.ServerFilename)
+		if prepareErr != nil {
+			return prepareErr
+		}
+		if prepareErr = recorder.publish(ctx); prepareErr != nil {
+			return prepareErr
+		}
+		err = d.downloadLocalFile(recorder.bind(ctx), info, info.ServerFilename)
 	}
 	// Children are never renamed individually: keeping their cloud paths stable
 	// allows an incomplete folder to be retried without losing failed descendants.
@@ -628,7 +647,9 @@ func (d *Downloader) taskViewLocked(id int64, job *queueJob) *Task {
 	if task := d.tasks[id]; task != nil {
 		copy := *task
 		if job != nil {
+			copy.AttemptID = job.AttemptID
 			copy.TransferStats = copyTransferStatistics(job.TransferStats)
+			copy.Destination = copyRootDestination(job.Destination)
 		}
 		return &copy
 	}
@@ -636,10 +657,15 @@ func (d *Downloader) taskViewLocked(id int64, job *queueJob) *Task {
 		return nil
 	}
 	task := &Task{
+		AttemptID:     job.AttemptID,
+		Destination:   copyRootDestination(job.Destination),
 		TransferStats: copyTransferStatistics(job.TransferStats),
 		FileInfo:      job.Info, Status: job.Status, Error: job.Error,
 		StartTime: job.Created, Attempts: job.Attempts, NextAttempt: job.NextAttempt,
 		Root: true, DownloadMode: job.Mode, LocalStorage: job.LocalStorage,
+	}
+	if task.Destination != nil {
+		task.LocalPath = task.Destination.Path
 	}
 	if job.Status == "done" || job.Status == "failed" || job.Status == "cancelled" {
 		task.FinishTime = job.Updated

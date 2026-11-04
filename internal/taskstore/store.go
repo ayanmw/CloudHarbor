@@ -510,6 +510,8 @@ func Open(dir, scope string) (*Store, error) {
 			migrationAction = "migrated_v39"
 		case 40:
 			migrationAction = "migrated_v40"
+		case 41:
+			migrationAction = "migrated_v41"
 		case sqliteSchemaVersion:
 		default:
 			return nil, fmt.Errorf("unsupported queue format version %d", m.Version)
@@ -597,13 +599,16 @@ func Open(dir, scope string) (*Store, error) {
 				if err = migrateV40(s, scope); err != nil {
 					return nil, err
 				}
+				if err = migrateV41(s, scope); err != nil {
+					return nil, err
+				}
 			} else {
 				migrations := []struct {
 					version int
 					apply   func(*Store, string) error
 				}{
 					{20, migrateV20}, {21, migrateV21}, {22, migrateV22}, {23, migrateV23},
-					{24, migrateV24}, {25, migrateV25}, {26, migrateV26}, {27, migrateV27}, {28, migrateV28}, {29, migrateV29}, {30, migrateV30}, {31, migrateV31}, {32, migrateV32}, {33, migrateV33}, {34, migrateV34}, {35, migrateV35}, {36, migrateV36}, {37, migrateV37}, {38, migrateV38}, {39, migrateV39}, {40, migrateV40},
+					{24, migrateV24}, {25, migrateV25}, {26, migrateV26}, {27, migrateV27}, {28, migrateV28}, {29, migrateV29}, {30, migrateV30}, {31, migrateV31}, {32, migrateV32}, {33, migrateV33}, {34, migrateV34}, {35, migrateV35}, {36, migrateV36}, {37, migrateV37}, {38, migrateV38}, {39, migrateV39}, {40, migrateV40}, {41, migrateV41},
 				}
 				for _, migration := range migrations {
 					if m.Version <= migration.version {

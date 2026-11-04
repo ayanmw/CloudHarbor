@@ -1,0 +1,66 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {JSDOM,VirtualConsole} from 'jsdom';
+const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8'),asset=html.match(/src="\/app\/(assets\/[^\"]+\.js)"/)[1],bundle=await readFile(new URL('../../internal/webui/app/'+asset,import.meta.url),'utf8');
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+const state=(extra={})=>({run_id:'a'.repeat(32),status:'running',phase:'backoff',worker_active:true,current_directory:'/docs',pending_count:'4',next_offset:'100',pages_processed:'2',items_processed:'9007199254740993',request_budget:'0',requests_used:'3',boundary_restart_count:'0',retry_delay_millis:'20000',started_at_utc:'2026-11-03T01:00:00Z',updated_at_utc:'2026-11-03T01:01:00Z',retry_at_utc:'2026-11-03T01:02:00.123456789Z',last_error:'',...extra});
+async function render(respond=async raw=>({ok:true,json:async()=>state(raw.includes('/refresh?')?{root_path:'/docs'}:{inventory_coverage:{status:'incomplete',incomplete_directories:'1',cache_generation:'7'}})})){
+ const dom=new JSDOM(html,{url:'http://localhost/cloud/cache',runScripts:'outside-only',pretendToBeVisual:true,virtualConsole:new VirtualConsole()}),requests=[];dom.window.fetch=async(raw,init={})=>{requests.push({url:String(raw),method:init.method||'GET',body:init.body});return respond(String(raw),init);};dom.window.eval(bundle);await tick();await tick();return {dom,requests};
+}
+test('cache workspace separates full and scoped state and preserves exact counters and retry UTC',async()=>{
+ const {dom,requests}=await render();try{const doc=dom.window.document;assert.match(doc.querySelector('h1').textContent,/缓存扫描/);assert.ok(doc.querySelector('[data-testid=cache-full-state]'));assert.ok(doc.querySelector('[data-testid=cache-refresh-state]'));assert.match(doc.body.textContent,/9007199254740993/);assert.match(doc.body.textContent,/2026-11-03T01:02:00.123456789Z/);assert.match(doc.body.textContent,/等待重试/);assert.ok(requests.every(r=>r.method==='GET'&&r.url.includes('identity_format=string')));}finally{dom.window.close();}
+});
+test('cache session expiry stops both status readers',async()=>{
+ const {dom}=await render(async raw=>raw.includes('/scan?')?{ok:false,status:401}:{ok:true,json:async()=>state({root_path:'/docs'})});try{assert.ok([...dom.window.document.querySelectorAll('main button')].every(button=>button.disabled));}finally{dom.window.close();}
+});
+test('cache idle record and read failure remain distinct',async()=>{
+ const idle=state({run_id:'',status:'idle',phase:'idle',worker_active:false,current_directory:'',root_path:'',started_at_utc:'0001-01-01T00:00:00Z',updated_at_utc:'0001-01-01T00:00:00Z',retry_at_utc:null});const {dom}=await render(async raw=>raw.includes('/scan?')?{ok:true,json:async()=>idle}:{ok:false,status:503,text:async()=>'检查点不可读'});try{const doc=dom.window.document;assert.match(doc.querySelector('[data-testid=cache-full-state]').textContent,/暂无运行记录/);assert.match(doc.querySelector('[data-testid=cache-refresh-state]').textContent,/检查点不可读/);assert.doesNotMatch(doc.querySelector('[data-testid=cache-refresh-state]').textContent,/暂无运行记录/);assert.doesNotMatch(doc.body.textContent,/0001-01-01/);}finally{dom.window.close();}
+});
+test('failed scan refresh preserves the last observation as historical',async()=>{
+ let fail=false;const {dom}=await render(async raw=>fail&&raw.includes('/scan?')?{ok:false,status:503,text:async()=>'扫描状态不可读'}:{ok:true,json:async()=>state(raw.includes('/refresh?')?{root_path:'/docs'}:{})});try{fail=true;const panel=dom.window.document.querySelector('[data-testid=cache-full-state]');panel.querySelector('button').click();await tick();await tick();assert.match(panel.textContent,/不可读.*上次读取的历史状态/);assert.match(panel.textContent,/9007199254740993/);}finally{dom.window.close();}
+});
+test('late checkpoint observations cannot overwrite a restored scan reader',async()=>{
+ let finish,reads=0;const {dom}=await render(async raw=>raw.includes('/scan?')?(++reads===1?new Promise(resolve=>finish=()=>resolve({ok:true,json:async()=>state({current_directory:'/old'})})):{ok:true,json:async()=>state({current_directory:'/restored'})}):{ok:true,json:async()=>state({root_path:'/docs'})});try{dom.window.dispatchEvent(new dom.window.Event('pagehide'));const event=new dom.window.Event('pageshow');Object.defineProperty(event,'persisted',{value:true});dom.window.dispatchEvent(event);await tick();await tick();finish();await tick();await tick();assert.match(dom.window.document.querySelector('[data-testid=cache-full-state]').textContent,/\/restored/);assert.doesNotMatch(dom.window.document.querySelector('[data-testid=cache-full-state]').textContent,/\/old/);}finally{finish?.();dom.window.close();}
+});
+
+test('cache start requires fixed confirmation and binds the observed checkpoint',async()=>{
+ const {dom,requests}=await render(async(raw,init)=>({ok:true,status:init.method==='POST'?202:200,json:async()=>state(raw.includes('/refresh')?{root_path:'/docs',worker_active:false}:{worker_active:false})}));
+ try {const panel=dom.window.document.querySelector('[data-testid=cache-full-state]');panel.querySelector('[data-testid=cache-start]').click();await tick();assert.equal(requests.filter(r=>r.method==='POST').length,0);const dialog=dom.window.document.querySelector('[role=dialog]');assert.match(dialog.textContent,/aaaaaaaa/);dialog.querySelector('input[type=checkbox]').click();await tick();dialog.querySelector('[data-testid=cache-confirm]').click();await tick();await tick();assert.equal(requests.filter(r=>r.method==='POST').length,1);} finally {dom.window.close();}
+});
+
+test('cache history opens events for the selected fixed run',async()=>{
+ const {dom,requests}=await render(async raw=>raw.includes('/runs?')?{ok:true,json:async()=>({rows:[{run_id:'b'.repeat(32),sequence:'9007199254740993',status:'complete',phase:'complete',current_directory:'/',pages_processed:'2',items_processed:'4',pending_count:'0',started_at_utc:'2026-11-03T00:00:00Z',updated_at_utc:'2026-11-03T01:00:00Z'}],next_before_sequence:'0',has_more:false})}:raw.includes('/events?')?{ok:true,json:async()=>({rows:[],next_before_sequence:'0',has_more:false})}:{ok:true,json:async()=>state(raw.includes('/refresh?')?{root_path:'/docs'}:{})});
+ try{const section=dom.window.document.querySelector('[data-testid=cache-scan-history]');section.querySelector('button').click();await tick();await tick();section.querySelector('[data-testid=cache-run-open]').click();await tick();await tick();assert.ok(requests.some(r=>r.url.includes('/scan/events?')&&r.url.includes('run_id='+'b'.repeat(32))));assert.ok(section.querySelector('a[download]').href.includes('b'.repeat(32)));}finally{dom.window.close();}
+});
+
+test('cache unknown submission is sent once and followed by status readback',async()=>{
+ const {dom,requests}=await render(async(raw,init)=>{if(init.method==='POST')throw Error('connection lost');return {ok:true,json:async()=>state(raw.includes('/refresh?')?{root_path:'/docs',worker_active:false}:{worker_active:false})};});
+ try{const panel=dom.window.document.querySelector('[data-testid=cache-full-state]');panel.querySelector('[data-testid=cache-start]').click();await tick();const dialog=dom.window.document.querySelector('[role=dialog]');dialog.querySelector('input[type=checkbox]').click();await tick();const button=dialog.querySelector('[data-testid=cache-confirm]');button.click();button.click();await tick();await tick();assert.equal(requests.filter(r=>r.method==='POST').length,1);assert.match(panel.textContent,/结果未知/);const post=requests.findIndex(r=>r.method==='POST');assert.ok(requests.slice(post+1).some(r=>r.method==='GET'&&r.url.includes('/scan?')));assert.deepEqual(JSON.parse(requests[post].body),{expected_run_id:'a'.repeat(32),request_limit_mode:'',request_budget:0});}finally{dom.window.close();}
+});
+test('cache scoped resume keeps its stored root and explicit budget addition',async()=>{
+ const {dom,requests}=await render(async(raw,init)=>({ok:true,status:init.method==='POST'?202:200,json:async()=>state(raw.includes('/refresh?')?{root_path:'/old-scope',worker_active:false,request_budget:'9'}:{worker_active:false})}));
+ try{const panel=dom.window.document.querySelector('[data-testid=cache-refresh-state]');const select=panel.querySelector('select');select.value='limited';select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await tick();const input=panel.querySelector('input[inputmode=numeric]');input.value='7';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));await tick();panel.querySelector('[data-testid=cache-start]').click();await tick();const dialog=dom.window.document.querySelector('[role=dialog]');assert.match(dialog.textContent,/old-scope/);dialog.querySelector('input[type=checkbox]').click();await tick();dialog.querySelector('[data-testid=cache-confirm]').click();await tick();await tick();const post=requests.find(r=>r.method==='POST');assert.deepEqual(JSON.parse(post.body),{expected_run_id:'a'.repeat(32),request_limit_mode:'limited',request_budget:7,directory:'/old-scope'});}finally{dom.window.close();}
+});
+test('cache pause binds the confirmed run without restarting it',async()=>{
+ const {dom,requests}=await render(async(raw,init)=>({ok:true,status:init.method==='DELETE'?204:200,json:async()=>state(raw.includes('/refresh?')?{root_path:'/docs'}:{})}));
+ try{const panel=dom.window.document.querySelector('[data-testid=cache-full-state]');[...panel.querySelectorAll('button')].find(b=>b.textContent==='暂停扫描').click();await tick();const dialog=dom.window.document.querySelector('[role=dialog]');dialog.querySelector('input[type=checkbox]').click();await tick();dialog.querySelector('[data-testid=cache-confirm]').click();await tick();await tick();const request=requests.find(r=>r.method==='DELETE');assert.equal(request.url,'/api/cloud-inventory/scan?expected_run_id='+'a'.repeat(32));assert.equal(requests.filter(r=>r.method==='POST').length,0);}finally{dom.window.close();}
+});
+
+test('failed scoped refresh clearly starts a new run instead of promising budget preservation',async()=>{
+ const {dom}=await render(async raw=>({ok:true,json:async()=>state(raw.includes('/refresh?')?{root_path:'/old-scope',status:'failed',phase:'failed',worker_active:false,request_budget:'9'}:{})}));try{const panel=dom.window.document.querySelector('[data-testid=cache-refresh-state]');assert.equal(panel.querySelector('[data-testid=cache-start]').textContent,'开始扫描');assert.doesNotMatch(panel.textContent,/保留检查点原策略/);assert.ok(panel.querySelector('input[placeholder="/目录"]'));}finally{dom.window.close();}
+});
+
+test('submission readback supersedes a status request started before the write finished',async()=>{
+ let finishWrite,finishRead,reads=0;
+ const {dom,requests}=await render(async(raw,init)=>{if(init.method==='POST')return new Promise(resolve=>finishWrite=()=>resolve({ok:false,status:503}));if(raw.includes('/scan?')&&++reads===2)return new Promise(resolve=>finishRead=()=>resolve({ok:true,json:async()=>state({worker_active:false,current_directory:'/stale'})}));return {ok:true,json:async()=>state(raw.includes('/refresh?')?{root_path:'/docs'}:{worker_active:false,current_directory:reads>=3?'/after-write':'/initial'})};});
+ try{const panel=dom.window.document.querySelector('[data-testid=cache-full-state]');panel.querySelector('[data-testid=cache-start]').click();await tick();const dialog=dom.window.document.querySelector('[role=dialog]');dialog.querySelector('input[type=checkbox]').click();await tick();dialog.querySelector('[data-testid=cache-confirm]').click();await tick();panel.querySelector('button').click();await tick();finishWrite();await tick();await tick();assert.equal(reads,3);finishRead();await tick();await tick();assert.match(panel.textContent,/after-write/);assert.doesNotMatch(panel.textContent,/stale/);}finally{finishWrite?.();finishRead?.();dom.window.close();}
+});
+
+test('manual checkpoint refresh does not discard a fixed confirmation',async()=>{
+ const {dom}=await render(async raw=>({ok:true,json:async()=>state(raw.includes('/refresh?')?{root_path:'/docs'}:{worker_active:false})}));try{const panel=dom.window.document.querySelector('[data-testid=cache-full-state]');panel.querySelector('[data-testid=cache-start]').click();await tick();panel.querySelector('button').click();await tick();await tick();assert.ok(dom.window.document.querySelector('[role=dialog]'));}finally{dom.window.close();}
+});
+
+test('a newly observed run does not inherit an old unsubmitted unlimited choice',async()=>{
+ let changed=false;const {dom}=await render(async raw=>({ok:true,json:async()=>state(raw.includes('/refresh?')?{root_path:'/docs'}:{worker_active:false,run_id:(changed?'b':'a').repeat(32),request_budget:'9'})}));try{const panel=dom.window.document.querySelector('[data-testid=cache-full-state]');const select=panel.querySelector('select');select.value='unlimited';select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await tick();changed=true;panel.querySelector('button').click();await tick();await tick();assert.equal(panel.querySelector('select').value,'');}finally{dom.window.close();}
+});

@@ -33,9 +33,8 @@ func TestWorkspaceServesEmbeddedBundleAndLegacyShell(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "/app/assets/") || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("workspace response %d %s", w.Code, w.Body.String())
 	}
-	for _, render := range []func(*httptest.ResponseRecorder){func(w *httptest.ResponseRecorder) { s.HandlePageCloud(w, httptest.NewRequest("GET", "/cloud", nil)) }, func(w *httptest.ResponseRecorder) {
-		s.HandlePageOperations(w, httptest.NewRequest("GET", "/operations", nil))
-	}} {
+	// Operations now has its own Vue entry regression; cloud still uses this legacy shell.
+	for _, render := range []func(*httptest.ResponseRecorder){func(w *httptest.ResponseRecorder) { s.HandlePageCloud(w, httptest.NewRequest("GET", "/cloud", nil)) }} {
 		w = httptest.NewRecorder()
 		render(w)
 		if !strings.Contains(w.Body.String(), "workspace-legacy.css") || !strings.Contains(w.Body.String(), "workspace-legacy.js") {

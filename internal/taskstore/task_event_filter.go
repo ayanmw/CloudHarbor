@@ -38,6 +38,7 @@ var taskEventFilterKinds = map[string]struct{}{
 	"authentication_wait_entered":        {},
 	"cloud_file_observed":                {},
 	"download_attempt_finished":          {},
+	"download_destination_recorded":      {},
 	"download_attempt_started":           {},
 	"job_completed":                      {},
 	"job_registered":                     {},

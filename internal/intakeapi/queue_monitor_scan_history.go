@@ -34,6 +34,23 @@ type queueMonitorEventDTO struct {
 	ErrorCode          string     `json:"error_code,omitempty"`
 }
 
+type queueMonitorStringRunDTO struct {
+	queueMonitorRunDTO
+	Sequence string `json:"sequence"`
+}
+type queueMonitorStringEventDTO struct {
+	queueMonitorEventDTO
+	Sequence string `json:"sequence"`
+}
+
+func monitorStringCursor(next int64, more bool) *string {
+	if !more {
+		return nil
+	}
+	value := strconv.FormatInt(next, 10)
+	return &value
+}
+
 func monitorRunDTO(r taskstore.QueueMonitorScanRun) queueMonitorRunDTO {
 	return queueMonitorRunDTO{Sequence: r.Sequence, RunID: r.RunID, Status: r.Status, MonitorPath: r.MonitorPath, StartedAtUTC: r.StartedAtUTC, FinishedAtUTC: r.FinishedAtUTC, CloudObservedAtUTC: r.CloudObservedAtUTC, RecordedAtUTC: r.RecordedAtUTC, ErrorCode: r.ErrorCode}
 }
@@ -43,7 +60,7 @@ func monitorEventDTO(e taskstore.QueueMonitorScanEvent) queueMonitorEventDTO {
 
 func monitorPaging(w http.ResponseWriter, r *http.Request, events bool) (int64, int, bool) {
 	q := r.URL.Query()
-	allowed := map[string]bool{"before_sequence": true, "limit": true}
+	allowed := map[string]bool{"before_sequence": true, "limit": true, "sequence_format": true}
 	if events {
 		allowed["run_id"] = true
 	} else {
@@ -54,6 +71,10 @@ func monitorPaging(w http.ResponseWriter, r *http.Request, events bool) (int64, 
 			http.Error(w, "自动扫描历史查询参数无效。", 400)
 			return 0, 0, false
 		}
+	}
+	if format := q.Get("sequence_format"); format != "" && format != "string" {
+		http.Error(w, "扫描历史序列格式无效。", 400)
+		return 0, 0, false
 	}
 	before := int64(0)
 	if raw := q.Get("before_sequence"); raw != "" {
@@ -112,6 +133,14 @@ func (s *Server) HandleQueueMonitorScanRuns(w http.ResponseWriter, r *http.Reque
 		readFailure(w, err)
 		return
 	}
+	if q.Get("sequence_format") == "string" {
+		out := make([]queueMonitorStringRunDTO, 0, len(runs))
+		for _, run := range runs {
+			out = append(out, queueMonitorStringRunDTO{queueMonitorRunDTO: monitorRunDTO(run), Sequence: strconv.FormatInt(run.Sequence, 10)})
+		}
+		jsonResponse(w, map[string]any{"runs": out, "next_before_sequence": monitorStringCursor(next, more), "has_more": more})
+		return
+	}
 	out := make([]queueMonitorRunDTO, 0, len(runs))
 	for _, run := range runs {
 		out = append(out, monitorRunDTO(run))
@@ -139,6 +168,14 @@ func (s *Server) HandleQueueMonitorScanEvents(w http.ResponseWriter, r *http.Req
 	events, next, more, err := s.backend.QueueMonitorScanHistoryEvents(r.Context(), runID, before, limit)
 	if err != nil {
 		readFailure(w, err)
+		return
+	}
+	if r.URL.Query().Get("sequence_format") == "string" {
+		out := make([]queueMonitorStringEventDTO, 0, len(events))
+		for _, event := range events {
+			out = append(out, queueMonitorStringEventDTO{queueMonitorEventDTO: monitorEventDTO(event), Sequence: strconv.FormatInt(event.Sequence, 10)})
+		}
+		jsonResponse(w, map[string]any{"events": out, "next_before_sequence": monitorStringCursor(next, more), "has_more": more})
 		return
 	}
 	out := make([]queueMonitorEventDTO, 0, len(events))

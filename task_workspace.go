@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"sort"
@@ -44,49 +46,38 @@ func handleDownloadSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 type workspaceTask struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Path      string `json:"path"`
-	Status    string `json:"status"`
-	LocalPath string `json:"local_path"`
-	Error     string `json:"error,omitempty"`
-	Size      int64  `json:"size"`
-	Progress  int64  `json:"progress"`
-	Speed     int64  `json:"speed"`
-	Files     int    `json:"files"`
-	Folders   int    `json:"folders"`
-	Completed int    `json:"completed"`
-	Active    int    `json:"active"`
-	Mode      string `json:"mode"`
-	CanPause  bool   `json:"can_pause"`
-	CanResume bool   `json:"can_resume"`
-	CanCancel bool   `json:"can_cancel"`
-	CanRetry  bool   `json:"can_retry"`
-	Prepared  bool   `json:"prepared"`
+	FileEvidence    *downloader.DownloadFileEvidence `json:"file_evidence,omitempty"`
+	DownloadHistory *downloader.RootDownloadHistory  `json:"download_history,omitempty"`
+	Destination     *downloader.RootDestination      `json:"destination,omitempty"`
+	ID              string                           `json:"id"`
+	Name            string                           `json:"name"`
+	Path            string                           `json:"path"`
+	Status          string                           `json:"status"`
+	LocalPath       string                           `json:"local_path"`
+	Error           string                           `json:"error,omitempty"`
+	Size            int64                            `json:"size"`
+	Progress        int64                            `json:"progress"`
+	Speed           int64                            `json:"speed"`
+	Files           int                              `json:"files"`
+	Folders         int                              `json:"folders"`
+	Completed       int                              `json:"completed"`
+	Active          int                              `json:"active"`
+	Mode            string                           `json:"mode"`
+	CanPause        bool                             `json:"can_pause"`
+	CanResume       bool                             `json:"can_resume"`
+	CanCancel       bool                             `json:"can_cancel"`
+	CanRetry        bool                             `json:"can_retry"`
+	Prepared        bool                             `json:"prepared"`
 
 	TransferStats *downloader.TransferStatistics `json:"transfer_statistics"`
 }
 
 func workspaceRow(t *downloader.Task) workspaceTask {
-	return workspaceTask{TransferStats: t.TransferStats, ID: strconv.FormatInt(t.FileInfo.FsID, 10), Name: t.FileInfo.ServerFilename, Path: t.FileInfo.Path, Status: t.Status, LocalPath: t.LocalPath, Error: t.Error, Size: t.FileInfo.Size, Progress: t.Progress, Speed: t.Speed, Mode: string(t.DownloadMode), CanPause: t.CanPause, CanResume: t.CanResume, CanCancel: t.CanCancel, CanRetry: t.CanRetry, Prepared: t.DirectoryPrepared || t.FileInfo.IsDir == 0}
+	return workspaceTask{FileEvidence: t.FileEvidence, DownloadHistory: t.DownloadHistory, Destination: t.Destination, TransferStats: t.TransferStats, ID: strconv.FormatInt(t.FileInfo.FsID, 10), Name: t.FileInfo.ServerFilename, Path: t.FileInfo.Path, Status: t.Status, LocalPath: t.LocalPath, Error: t.Error, Size: t.FileInfo.Size, Progress: t.Progress, Speed: t.Speed, Mode: string(t.DownloadMode), CanPause: t.CanPause, CanResume: t.CanResume, CanCancel: t.CanCancel, CanRetry: t.CanRetry, Prepared: t.DirectoryPrepared || t.FileInfo.IsDir == 0}
 }
 
 func workspacePriority(status string) int {
-	switch status {
-	case "downloading":
-		return 0
-	case "failed", "source_unknown", "auth_wait":
-		return 1
-	case "pending", "retry_wait":
-		return 2
-	case "paused":
-		return 3
-	case "cancelled":
-		return 4
-	case "done":
-		return 5
-	}
-	return 6
+	return downloader.WorkspaceStatusPriority(status)
 }
 
 // Aggregate only observed descendants. A running root's discovered size is not
@@ -141,6 +132,7 @@ func buildTaskWorkspace(tasks []*downloader.Task, rootID, status, query string, 
 				}
 			}
 		}
+		applyRootDownloadHistory(&row)
 		if row.ID == rootID {
 			copy := row
 			selected = &copy
@@ -189,6 +181,14 @@ func handleTaskWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	root := q.Get("root")
+	expectedManifest := q.Get("manifest")
+	if expectedManifest != "" {
+		decoded, decodeErr := hex.DecodeString(expectedManifest)
+		if root == "" || decodeErr != nil || len(decoded) != 16 || hex.EncodeToString(decoded) != expectedManifest {
+			http.Error(w, "invalid manifest", http.StatusBadRequest)
+			return
+		}
+	}
 	if root != "" {
 		if id, e := strconv.ParseInt(root, 10, 64); e != nil || id <= 0 {
 			http.Error(w, "invalid root", 400)
@@ -210,10 +210,61 @@ func handleTaskWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	result, found := buildTaskWorkspace(dl.GetTasks(), root, status, query, offset, limit)
-	if !found {
-		http.NotFound(w, r)
-		return
+	var result map[string]any
+	if root == "" {
+		page, pageErr := dl.GetRootWorkspacePage(offset, limit, status, query)
+		if pageErr != nil {
+			http.Error(w, "下载任务暂不可读，请稍后刷新", http.StatusServiceUnavailable)
+			return
+		}
+		if err = dl.EnrichRootWorkspacePage(r.Context(), page.Tasks); err != nil {
+			http.Error(w, "下载历史暂不可读，请稍后刷新", http.StatusServiceUnavailable)
+			return
+		}
+		result, _ = buildTaskWorkspace(page.Tasks, "", "", "", 0, len(page.Tasks))
+		result["total"], result["offset"], result["limit"], result["counts"], result["root_count"] = page.Total, page.Offset, page.Limit, page.Counts, page.QueueTotal
+	} else {
+		id, _ := strconv.ParseInt(root, 10, 64) // Format and range were validated above.
+		task, rootErr := dl.GetTaskWorkspaceRoot(r.Context(), id)
+		if errors.Is(rootErr, downloader.ErrTaskWorkspaceRootNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		if rootErr != nil {
+			http.Error(w, "下载历史暂不可读，请稍后刷新", http.StatusServiceUnavailable)
+			return
+		}
+		manifestID := ""
+		if task.DownloadHistory != nil && task.DownloadHistory.Summary != nil {
+			manifestID = task.DownloadHistory.Summary.Manifest.ID
+		}
+		if expectedManifest != "" && expectedManifest != manifestID {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"code": "manifest_changed", "message": "下载清单已更新，请重新载入第一页。"})
+			return
+		}
+		var found bool
+		result, found = buildTaskWorkspace([]*downloader.Task{task}, root, status, query, offset, limit)
+		if !found {
+			http.NotFound(w, r)
+			return
+		}
+		result["root_count"] = dl.RootWorkspaceCount()
+		result["manifest_id"] = manifestID
+		page, available, pageErr := dl.GetDownloadHistoryFiles(r.Context(), task, status, query, offset, limit)
+		if pageErr != nil {
+			http.Error(w, "下载明细暂不可读，请稍后刷新", http.StatusServiceUnavailable)
+			return
+		}
+		if available {
+			items := make([]workspaceTask, 0, len(page.Tasks))
+			for _, file := range page.Tasks {
+				items = append(items, workspaceRow(file))
+			}
+			result["items"], result["total"], result["counts"], result["offset"] = items, page.Total, page.Counts, page.Offset
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

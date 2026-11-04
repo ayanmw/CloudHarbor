@@ -1,14 +1,14 @@
 <script setup lang="ts">
+import {formatBytes} from './format-bytes';
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { vModal } from "./modal";
+import WorkspaceSidebar from "./WorkspaceSidebar.vue";
 import DownloadSettings from "./DownloadSettings.vue";
+import { readDownloadRoute, downloadRouteURL, type DownloadRoute } from "./download-route";
 import {
-  Download,
   Folder,
   Files,
-  Cloud,
   Settings,
-  History,
   Search,
   ChevronRight,
   ArrowLeft,
@@ -18,17 +18,19 @@ import {
   MoreHorizontal,
   CheckCircle2,
   AlertCircle,
-  LogOut,
   X,
-  Activity,
+  Copy,
 } from "lucide-vue-next";
 type Task = {
+  file_evidence?: { observed_at_utc: string; observation_source: string; state_at_utc?: string; interrupted: boolean; historical: boolean; result?: { kind: string; sha256: string; recorded_at_utc: string } | null };
+  download_history?: { source: string; reason?: string; summary?: { files: number; folders: number; size: number; completed: number; manifest: { published_at_utc?: string } } };
 	transfer_statistics?: { active_ns: number; network_bytes: number; partial?: boolean; recorded_at_utc?: string } | null;
   id: string;
   name: string;
   path: string;
   status: string;
   local_path: string;
+  destination?: { path: string; attempt_id?: string; recorded_at_utc: string };
   error?: string;
   size: number;
   progress: number;
@@ -45,6 +47,7 @@ type Task = {
   prepared: boolean;
 };
 type Workspace = {
+  manifest_id?: string;
   items: Task[];
   root: Task | null;
   total: number;
@@ -73,30 +76,58 @@ const tabs = [
   ["paused", "已暂停"],
 ];
 const settingsOpen = ref(false);
-const rootID = ref(new URLSearchParams(location.search).get("task") || "");
+const initialRoute = readDownloadRoute(location.search);
+const rootID = ref(initialRoute.task);
+const manifestID = ref(initialRoute.manifest);
+const manifestConflict = ref(false);
 const data = ref<Workspace | null>(null),
   health = ref<any>(null),
-  status = ref(""),
-  search = ref(""),
-  offset = ref(0),
+  status = ref(initialRoute.status),
+  search = ref(initialRoute.q),
+  appliedSearch = ref(initialRoute.q),
+  offset = ref(initialRoute.offset),
   loading = ref(true),
   error = ref(""),
+  inputError = ref(""),
+  actionError = ref(""),
   busy = ref(""),
   dialog = ref<Task | null>(null),
   events = ref<any[]>([]),
   eventError = ref("");
+const copyMessage = ref("");
+const actionMessage = ref("");
+const eventLoading = ref(false), eventPage = ref(0), eventNext = ref<string | null>(null);
+const eventCursors = ref<(string | null)[]>([null]);
+let eventGeneration = 0;
+const confirmation = ref<{ task: Task; kind: "cancel" | "retry" } | null>(null);
 let refreshInFlight = false;
 let timer: ReturnType<typeof setInterval> | undefined,
   controller: AbortController | undefined,
   generation = 0;
+let displayedRoute: DownloadRoute | undefined;
+function routeState(): DownloadRoute { return { task: rootID.value, status: status.value, q: appliedSearch.value, offset: offset.value, manifest: manifestID.value }; }
+function applyRoute(route: DownloadRoute) { inputError.value = ""; rootID.value = route.task; status.value = route.status; search.value = route.q; appliedSearch.value = route.q; offset.value = route.offset; manifestID.value = route.manifest; }
+function writeRoute(mode: "push" | "replace", route = routeState()) {
+  const url = downloadRouteURL(route);
+  if (location.pathname + location.search + location.hash === url) return;
+  if (mode === "push") history.pushState({}, "", url); else history.replaceState({}, "", url);
+}
+writeRoute("replace");
 function completionText(t: Task): string {
   if (t.status === "source_unknown")
     return t.mode === "delete"
       ? "本地阶段已结束 · 网盘删除结果待核对"
       : "本地阶段已结束 · 网盘改名结果待核对";
-  if (t.files) return `${t.completed} / ${t.files} 个已发现文件`;
+  if (t.files) return `${t.completed} / ${t.files} 个${t.download_history?.source === "current_attempt" ? "已记录" : "已发现"}文件`;
   if (t.prepared) return "空文件夹";
   return t.status === "done" ? "历史文件明细未记录" : "正在等待目录内容";
+}
+function historyHint(t: Task) {
+  const h = t.download_history;
+  if (!h || h.source === "unrecorded" || !h.summary) return "尚无已保存清单；旧明细不按本地文件反推。";
+  const at = h.summary.manifest.published_at_utc || "未记录";
+  if (h.source === "previous_attempt") return `${h.reason === "root_identity_changed" ? "原身份对应的历史清单" : "上一轮清单"}：${h.summary.files} 个文件、${h.summary.folders} 个文件夹，已记录完成 ${h.summary.completed} 个；发布于 ${at}（UTC）。仅供历史核对，不计入本轮。`;
+  return `本次已保存清单 · 发布于 ${at}（UTC）。完成数来自本地证据，不代表当前网盘或本地文件已重新核对。`;
 }
 const monitorLabel = computed(() => {
   const h = health.value;
@@ -111,12 +142,7 @@ const root = computed(() => data.value?.root),
   title = computed(() =>
     rootID.value ? root.value?.name || "任务详情" : "下载任务",
   );
-const bytes = (n: number) => {
-  if (!Number.isFinite(n) || n <= 0) return "0 B";
-  const u = ["B", "KB", "MB", "GB", "TB"],
-    i = Math.min(4, Math.floor(Math.log(n) / Math.log(1024)));
-  return `${(n / 1024 ** i).toFixed(i ? 2 : 0)} ${u[i]}`;
-};
+const bytes = formatBytes;
 const downloadDuration = (t: Task) => {
   const stats = t.transfer_statistics;
   if (!stats) return t.status === "pending" ? "尚未开始" : "历史统计未记录";
@@ -144,10 +170,17 @@ async function api(url: string, options: RequestInit = {}) {
     );
     throw Error("请重新登录");
   }
-  if (!r.ok) throw Error((await r.text()) || "请求失败");
+  if (!r.ok) {
+    const text = await r.text();
+    let body;
+    if (r.status === 409) { try { body = JSON.parse(text); } catch {} }
+    if (body?.code === "manifest_changed") throw Object.assign(Error(body.message || "下载清单已更新，请重新载入第一页。"), { code: "manifest_changed" });
+    throw Error(text || "请求失败");
+  }
   return r.json();
 }
 async function load(quiet = false) {
+  if (manifestConflict.value) return;
   if (quiet && refreshInFlight) return;
   refreshInFlight = true;
   const current = ++generation;
@@ -155,24 +188,41 @@ async function load(quiet = false) {
   controller = new AbortController();
   if (!quiet) loading.value = true;
   try {
+    const requestedRoute = routeState();
     const q = new URLSearchParams({
-      root: rootID.value,
-      status: status.value,
-      q: search.value,
-      offset: String(offset.value),
+      root: requestedRoute.task,
+      status: requestedRoute.status,
+      q: requestedRoute.q,
+      offset: String(requestedRoute.offset),
       limit: "50",
     });
+    if (rootID.value && manifestID.value) q.set("manifest", manifestID.value);
     const [workspace, h] = await Promise.all([
       api("/api/task-workspace?" + q, { signal: controller.signal }),
       api("/api/health", { signal: controller.signal }),
     ]);
     if (current !== generation) return;
+    manifestID.value = rootID.value && /^[a-f0-9]{32}$/.test(workspace.manifest_id || "") ? workspace.manifest_id : "";
+    manifestConflict.value = false;
+    const serverOffset = Number.isSafeInteger(workspace.offset) && workspace.offset >= 0 ? workspace.offset : requestedRoute.offset;
+    const pageOffset = workspace.total > 0 && serverOffset >= workspace.total ? Math.floor((workspace.total - 1) / 50) * 50 : serverOffset;
+    offset.value = pageOffset;
+    if (pageOffset !== serverOffset) {
+      writeRoute("replace", { ...requestedRoute, offset: pageOffset, manifest: manifestID.value });
+      load();
+      return;
+    }
+    displayedRoute = { ...requestedRoute, offset: pageOffset, manifest: manifestID.value };
+    writeRoute("replace", displayedRoute);
     data.value = workspace;
     health.value = h;
     error.value = "";
   } catch (e: any) {
-    if (e.name !== "AbortError" && current === generation)
+    if (e.name !== "AbortError" && current === generation) {
       error.value = e.message;
+      manifestConflict.value = e.code === "manifest_changed";
+      if (manifestConflict.value && displayedRoute) { applyRoute(displayedRoute); writeRoute("replace"); }
+    }
   } finally {
     if (current === generation) {
       loading.value = false;
@@ -180,84 +230,180 @@ async function load(quiet = false) {
     }
   }
 }
+function reloadCurrent() {
+  manifestID.value = "";
+  manifestConflict.value = false;
+  offset.value = 0;
+  writeRoute("replace");
+  load();
+}
 function open(t: Task) {
+  inputError.value = "";
+  manifestID.value = "";
+  manifestConflict.value = false;
   data.value = null;
   rootID.value = t.id;
   status.value = "";
   offset.value = 0;
   search.value = "";
-  history.pushState({}, "", `/?task=${encodeURIComponent(t.id)}`);
+  appliedSearch.value = "";
+  displayedRoute = undefined;
+  writeRoute("push");
   load();
 }
 function back() {
+  inputError.value = "";
+  manifestID.value = "";
+  manifestConflict.value = false;
   data.value = null;
   rootID.value = "";
   status.value = "";
   search.value = "";
+  appliedSearch.value = "";
   offset.value = 0;
-  history.pushState({}, "", "/");
+  displayedRoute = undefined;
+  writeRoute("push");
   load();
 }
 function pop() {
+  manifestID.value = "";
+  manifestConflict.value = false;
   data.value = null;
-  rootID.value = new URLSearchParams(location.search).get("task") || "";
-  offset.value = 0;
+  displayedRoute = undefined;
+  applyRoute(readDownloadRoute(location.search));
+  writeRoute("replace");
   load();
 }
 function filter(value: string) {
+  if (manifestConflict.value) return;
   status.value = value;
   offset.value = 0;
+  writeRoute("push");
+  load();
+}
+function submitSearch() {
+  if (manifestConflict.value) return;
+  if (Array.from(search.value.trim()).length > 128) { inputError.value = "搜索条件最多 128 个字符"; return; }
+  inputError.value = "";
+  appliedSearch.value = search.value.trim();
+  offset.value = 0;
+  writeRoute("push");
+  load();
+}
+function clearSearch() { search.value = ""; submitSearch(); }
+function changePage(delta: number) {
+  if (manifestConflict.value || loading.value) return;
+  offset.value = Math.max(0, offset.value + delta);
+  writeRoute("push");
   load();
 }
 async function action(t: Task, kind: string) {
-  if (
-    (kind === "cancel" || kind === "retry") &&
-    !confirm(`${kind === "cancel" ? "取消" : "重试"}任务「${t.name}」？`)
-  )
+  if (busy.value || error.value || health.value?.queue_healthy === false) return;
+  if (kind === "cancel" || kind === "retry") {
+    confirmation.value = { task: t, kind };
     return;
+  }
+  await executeAction(t, kind);
+}
+function closeConfirmation() { if (!busy.value) confirmation.value = null; }
+async function confirmAction() {
+  const selected = confirmation.value;
+  if (!selected || busy.value || error.value || health.value?.queue_healthy === false) return;
+  await executeAction(selected.task, selected.kind);
+  if (confirmation.value === selected) confirmation.value = null;
+}
+async function executeAction(t: Task, kind: string) {
+  if (busy.value) return;
   busy.value = t.id;
+  actionError.value = "";
+  actionMessage.value = "";
   try {
     await api(`/api/tasks/${encodeURIComponent(t.id)}/${kind}`, {
       method: "POST",
     });
+    const label = { pause: "暂停任务", resume: "恢复任务", cancel: "取消任务", retry: "重试任务" }[kind] || "任务操作";
+    actionMessage.value = `${label}「${t.name}」请求已接受。`;
+    if (dialog.value === t) dialog.value = null;
     await load(true);
   } catch (e: any) {
-    error.value = e.message;
+    actionError.value = e.message;
   } finally {
     busy.value = "";
   }
 }
 async function details(t: Task) {
+  copyMessage.value = "";
   dialog.value = t;
   events.value = [];
   eventError.value = "";
+  eventGeneration++;
+  eventLoading.value = false;
+  eventPage.value = 0;
+  eventNext.value = null;
+  eventCursors.value = [null];
+  if (t.file_evidence) return;
+  await loadEventPage(0, null);
+}
+async function loadEventPage(index: number, cursor: string | null) {
+  const target = dialog.value;
+  if (!target || target.file_evidence || eventLoading.value) return;
+  const request = ++eventGeneration;
+  eventLoading.value = true;
   try {
+    const query = new URLSearchParams({ limit: "20", sequence_format: "string" });
+    if (cursor) query.set("before_sequence", cursor);
     const r = await api(
-      `/api/tasks/${encodeURIComponent(t.id)}/events?limit=20`,
+      `/api/tasks/${encodeURIComponent(target.id)}/events?${query}`,
     );
-    if (dialog.value?.id === t.id) events.value = r.events || [];
+    if (request !== eventGeneration || dialog.value !== target) return;
+    const next = r.next_before_sequence ?? null;
+    if (next !== null && (typeof next !== "string" || !/^[1-9][0-9]{0,18}$/.test(next) || (next.length === 19 && next > "9223372036854775807"))) throw Error("事件游标无效，请重新打开任务信息。");
+    events.value = Array.isArray(r.events) ? r.events : [];
+    eventNext.value = next;
+    eventPage.value = index;
+    eventCursors.value[index] = cursor;
+    eventError.value = "";
   } catch (e: any) {
-    eventError.value = e.message;
+    if (request === eventGeneration && dialog.value === target) eventError.value = e.message;
+  } finally {
+    if (request === eventGeneration && dialog.value === target) eventLoading.value = false;
   }
 }
+async function copyPath(value: string, label: string) {
+  if (!value) return;
+  const target = dialog.value;
+  try {
+    await navigator.clipboard.writeText(value);
+    if (dialog.value === target) copyMessage.value = label + "已复制";
+  } catch {
+    if (dialog.value === target) copyMessage.value = "复制失败，请手动选择并复制路径。";
+  }
+}
+function eventUTC(value: unknown): string {
+  if (!value) return "未记录";
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) return "时间格式无效";
+  return new Date(value).toISOString();
+}
 async function toggleQueue() {
+  if (busy.value || error.value || !health.value || health.value.queue_healthy === false) return;
   busy.value = "queue";
+  actionError.value = "";
+  actionMessage.value = "";
+  const paused = health.value.queue_pause?.paused;
   try {
     await api(
-      "/api/queue/" + (health.value?.queue_pause?.paused ? "resume" : "pause"),
+      "/api/queue/" + (paused ? "resume" : "pause"),
       { method: "POST" },
     );
+    actionMessage.value = `${paused ? "恢复" : "暂停"}队列请求已接受。`;
     await load(true);
   } catch (e: any) {
-    error.value = e.message;
+    actionError.value = e.message;
   } finally {
     busy.value = "";
   }
 }
-async function logout() {
-  await fetch("/api/logout", { method: "POST" });
-  location.assign("/login");
-}
+
 onMounted(() => {
   load();
   timer = setInterval(() => {
@@ -274,58 +420,9 @@ onUnmounted(() => {
 
 <template>
   <div class="workspace">
-    <aside class="sidebar">
-      <a class="brand" href="/" aria-label="下载任务"
-        ><span class="brand-icon"><Download :size="23" /></span
-        ><span>NAS Downloader<small>百度网盘自动下载</small></span></a
-      >
-      <div class="nav-label">工作空间</div>
-      <nav>
-        <a class="active" href="/" aria-label="下载任务"
-          ><Download :size="19" />下载任务</a
-        ><a href="/cloud" aria-label="网盘文件"><Cloud :size="19" />网盘文件</a
-        ><a href="/intake" aria-label="添加网盘项目"
-          ><Files :size="19" />添加网盘项目</a
-        >
-      </nav>
-      <div class="nav-label">管理</div>
-      <nav>
-        <a href="/operations" aria-label="操作记录"
-          ><History :size="19" />操作记录</a
-        ><a href="/monitor-history" aria-label="监控历史"
-          ><Activity :size="19" />监控历史</a
-        ><a href="/task-events" aria-label="任务事件"
-          ><History :size="19" />任务事件</a
-        ><a href="/oauth" aria-label="账号与授权"
-          ><Settings :size="19" />账号与授权</a
-        >
-      </nav>
-      <div class="sidebar-bottom">
-        <span class="connection-dot" :class="{ offline: !!error }"></span
-        >{{ error ? "连接异常" : "本地服务已连接"
-        }}<button class="icon-button" aria-label="退出登录" @click="logout">
-          <LogOut :size="17" />
-        </button>
-      </div>
-    </aside>
+    <WorkspaceSidebar active="/" @error="error=$event"><template #status><span class="connection-dot" :class="{offline:!!error&&!manifestConflict}"></span>{{error&&!manifestConflict?'读取异常':health?.authentication?.ready?'百度账号可用':'等待百度授权'}}</template></WorkspaceSidebar>
     <main class="main">
-      <header class="topbar">
-        <span
-          >工作空间 <ChevronRight :size="14" /> 下载任务
-          <template v-if="rootID"
-            ><ChevronRight :size="14" /> 详情</template
-          ></span
-        ><span class="account"
-          ><span
-            class="connection-dot"
-            :class="{ offline: health && !health.authentication?.ready }"
-          ></span
-          >{{
-            health?.authentication?.ready ? "百度账号已连接" : "等待百度授权"
-          }}</span
-        >
-      </header>
-      <div class="content">
+      <div class="content" :class="{ 'task-detail': !!rootID }">
         <div class="page-heading">
           <div>
             <button v-if="rootID" class="back-link" @click="back">
@@ -349,7 +446,7 @@ onUnmounted(() => {
             ><button
               class="button secondary"
               :disabled="!!busy || !!error || health?.queue_healthy === false"
-              @click="load()"
+              @click="reloadCurrent()"
             >
               <RefreshCw :size="16" />刷新</button
             ><a class="button primary" href="/intake" aria-label="添加网盘项目"
@@ -359,7 +456,18 @@ onUnmounted(() => {
         </div>
         <div v-if="error" class="notice danger" role="alert">
           <AlertCircle :size="18" /><span>{{ error }}</span
-          ><button @click="load()">重新连接</button>
+          ><button @click="manifestConflict ? reloadCurrent() : load()">{{ manifestConflict ? "重新载入清单" : "重新连接" }}</button>
+        </div>
+        <div v-if="inputError" class="notice danger" role="alert">
+          <AlertCircle :size="18" /><span>{{ inputError }}</span>
+        </div>
+        <div v-if="actionError" class="notice danger" role="alert">
+          <AlertCircle :size="18" /><span>操作未确认成功：{{ actionError }}</span>
+          <button @click="actionError = ''">关闭提示</button>
+        </div>
+        <div v-if="actionMessage" class="notice" role="status" aria-live="polite" data-testid="action-feedback">
+          <CheckCircle2 :size="18" /><span>{{ actionMessage }}{{ error ? '当前状态读取未成功，请刷新核对，不要重复提交。' : '请以当前任务状态为准。' }}</span>
+          <button @click="actionMessage = ''">关闭提示</button>
         </div>
         <template v-if="root"
           ><section class="detail-summary">
@@ -411,6 +519,7 @@ onUnmounted(() => {
               </button>
             </div>
           </section>
+          <p v-if="root.download_history" class="discovery-note history-provenance">{{ historyHint(root) }}</p>
           <p
             v-if="
               (root.status === 'done' || root.status === 'source_unknown') &&
@@ -434,14 +543,14 @@ onUnmounted(() => {
               <span>已完成文件</span
               ><strong
                 >{{ root.completed
-                }}<small> / {{ root.files }} 个已发现</small></strong
+                }}<small> / {{ root.files }} 个{{ root.download_history?.source === "current_attempt" ? "已记录" : "已发现" }}</small></strong
               >
             </div>
             <div>
               <span>已传输数据</span
               ><strong
                 >{{ bytes(root.progress)
-                }}<small> / {{ bytes(root.size) }} 已发现</small></strong
+                }}<small> / {{ bytes(root.size) }} {{ root.download_history?.source === "current_attempt" ? "已记录" : "已发现" }}</small></strong
               >
             </div>
             <div>
@@ -455,7 +564,7 @@ onUnmounted(() => {
             v-if="root.status !== 'done' && root.status !== 'source_unknown'"
             class="discovery-note"
           >
-            目录内容在遍历时逐步发现，当前文件数与容量可能继续增加。文件夹会在文件传输前创建，不单独占用下载行。
+            {{ root.download_history?.source === "current_attempt" ? "本轮清单已完整保存。文件夹已预先创建，不单独占用下载行。" : "目录内容在遍历时逐步发现，当前文件数与容量可能继续增加。文件夹会在文件传输前创建，不单独占用下载行。" }}
           </p>
         </template>
         <div v-else class="overview-strip">
@@ -532,25 +641,18 @@ onUnmounted(() => {
             </select>
             <form
               class="search"
-              @submit.prevent="
-                offset = 0;
-                load();
-              "
+              @submit.prevent="submitSearch()"
             >
               <Search :size="16" /><input
                 v-model="search"
-                :placeholder="rootID ? '搜索文件名或路径' : '搜索下载任务'"
+                :placeholder="rootID ? '搜索文件名或路径，回车应用' : '搜索下载任务，回车应用'"
                 aria-label="搜索文件名或路径"
               /><button
                 v-if="search"
                 type="button"
                 class="icon-button"
                 aria-label="清空搜索"
-                @click="
-                  search = '';
-                  offset = 0;
-                  load();
-                "
+                @click="clearSearch()"
               >
                 <X :size="14" />
               </button>
@@ -581,9 +683,9 @@ onUnmounted(() => {
                           :is="rootID ? Files : Folder"
                           :size="21" /></span
                       ><span class="name-text"
-                        ><strong :title="t.name">{{ t.name }}</strong
+                        ><strong :title="t.name">{{ t.name }}<span v-if="t.file_evidence?.historical" class="badge">历史</span></strong
                         ><small :title="t.path">{{
-                          rootID && root
+                          rootID && root && t.path.startsWith(root.path + "/")
                             ? t.path.slice(root.path.length + 1)
                             : t.path
                         }}</small></span
@@ -600,6 +702,7 @@ onUnmounted(() => {
                         ? "准备目录"
                         : labels[t.status] || t.status
                     }}</span>
+                    <small v-if="t.file_evidence?.interrupted" class="muted"> · 上次中断</small>
                   </td>
                   <td>
                     <template v-if="rootID"
@@ -716,20 +819,14 @@ onUnmounted(() => {
             <div>
               <button
                 class="button secondary compact"
-                :disabled="offset === 0 || loading"
-                @click="
-                  offset = Math.max(0, offset - 50);
-                  load();
-                "
+                :disabled="offset === 0 || loading || manifestConflict"
+                @click="changePage(-50)"
               >
                 上一页</button
               ><button
                 class="button secondary compact"
-                :disabled="!data || offset + 50 >= data.total || loading"
-                @click="
-                  offset += 50;
-                  load();
-                "
+                :disabled="!data || offset + 50 >= data.total || loading || manifestConflict"
+                @click="changePage(50)"
               >
                 下一页
               </button>
@@ -743,7 +840,7 @@ onUnmounted(() => {
       </div>
     </main>
     <DownloadSettings v-if="settingsOpen" @close="settingsOpen = false" />
-    <div v-if="dialog" class="modal-backdrop" @click.self="dialog = null">
+    <div v-if="dialog" class="modal-backdrop" :inert="confirmation ? true : undefined" :aria-hidden="confirmation ? 'true' : undefined" @click.self="dialog = null">
       <section
         class="detail-drawer"
         v-modal="() => (dialog = null)"
@@ -767,9 +864,30 @@ onUnmounted(() => {
         }}</span>
         <dl>
           <dt>网盘路径</dt>
-          <dd>{{ dialog.path }}</dd>
+          <dd class="path-value"><span>{{ dialog.path }}</span><button class="icon-button path-copy" aria-label="复制网盘路径" title="复制网盘路径" :disabled="!dialog.path" @click="copyPath(dialog.path, '网盘路径')"><Copy :size="15" /></button></dd>
           <dt>本地路径</dt>
-          <dd>{{ dialog.local_path || "—" }}</dd>
+          <dd class="path-value"><span>{{ dialog.local_path || "—" }}</span><button class="icon-button path-copy" aria-label="复制本地目标" title="复制记录中的本地目标，不检查当前文件是否存在" :disabled="!dialog.local_path" @click="copyPath(dialog.local_path, '本地目标')"><Copy :size="15" /></button></dd>
+          <template v-if="dialog.destination">
+            <dt>目标记录时间（UTC）</dt>
+            <dd>{{ dialog.destination.recorded_at_utc }}</dd>
+            <dt>路径依据</dt>
+            <dd>本次尝试的历史保存目标；不代表文件当前仍在此处。</dd>
+          </template>
+          <template v-if="dialog.download_history">
+            <dt>清单依据</dt>
+            <dd>{{ historyHint(dialog) }}</dd>
+          </template>
+          <template v-if="dialog.file_evidence">
+            <dt>清单记录时间（UTC）</dt><dd>{{ dialog.file_evidence.observed_at_utc }}</dd>
+            <dt>条目来源</dt><dd>{{ dialog.file_evidence.observation_source === 'directory_listing' ? '本轮目录列表' : '根任务快照，未经本轮重新在线核对' }}</dd>
+            <dt v-if="dialog.file_evidence.state_at_utc">执行状态记录（UTC）</dt><dd v-if="dialog.file_evidence.state_at_utc">{{ dialog.file_evidence.state_at_utc }}</dd>
+            <dt>本地完成依据</dt>
+            <dd>{{ dialog.file_evidence.result ? (dialog.file_evidence.result.kind === 'local_verified' ? '本地文件完整校验通过' : '最终文件已发布并同步') : (dialog.file_evidence.interrupted ? '中断后尚未完成，等待重新处理' : '尚无本地完成证据') }}</dd>
+            <template v-if="dialog.file_evidence.result">
+              <dt>完成依据记录时间（UTC）</dt><dd>{{ dialog.file_evidence.result.recorded_at_utc }}</dd>
+              <dt>本地 SHA256</dt><dd>{{ dialog.file_evidence.result.sha256 }}</dd>
+            </template>
+          </template>
           <dt>当前状态</dt>
           <dd>{{ dialog.error || labels[dialog.status] }}</dd>
           <dt>容量</dt>
@@ -781,6 +899,8 @@ onUnmounted(() => {
             }}
           </dd>
         </dl>
+        <p class="copy-feedback" role="status" aria-live="polite">{{ copyMessage }}</p>
+        <p v-if="actionError" class="notice danger" role="alert">操作未确认成功：{{ actionError }}</p>
         <div class="drawer-actions">
           <button
             v-if="dialog.can_retry"
@@ -798,18 +918,54 @@ onUnmounted(() => {
             取消任务
           </button>
         </div>
+        <template v-if="!dialog.file_evidence">
         <h4>最近任务事件</h4>
         <p v-if="eventError" class="notice danger">{{ eventError }}</p>
+        <p v-else-if="eventLoading" class="muted">正在读取事件…</p>
         <p v-else-if="!events.length" class="muted">暂无事件记录</p>
         <ol class="timeline">
-          <li v-for="(e, i) in events" :key="i">
+          <li v-for="(e, i) in events" :key="`${dialog.id}:${typeof e.sequence === 'string' ? e.sequence : `${eventPage}:${i}`}`">
             <strong>{{ e.event_type || e.kind || e.event }}</strong
-            ><time>{{ e.recorded_at_utc }}</time>
+            ><time>本机记录 UTC：{{ eventUTC(e.recorded_at_utc) }}</time>
+            <time v-if="e.occurred_at_utc">事件发生 UTC：{{ eventUTC(e.occurred_at_utc) }}</time>
+            <time v-if="e.cloud_observed_at_utc">云端观察 UTC：{{ eventUTC(e.cloud_observed_at_utc) }}</time>
+            <time v-if="e.response_observed_at_utc">响应观察 UTC：{{ eventUTC(e.response_observed_at_utc) }}</time>
+            <details class="event-evidence">
+              <summary>关联与证据</summary>
+              <dl>
+                <dt>事件序列</dt><dd>{{ typeof e.sequence === 'string' ? e.sequence : '未提供精确序列' }}</dd>
+                <template v-if="e.attempt_id"><dt>下载尝试 ID</dt><dd>{{ e.attempt_id }}</dd></template>
+                <template v-if="e.operation_id"><dt>远端操作 ID</dt><dd>{{ e.operation_id }}</dd></template>
+                <template v-if="e.run_id"><dt>运行 ID</dt><dd>{{ e.run_id }}</dd></template>
+              </dl>
+              <pre v-if="e.evidence">{{ JSON.stringify(e.evidence, null, 2) }}</pre>
+              <p v-else class="muted">未记录额外证据</p>
+            </details>
           </li>
         </ol>
+        <div class="drawer-actions">
+          <button class="button secondary" data-testid="newer-events" :disabled="eventLoading || eventPage === 0" @click="loadEventPage(eventPage - 1, eventCursors[eventPage - 1] ?? null)">较新记录</button>
+          <span>第 {{ eventPage + 1 }} 页</span>
+          <button class="button secondary" data-testid="older-events" :disabled="eventLoading || !eventNext" @click="loadEventPage(eventPage + 1, eventNext)">更早记录</button>
+        </div>
         <a href="/task-events" aria-label="任务事件" class="text-link"
           >前往完整任务事件记录 <ChevronRight :size="14"
         /></a>
+        </template>
+        <p v-else class="muted">文件证据仅表示记录时的状态，不代表当前文件已重新核对。</p>
+      </section>
+    </div>
+    <div v-if="confirmation" class="modal-backdrop action-confirm-backdrop" @click.self="closeConfirmation">
+      <section class="action-confirm" role="dialog" aria-modal="true" aria-labelledby="action-confirm-title" v-modal="closeConfirmation">
+        <h2 id="action-confirm-title">{{ confirmation.kind === 'cancel' ? '取消任务' : '重试任务' }}</h2>
+        <h3>{{ confirmation.task.name }}</h3>
+        <p class="confirmation-path">{{ confirmation.task.path }}</p>
+        <p>{{ confirmation.kind === 'cancel' ? '停止此任务的后续调度。已发送的网盘操作不能撤回，本地已下载文件会保留。' : '按此任务既定策略重新尝试，由程序重新核对当前状态；不会解除结果未知的隔离。' }}</p>
+        <p v-if="error" class="notice danger" role="alert">当前状态读取异常，请返回并重新核对。</p>
+        <div class="drawer-actions">
+          <button class="button secondary" :disabled="!!busy" @click="closeConfirmation">返回</button>
+          <button class="button primary" :disabled="!!busy || !!error || health?.queue_healthy === false" @click="confirmAction">{{ busy ? '正在提交…' : confirmation.kind === 'cancel' ? '确认取消' : '确认重试' }}</button>
+        </div>
       </section>
     </div>
   </div>

@@ -147,3 +147,54 @@ func TestInventoryRequestLimitModeValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestInventoryStartRejectsStaleConfirmedRun(t *testing.T) {
+	for _, scoped := range []bool{false, true} {
+		d, _ := setup(t, nil)
+		store, err := taskstore.Open(filepath.Join(d.cfg.LocalDownDir, stateDirectory, "queue"), d.cfg.QueueDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.queue.store = store
+		defer shutdown(t, d)
+		expected := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		ctx := WithInventoryExpectedRun(context.Background(), &expected)
+		if scoped {
+			_, err = d.StartCloudInventoryRefreshWithLimit(ctx, "/", 0, "unlimited")
+		} else {
+			_, err = d.StartCloudInventoryScanWithLimit(ctx, 0, "unlimited")
+		}
+		if err == nil {
+			t.Fatal("stale confirmation started a new scan")
+		}
+	}
+}
+
+func TestInventoryPauseRejectsStaleRunWithoutCancellingWorker(t *testing.T) {
+	d, _ := setup(t, nil)
+	store, err := taskstore.Open(filepath.Join(d.cfg.LocalDownDir, stateDirectory, "queue"), d.cfg.QueueDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.queue.store = store
+	defer shutdown(t, d)
+	client, _, err := d.authorizedClient(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	state := taskstore.CloudScanState{AccountFingerprint: client.Fingerprint(), RunID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Status: "running", Phase: "listing", CurrentDirectory: "/", StartedAtUTC: now, UpdatedAtUTC: now}
+	if err = store.StartCloudScan(&state); err != nil {
+		t.Fatal(err)
+	}
+	cancelled := false
+	d.inventoryScanKind = "full"
+	d.inventoryScanCancel = func() { cancelled = true }
+	if err = d.PauseCloudInventoryRun(context.Background(), "scan", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err == nil || cancelled {
+		t.Fatal("stale pause cancelled current worker")
+	}
+	if err = d.PauseCloudInventoryRun(context.Background(), "scan", state.RunID); err != nil || !cancelled {
+		t.Fatalf("matching pause failed: %v", err)
+	}
+	d.inventoryScanCancel = nil
+}

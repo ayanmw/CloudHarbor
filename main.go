@@ -35,6 +35,7 @@ import (
 	"web_browser_baidu_onekey_upload/internal/intakeapi"
 	"web_browser_baidu_onekey_upload/internal/management"
 	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"web_browser_baidu_onekey_upload/internal/uploads"
 	"web_browser_baidu_onekey_upload/internal/webui"
 )
 
@@ -276,6 +277,12 @@ func main() {
 	if cfg.AdminPassword == "" {
 		log.Printf("Administrator username: admin; password stored in %s", filepath.Join(cfg.StateDir, "queue", "admin-key.json"))
 	}
+	uploadManager, err = uploads.Open(filepath.Join(cfg.StateDir, "uploads"), dl.UploadStagedFile, dl.AuthenticationReady)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer uploadManager.Close()
+
 	authorizationHTTP = authorization.New(dl.Context(), cfg.BaiduAppKey, cfg.BaiduSecretKey, auth, nil)
 
 	// 创建 WebUI 服务器
@@ -438,10 +445,17 @@ func handleManagedPaths(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	switch r.Method {
 	case http.MethodGet:
+		formats, hasFormat := r.URL.Query()["identity_format"]
+		if hasFormat && (len(formats) != 1 || (formats[0] != "" && formats[0] != "string")) {
+			http.Error(w, "路径影响身份格式无效", http.StatusBadRequest)
+			return
+		}
 		paths := dl.GetManagedPaths()
+		queueBlockReason := dl.ManagedPathQueueBlockReason()
 		response := map[string]any{
 			"queue_dir": paths.QueueDir, "local_download_dir": paths.LocalDownDir,
 			"queue_editable": !cfg.QueueDirExplicit, "local_download_editable": !cfg.LocalDownDirExplicit,
+			"queue_busy": queueBlockReason != "", "queue_busy_reason": queueBlockReason,
 		}
 		if targetQueueDir := r.URL.Query().Get("queue_dir"); targetQueueDir != "" {
 			query := r.URL.Query()
@@ -475,15 +489,16 @@ func handleManagedPaths(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			response["queue_change_impact"] = impact
+			response["queue_change_impact"] = managedPathImpactResponse(impact, r.URL.Query().Get("identity_format") == "string")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
 	case http.MethodPost:
 		var request struct {
 			downloader.ManagedPaths
-			MigrateFiles             bool   `json:"migrate_files"`
-			QueueChangePreviewDigest string `json:"queue_change_preview_digest,omitempty"`
+			MigrateFiles             bool                     `json:"migrate_files"`
+			QueueChangePreviewDigest string                   `json:"queue_change_preview_digest,omitempty"`
+			ExpectedPaths            *downloader.ManagedPaths `json:"expected_paths,omitempty"`
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 		decoder := json.NewDecoder(r.Body)
@@ -497,7 +512,11 @@ func handleManagedPaths(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "此路径由 .env 或启动环境配置，请在那里修改", http.StatusConflict)
 			return
 		}
-		migration, err := dl.SetManagedPathsConfirmed(r.Context(), request.ManagedPaths, request.MigrateFiles, request.QueueChangePreviewDigest)
+		var expected []downloader.ManagedPaths
+		if request.ExpectedPaths != nil {
+			expected = append(expected, *request.ExpectedPaths)
+		}
+		migration, err := dl.SetManagedPathsConfirmed(r.Context(), request.ManagedPaths, request.MigrateFiles, request.QueueChangePreviewDigest, expected...)
 		if err != nil {
 			var confirmationErr *downloader.ManagedPathImpactConfirmationError
 			if errors.As(err, &confirmationErr) {
@@ -529,6 +548,11 @@ func handleLocalDirectoryMigration(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	formats := r.URL.Query()["counter_format"]
+	if len(formats) > 1 || (len(formats) == 1 && formats[0] != "string" && formats[0] != "") {
+		http.Error(w, "counter_format must be string", http.StatusBadRequest)
+		return
+	}
 	migration, err := dl.LocalDirectoryMigrationStatus()
 	if errors.Is(err, sql.ErrNoRows) {
 		w.Header().Set("Content-Type", "application/json")
@@ -540,7 +564,7 @@ func handleLocalDirectoryMigration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(migration)
+	_ = json.NewEncoder(w).Encode(localMigrationResponse(migration, r.URL.Query().Get("counter_format") == "string"))
 }
 
 func sameLocalSettingPath(a, b string) bool {
@@ -554,6 +578,16 @@ func sameLocalSettingPath(a, b string) bool {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
+}
+
+var uploadManager *uploads.Manager
+
+func handleUploads(w http.ResponseWriter, r *http.Request) {
+	if uploadManager == nil {
+		http.Error(w, "上传服务尚未就绪", 503)
+		return
+	}
+	uploadManager.Handle(w, r)
 }
 
 func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.Server) http.Handler {
@@ -572,6 +606,14 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/ws", ui.HandleWS)
 	mux.HandleFunc("/poll", ui.HandlePagePoll)
 	mux.HandleFunc("/oauth", ui.HandlePageOAuth)
+	mux.HandleFunc("/settings/paths", ui.HandleWorkspace)
+	mux.HandleFunc("/settings/migrations", ui.HandleWorkspace)
+	mux.HandleFunc("/cloud/files", ui.HandleWorkspace)
+	mux.HandleFunc("/cloud/cache", ui.HandleWorkspace)
+	mux.HandleFunc("/cloud/cleanup", ui.HandleWorkspace)
+	mux.HandleFunc("/cloud/history", ui.HandleWorkspace)
+	mux.HandleFunc("/uploads", ui.HandleWorkspace)
+	mux.HandleFunc("/intake-history", ui.HandleWorkspace)
 	mux.HandleFunc("/intake", ui.HandlePageIntake)
 	mux.HandleFunc("/cloud", ui.HandlePageCloud)
 	mux.HandleFunc("/operations", ui.HandlePageOperations)
@@ -594,6 +636,9 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/api/task-events", handleTaskEventHistory)
 	mux.HandleFunc("/api/task-events/export", handleTaskEventHistoryExport)
 	mux.HandleFunc("/api/tasks/", handleTaskAction)
+	mux.HandleFunc("/api/uploads", handleUploads)
+	mux.HandleFunc("/api/uploads/{batch}", handleUploads)
+	mux.HandleFunc("/api/uploads/{batch}/{item}/content", handleUploads)
 	mux.HandleFunc("/api/cloud", intakeHTTP.HandleCloud)
 	mux.HandleFunc("/api/cloud-inventory", intakeHTTP.HandleInventory)
 	mux.HandleFunc("/api/cloud-inventory/incomplete-directories", intakeHTTP.HandleIncompleteCloudInventoryDirectories)
@@ -929,6 +974,11 @@ func handleTaskEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
+	sequenceFormat := query.Get("sequence_format")
+	if sequenceFormat != "" && sequenceFormat != "string" {
+		http.Error(w, "invalid sequence_format", http.StatusBadRequest)
+		return
+	}
 	filter, err := parseTaskEventFilter(query, true)
 	if err != nil {
 		http.Error(w, "invalid task event filter", http.StatusBadRequest)
@@ -969,6 +1019,10 @@ func handleTaskEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	if sequenceFormat == "string" {
+		_ = json.NewEncoder(w).Encode(taskEventStringPage(events, total, nextBefore, more, kindCounts))
+		return
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"events": events, "total_matches": total, "next_before_sequence": next, "kind_counts": kindCounts,
 	})
@@ -1031,7 +1085,7 @@ func maskTaskEventEvidence(events []taskstore.Event) error {
 func parseTaskEventFilter(query url.Values, allowPage bool) (taskstore.TaskEventFilter, error) {
 	allowed := map[string]bool{"kind": true, "operation_id": true, "attempt_id": true, "from_utc": true, "through_utc": true, "recorded_from_utc": true, "recorded_before_utc": true}
 	if allowPage {
-		allowed["before_sequence"], allowed["limit"] = true, true
+		allowed["before_sequence"], allowed["limit"], allowed["sequence_format"] = true, true, true
 	}
 	for key, values := range query {
 		if !allowed[key] || len(values) != 1 {

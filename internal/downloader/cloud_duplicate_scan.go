@@ -90,6 +90,12 @@ func (d *Downloader) StartCloudDuplicateScan(ctx context.Context) (taskstore.Clo
 		return taskstore.CloudDuplicateScanState{}, refreshErr
 	}
 	state, err := d.queue.store.LoadCloudDuplicateScanState(account)
+	if err == nil || errors.Is(err, sql.ErrNoRows) {
+		if confirmErr := checkInventoryExpectedRun(ctx, state.RunID); confirmErr != nil {
+			done()
+			return taskstore.CloudDuplicateScanState{}, confirmErr
+		}
+	}
 	fresh := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !fresh {
 		done()
@@ -153,6 +159,15 @@ func (d *Downloader) PauseCloudDuplicateScan() {
 		c()
 	}
 }
+
+// CloudDuplicateScanWorkerActive observes the process executor independently
+// of persisted running/paused state, especially after a process restart.
+func (d *Downloader) CloudDuplicateScanWorkerActive() bool {
+	d.inventoryScanMutex.Lock()
+	defer d.inventoryScanMutex.Unlock()
+	return d.inventoryScanKind == "duplicate" && d.inventoryScanCancel != nil
+}
+
 func (d *Downloader) CloudDuplicateScanStatus() (taskstore.CloudDuplicateScanState, error) {
 	client, _, err := d.authorizedClient(d.ctx)
 	if err != nil {

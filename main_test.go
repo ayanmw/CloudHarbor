@@ -422,7 +422,7 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	srv := httptest.NewServer(applicationHandler(gate, authorization.New(dl.Context(), "", "", auth, nil)))
 	defer srv.Close()
 	noRedirectClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	for _, path := range []string{"/", "/oauth", "/intake", "/cloud", "/operations", "/monitor-history", "/api/cloud", "/api/intakes", "/api/health", "/api/monitor-scans", "/api/monitor-scans/events?run_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/api/monitor-scans/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/export", "/api/oauth/status", "/api/status", "/api/tasks/3400000000000000123/events", "/api/tasks/3400000000000000123/events/export", "/api/tasks/3400000000000000123/events/1/context", "/api/cloud/operations/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/events/export", "/api/cloud-inventory/refresh/runs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/export", "/api/cloud-inventory/refresh/runs/export", "/api/cloud-inventory/refresh/changes/export", "/api/cloud-cleanup/duplicate-scan/events", "/res/cloud_browse_route.js", "/res/cloud_properties.js", "/res/cloud_actions.js", "/res/cloud_progress.js", "/res/cloud_scan_limits.js", "/res/shared.js", "/res/intake.js", "/res/monitor_history.js", "/ws"} {
+	for _, path := range []string{"/", "/oauth", "/settings/paths", "/settings/migrations", "/intake", "/cloud", "/cloud/files", "/cloud/cache", "/cloud/cleanup", "/cloud/history", "/uploads", "/intake-history", "/api/uploads", "/operations", "/monitor-history", "/api/cloud", "/api/intakes", "/api/health", "/api/monitor-scans", "/api/monitor-scans/events?run_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/api/monitor-scans/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/export", "/api/oauth/status", "/api/status", "/api/tasks/3400000000000000123/events", "/api/tasks/3400000000000000123/events/export", "/api/tasks/3400000000000000123/events/1/context", "/api/cloud/operations/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/events/export", "/api/cloud-inventory/refresh/runs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/export", "/api/cloud-inventory/refresh/runs/export", "/api/cloud-inventory/refresh/changes/export", "/api/cloud-cleanup/duplicate-scan/events", "/res/cloud_browse_route.js", "/res/cloud_properties.js", "/res/cloud_actions.js", "/res/cloud_progress.js", "/res/cloud_scan_limits.js", "/res/shared.js", "/res/intake.js", "/res/monitor_history.js", "/ws"} {
 		response, err := noRedirectClient.Get(srv.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -452,6 +452,17 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	if len(cookies) != 1 {
 		t.Fatalf("login cookies=%d", len(cookies))
 	}
+	pathSettingsRequest, _ := http.NewRequest(http.MethodGet, srv.URL+"/settings/paths", nil)
+	pathSettingsRequest.AddCookie(cookies[0])
+	pathSettingsResponse, err := http.DefaultClient.Do(pathSettingsRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathSettingsPage, _ := io.ReadAll(pathSettingsResponse.Body)
+	pathSettingsResponse.Body.Close()
+	if pathSettingsResponse.StatusCode != http.StatusOK || !strings.Contains(string(pathSettingsPage), `/app/assets/`) || pathSettingsResponse.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("path settings workspace status=%d", pathSettingsResponse.StatusCode)
+	}
 	monitorHistoryRequest, _ := http.NewRequest(http.MethodGet, srv.URL+"/monitor-history", nil)
 	monitorHistoryRequest.AddCookie(cookies[0])
 	monitorHistoryResponse, err := http.DefaultClient.Do(monitorHistoryRequest)
@@ -460,7 +471,9 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	}
 	monitorHistoryPage, _ := io.ReadAll(monitorHistoryResponse.Body)
 	monitorHistoryResponse.Body.Close()
-	if monitorHistoryResponse.StatusCode != http.StatusOK || !strings.Contains(string(monitorHistoryPage), "自动监控扫描历史") || !strings.Contains(string(monitorHistoryPage), "/res/monitor_history.js") {
+	// Vue now supplies the monitor UI; verify the authenticated bundle entry
+	// here, while bundle behavior tests verify the actual monitor controls.
+	if monitorHistoryResponse.StatusCode != http.StatusOK || !strings.Contains(string(monitorHistoryPage), `id="app"`) || !strings.Contains(string(monitorHistoryPage), "/app/assets/") || strings.Contains(string(monitorHistoryPage), "/res/monitor_history.js") || monitorHistoryResponse.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("monitor history page status=%d", monitorHistoryResponse.StatusCode)
 	}
 	monitorHistoryAPIRequest, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/monitor-scans", nil)
@@ -481,8 +494,10 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	}
 	operationsPage, _ := io.ReadAll(operationsResponse.Body)
 	operationsResponse.Body.Close()
-	if operationsResponse.StatusCode != http.StatusOK || !strings.Contains(string(operationsPage), "远端操作历史（只读）") || strings.Contains(string(operationsPage), "api/cloud/mutations") {
-		t.Fatalf("operations page status=%d contains history=%v contains mutation=%v", operationsResponse.StatusCode, strings.Contains(string(operationsPage), "远端操作历史（只读）"), strings.Contains(string(operationsPage), "api/cloud/mutations"))
+	// Vue owns the operation history markup now; behavior tests assert read-only
+	// requests while this authenticated HTTP regression checks its embedded entry.
+	if operationsResponse.StatusCode != http.StatusOK || !strings.Contains(string(operationsPage), `id="app"`) || !strings.Contains(string(operationsPage), "/app/assets/") || strings.Contains(string(operationsPage), "/res/cloud_operations.js") || operationsResponse.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("operations workspace status=%d body=%s", operationsResponse.StatusCode, operationsPage)
 	}
 	filteredEvidenceRequest, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/cloud/operations/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/events/export?recorded_through_utc=2026-10-30", nil)
 	filteredEvidenceRequest.AddCookie(cookies[0])
@@ -585,6 +600,32 @@ func TestManagementHTTPAndWebSocketIntegration(t *testing.T) {
 	}
 	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &eventPage) != nil || len(eventPage.Events) != 1 || eventPage.Events[0].Kind != "api-event-21" || eventPage.NextBeforeSequence == nil {
 		t.Fatalf("task events were not returned in the authenticated response: status=%d body=%s", response.StatusCode, body)
+	}
+	for _, format := range []string{"string", "invalid"} {
+		req, _ := http.NewRequest("GET", srv.URL+"/api/tasks/3400000000000000123/events?limit=1&sequence_format="+format, nil)
+		req.Header.Set("Authorization", "Bearer private-administrator-password")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if format == "invalid" {
+			if res.StatusCode != http.StatusBadRequest {
+				t.Fatalf("invalid sequence format: %d", res.StatusCode)
+			}
+			continue
+		}
+		var page struct {
+			Events []struct {
+				Sequence string `json:"sequence"`
+				JobID    string `json:"job_id"`
+			} `json:"events"`
+			Next string `json:"next_before_sequence"`
+		}
+		if res.StatusCode != http.StatusOK || json.Unmarshal(payload, &page) != nil || len(page.Events) != 1 || page.Events[0].JobID != "3400000000000000123" || page.Next != strconv.FormatInt(*eventPage.NextBeforeSequence, 10) {
+			t.Fatalf("string event response: %d %s", res.StatusCode, payload)
+		}
 	}
 	req, _ = http.NewRequest("GET", srv.URL+"/api/tasks/3400000000000000123/events?limit=1&before_sequence="+strconv.FormatInt(*eventPage.NextBeforeSequence, 10), nil)
 	req.Header.Set("Authorization", "Bearer private-administrator-password")

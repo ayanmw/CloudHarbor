@@ -1,4 +1,16 @@
 import { createApp } from "vue";
 import App from "./App.vue";
+import EventWorkspace from "./EventWorkspace.vue";
+import MonitorWorkspace from "./MonitorWorkspace.vue";
+import OperationWorkspace from "./OperationWorkspace.vue";
+import IntakeWorkspace from "./IntakeWorkspace.vue";
+import OAuthWorkspace from "./OAuthWorkspace.vue";
+import PathSettingsWorkspace from "./PathSettingsWorkspace.vue";
+import MigrationWorkspace from "./MigrationWorkspace.vue";
+import CloudFilesWorkspace from "./CloudFilesWorkspace.vue";
+import CloudCacheWorkspace from "./CloudCacheWorkspace.vue";
+import CloudCleanupWorkspace from "./CloudCleanupWorkspace.vue";
+import UploadWorkspace from './UploadWorkspace.vue';
+import CloudHistoryWorkspace from "./CloudHistoryWorkspace.vue";
 import "./style.css";
-createApp(App).mount("#app");
+createApp(location.pathname === "/uploads" ? UploadWorkspace : location.pathname === "/cloud/history" ? CloudHistoryWorkspace : location.pathname === "/cloud/cleanup" ? CloudCleanupWorkspace : location.pathname === "/cloud/cache" ? CloudCacheWorkspace : location.pathname === "/cloud/files" ? CloudFilesWorkspace : location.pathname === "/settings/migrations" ? MigrationWorkspace : location.pathname === "/settings/paths" ? PathSettingsWorkspace : location.pathname === "/oauth" ? OAuthWorkspace : (location.pathname === "/intake" || location.pathname === "/intake-history") ? IntakeWorkspace : location.pathname === "/task-events" ? EventWorkspace : location.pathname === "/monitor-history" ? MonitorWorkspace : location.pathname === "/operations" ? OperationWorkspace : App).mount("#app");

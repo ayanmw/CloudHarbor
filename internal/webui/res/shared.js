@@ -142,6 +142,7 @@ const taskEventFilterKinds = {
     cloud_file_observed: '扫描发现网盘文件',
     download_attempt_finished: '下载尝试结束',
     download_attempt_started: '下载尝试开始',
+    download_destination_recorded: '本地目标路径已记录',
     job_completed: '任务完成',
     job_registered: '任务登记',
     job_state_saved: '任务状态保存',

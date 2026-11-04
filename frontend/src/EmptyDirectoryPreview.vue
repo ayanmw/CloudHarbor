@@ -1,0 +1,30 @@
+<script setup lang="ts">
+import {onMounted,onUnmounted,ref,watch} from 'vue';
+import {validCloudDirectory} from './cloud-files-route';
+import type {CleanupEntry,CleanupCandidate} from './cleanup-types';
+const props=defineProps<{disabled:boolean}>(),emit=defineEmits<{authenticationRequired:[];selection:[CleanupCandidate[]]}>();
+const entries=ref<CleanupEntry[]>([]),selection=ref<Record<string,boolean>>({}),loading=ref(false),loaded=ref(false),error=ref(''),coverage=ref('unknown'),generationValue=ref(''),offset=ref('0'),total=ref('0'),next=ref<string|null>(null),sourceUTC=ref(''),observed=ref('');
+const exact=(x:unknown)=>typeof x==='string'&&/^(0|[1-9][0-9]*)$/.test(x)&&x.length<=19&&BigInt(x)<=9223372036854775807n;
+let active=true,generation=0,controller:AbortController|undefined;
+function clear(){selection.value={};emit('selection',[]);}
+function publish(){emit('selection',!error.value&&!loading.value&&coverage.value==='complete'?entries.value.filter(e=>selection.value[e.fs_id]).map(entry=>({kind:'empty',entry,observedAt:observed.value})):[]);}
+function toggle(entry:CleanupEntry,event:Event){selection.value[entry.fs_id]=(event.target as HTMLInputElement).checked;publish();}
+function selectPage(){for(const entry of entries.value)selection.value[entry.fs_id]=true;publish();}
+function stop(){clear();active=false;generation++;controller?.abort();loading.value=false;}
+async function load(at='0'){
+ if(!active||props.disabled||loading.value)return;clear();loading.value=true;error.value='';controller=new AbortController();const request=++generation;
+ const query=new URLSearchParams({identity_format:'string',limit:'50',offset:at});if(at!=='0')query.set('cache_generation',generationValue.value);
+ try{const response=await fetch('/api/cloud-cleanup/empty-directories?'+query,{credentials:'same-origin',signal:controller.signal});if(request!==generation)return;if(response.status===401){stop();emit('authenticationRequired');return;}if(response.status===409){next.value=null;throw Error('缓存已变化，请重新读取首批候选；已清空待删选择。');}if(!response.ok)throw Error(await response.text()||'空目录候选读取失败');const data=await response.json();if(request!==generation)return;
+ if(!data||!Array.isArray(data.directories)||data.directories.length>50||!exact(data.cache_generation)||!exact(data.total)||data.offset!==at||data.limit!==50||!['complete','incomplete','unknown','scanning'].includes(data.coverage)||typeof data.observed_at_utc!=='string'||!data.observed_at_utc.endsWith('Z')||!Number.isFinite(Date.parse(data.observed_at_utc))||(at!=='0'&&data.cache_generation!==generationValue.value)||(data.next_offset!==null&&(!exact(data.next_offset)||BigInt(data.next_offset)<=BigInt(at))))throw Error('空目录分页证据无效');
+ const ids=new Set();for(const entry of data.directories){if(!entry||!exact(entry.fs_id)||entry.fs_id==='0'||ids.has(entry.fs_id)||entry.directory!==true||!exact(entry.size)||!exact(entry.provider_mtime)||typeof entry.name!=='string'||typeof entry.path!=='string'||!validCloudDirectory(entry.path)||entry.path==='/')throw Error('空目录身份无效');ids.add(entry.fs_id);}
+ entries.value=data.directories;generationValue.value=data.cache_generation;coverage.value=data.coverage;sourceUTC.value=data.observed_at_utc;offset.value=at;next.value=data.next_offset;total.value=data.total;loaded.value=true;observed.value=new Date().toISOString();
+ }catch(e:any){if(request===generation)error.value=e.message||'空目录候选暂不可读';}finally{if(request===generation)loading.value=false;}
+}
+function restore(event:PageTransitionEvent){if(event.persisted&&!props.disabled){active=true;if(loaded.value)load();}}
+watch(()=>props.disabled,value=>{if(value)stop();});onMounted(()=>{window.addEventListener('pagehide',stop);window.addEventListener('pageshow',restore);});onUnmounted(()=>{stop();window.removeEventListener('pagehide',stop);window.removeEventListener('pageshow',restore);});
+async function refreshAfterMutation(){if(!loaded.value)return active&&!props.disabled;generation++;controller?.abort();loading.value=false;await load();return active&&!props.disabled&&!error.value;}
+defineExpose({refreshAfterMutation});
+</script>
+<template><section class="event-results"><header class="page-header"><div><h2>空目录候选</h2><p class="muted">从完整本地缓存分页读取当前直接为空的目录，监控目录、其子目录和祖先受保护。删除子目录后，父目录需刷新才会成为新候选。</p></div><button class="button secondary" data-testid="empty-preview" :disabled="disabled||loading" @click="load()">{{loaded?'刷新空目录':'读取空目录预览'}}</button></header><p v-if="loading" role="status">正在读取本地空目录候选…</p><p v-if="error" class="notice danger" role="alert">{{error}}<span v-if="loaded"> · 下方是上次读取结果，不能据此执行。</span></p><template v-if="loaded"><p v-if="coverage!=='complete'" class="notice">缓存覆盖尚未完整，不能生成可靠的空目录清单；请先到缓存扫描页核对。</p><template v-else><p>本地候选 {{total}} 个 · 代次 {{generationValue}} · 当前偏移 {{offset}}</p><p class="notice">缓存为空不能证明线上仍为空。删除前服务端会核对身份并再次读取子项；新增了内容的目录会拒绝删除。</p><button class="button secondary" :disabled="disabled||loading||!!error||!entries.length" @click="selectPage">选择本页空目录</button><button class="button secondary" :disabled="disabled||loading" @click="clear">清空选择</button><div class="event-table-scroll"><table><thead><tr><th>待删除</th><th>名称</th><th>网盘路径</th><th>文件 ID</th></tr></thead><tbody><tr v-for="entry in entries" :key="entry.fs_id"><td><input type="checkbox" data-testid="empty-select" :aria-label="'选择删除空目录 '+entry.path" :checked="!!selection[entry.fs_id]" :disabled="disabled||loading||!!error" @change="toggle(entry,$event)"/></td><td>{{entry.name}}</td><td>{{entry.path}}</td><td>{{entry.fs_id}}</td></tr><tr v-if="!entries.length"><td colspan="4">本页没有空目录候选。</td></tr></tbody></table></div><button class="button secondary" :disabled="disabled||loading||offset==='0'" @click="load()">回到首批</button><button v-if="next" class="button secondary" data-testid="empty-next" :disabled="disabled||loading||!!error" @click="load(next)">下一批空目录</button></template><p v-if="!sourceUTC.startsWith('0001-')" class="muted">全盘扫描检查点 UTC：{{sourceUTC}}</p></template><p v-if="observed" class="muted">本机读取 UTC：{{observed}}</p></section></template>
+
+<style scoped>th:first-child{width:56px}</style>

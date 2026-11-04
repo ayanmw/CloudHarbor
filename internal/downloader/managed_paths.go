@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -22,6 +23,8 @@ type ManagedPaths struct {
 	QueueDir     string `json:"queue_dir"`
 	LocalDownDir string `json:"local_download_dir"`
 }
+
+var ErrManagedPathsChanged = errors.New("当前路径配置已变化，请刷新后重新预览并确认")
 
 type ManagedPathImpactTask struct {
 	FsID         int64        `json:"fs_id"`
@@ -147,7 +150,12 @@ func (d *Downloader) SetManagedPaths(ctx context.Context, paths ManagedPaths, mi
 	return d.SetManagedPathsConfirmed(ctx, paths, migrateFiles, "")
 }
 
-func (d *Downloader) SetManagedPathsConfirmed(ctx context.Context, paths ManagedPaths, migrateFiles bool, impactDigest string) (taskstore.LocalDirectoryMigration, error) {
+// An optional expected snapshot is checked under the same path lock that selects
+// the migration source. Legacy callers without a snapshot retain their behavior.
+func (d *Downloader) SetManagedPathsConfirmed(ctx context.Context, paths ManagedPaths, migrateFiles bool, impactDigest string, expected ...ManagedPaths) (taskstore.LocalDirectoryMigration, error) {
+	if len(expected) > 1 {
+		return taskstore.LocalDirectoryMigration{}, fmt.Errorf("路径前置条件只能提供一份")
+	}
 	if !validCloudPath(paths.QueueDir) || paths.QueueDir == "/" {
 		return taskstore.LocalDirectoryMigration{}, fmt.Errorf("网盘监控目录必须是以 / 开头的非根目录")
 	}
@@ -170,6 +178,9 @@ func (d *Downloader) SetManagedPathsConfirmed(ctx context.Context, paths Managed
 		d.managedPathsAdmissionHook()
 	}
 	current := d.GetManagedPaths()
+	if len(expected) == 1 && (expected[0].QueueDir != current.QueueDir || strings.TrimSpace(expected[0].LocalDownDir) == "" || !sameLocalPath(expected[0].LocalDownDir, current.LocalDownDir)) {
+		return taskstore.LocalDirectoryMigration{}, ErrManagedPathsChanged
+	}
 	samePaths := current.QueueDir == paths.QueueDir && sameLocalPath(current.LocalDownDir, local)
 	var failedMigration taskstore.LocalDirectoryMigration
 	resumeFailedMigration := false
@@ -198,6 +209,9 @@ func (d *Downloader) SetManagedPathsConfirmed(ctx context.Context, paths Managed
 			return taskstore.LocalDirectoryMigration{}, fmt.Errorf("存在未完成的网盘入队操作，暂不能修改路径")
 		}
 	}
+	if d.managedPathsMaintenanceHook != nil {
+		d.managedPathsMaintenanceHook()
+	}
 	if err = d.TryBeginMaintenance(); err != nil {
 		return taskstore.LocalDirectoryMigration{}, err
 	}
@@ -207,6 +221,12 @@ func (d *Downloader) SetManagedPathsConfirmed(ctx context.Context, paths Managed
 			d.EndMaintenance()
 		}
 	}()
+	// A finishing migration publishes paths under queue maintenance rather than
+	// pathOperations. Recheck after acquiring that gate before using the source.
+	latest := d.GetManagedPaths()
+	if latest.QueueDir != current.QueueDir || !sameLocalPath(latest.LocalDownDir, current.LocalDownDir) {
+		return taskstore.LocalDirectoryMigration{}, ErrManagedPathsChanged
+	}
 	if !d.scanMutex.TryLock() {
 		return taskstore.LocalDirectoryMigration{}, fmt.Errorf("下载目录扫描正在运行，请稍后重试")
 	}
@@ -293,18 +313,35 @@ func (d *Downloader) TryBeginMaintenance() error {
 	q := d.queue
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.stopping || q.err != nil {
-		return fmt.Errorf("下载队列不可用")
-	}
-	if q.maintenance {
-		return fmt.Errorf("下载队列正在维护")
-	}
-	if len(q.active) != 0 {
-		return fmt.Errorf("有下载任务正在运行，暂不能修改路径")
+	if reason := d.managedPathQueueBlockReasonLocked(); reason != "" {
+		return errors.New(reason)
 	}
 	q.maintenance = true
 	q.signal()
 	return nil
+}
+
+// ManagedPathQueueBlockReason is a read-only observation, not an admission lease.
+// Saving still performs all path, intake, scan, and maintenance checks.
+func (d *Downloader) ManagedPathQueueBlockReason() string {
+	d.queue.mu.Lock()
+	defer d.queue.mu.Unlock()
+	return d.managedPathQueueBlockReasonLocked()
+}
+
+// Caller holds queue.mu, shared with the maintenance admission check above.
+func (d *Downloader) managedPathQueueBlockReasonLocked() string {
+	q := d.queue
+	if q.stopping || q.err != nil {
+		return "下载队列不可用"
+	}
+	if q.maintenance {
+		return "下载队列正在维护"
+	}
+	if len(q.active) != 0 {
+		return "有下载任务正在运行，暂不能修改路径"
+	}
+	return ""
 }
 
 func sameLocalPath(a, b string) bool {

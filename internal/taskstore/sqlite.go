@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 41
+const sqliteSchemaVersion = 42
 
 type Event struct {
 	Sequence              int64           `json:"sequence"`
@@ -418,6 +418,9 @@ CREATE TRIGGER IF NOT EXISTS job_events_no_delete BEFORE DELETE ON job_events BE
 		`); err != nil {
 			return fail(err)
 		}
+		if _, err = db.ExecContext(ctx, downloadManifestSchema); err != nil {
+			return fail(err)
+		}
 		if _, err = db.ExecContext(ctx, `INSERT OR IGNORE INTO store_meta(key, value) VALUES('schema_version', ?), ('scope', ?)`, fmt.Sprint(sqliteSchemaVersion), scope); err != nil {
 			return fail(err)
 		}
@@ -454,6 +457,9 @@ func sqliteDataSourceName(path string) string {
 }
 
 func validateSQLiteSchemaAndScope(ctx context.Context, db *sql.DB, scope string) error {
+	if err := validateDownloadManifestSchema(ctx, db); err != nil {
+		return err
+	}
 	var schemaObjects int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE (type='table' AND name IN ('store_meta','jobs','job_events','admin_sessions','remote_operations','remote_operation_events','cloud_inventory','cloud_inventory_file_sizes','cloud_inventory_directories','cloud_inventory_generations','cloud_directory_size_cache','cloud_inventory_scan_state','cloud_inventory_scan_queue','cloud_inventory_scan_events','cloud_scan_runs','queue_monitor_scan_runs','queue_monitor_scan_events','cloud_inventory_refresh_state','cloud_inventory_refresh_runs','cloud_inventory_refresh_queue','cloud_inventory_refresh_entries','cloud_inventory_refresh_events','cloud_inventory_refresh_changes','cloud_duplicate_scan_runs','local_directory_migrations','local_directory_migration_events')) OR (type='index' AND name IN ('job_events_job_sequence','job_events_kind_sequence','job_events_operation_sequence','job_events_attempt_sequence','job_events_recorded_sequence','remote_operation_events_order','cloud_inventory_parent_name_id','cloud_inventory_path','cloud_inventory_duplicate_size','cloud_content_hashes_duplicate_group','cloud_inventory_refresh_entries_order','cloud_inventory_scan_events_order','cloud_inventory_scan_boundary_restart_count','cloud_inventory_refresh_events_order','cloud_inventory_refresh_runs_order','cloud_inventory_refresh_run_order','cloud_inventory_refresh_boundary_restart_count','cloud_inventory_refresh_changes_order','local_directory_migration_events_order','cloud_scan_runs_order','queue_monitor_scan_runs_order','queue_monitor_scan_events_order','cloud_duplicate_scan_runs_order')) OR (type='trigger' AND name IN ('job_events_no_update','job_events_no_delete','remote_operation_events_no_update','remote_operation_events_no_delete','cloud_inventory_scan_events_no_update','cloud_inventory_scan_events_no_delete','queue_monitor_scan_events_no_update','queue_monitor_scan_events_no_delete','cloud_inventory_refresh_events_no_update','cloud_inventory_refresh_events_no_delete','cloud_inventory_refresh_changes_no_update','cloud_inventory_refresh_changes_no_delete','local_directory_migration_events_no_update','local_directory_migration_events_no_delete','cloud_inventory_file_size_insert','cloud_inventory_file_size_delete','cloud_inventory_file_size_update'))`).Scan(&schemaObjects); err != nil {
 		return err

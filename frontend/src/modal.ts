@@ -10,7 +10,7 @@ export const vModal: Directive<HTMLElement, () => void> = {
     const focusable = () =>
       Array.from(
         el.querySelectorAll<HTMLElement>(
-          "button,a[href],input,select,textarea,[tabindex]",
+          "button,a[href],input,select,textarea,summary,[tabindex]",
         ),
       ).filter(
         (node) =>

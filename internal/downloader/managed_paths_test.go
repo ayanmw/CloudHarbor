@@ -401,6 +401,102 @@ func TestManagedPathsRejectRunningTasksAndExplicitEnvironment(t *testing.T) {
 	}
 }
 
+func TestManagedPathExpectedSnapshotIsCheckedAfterAdmissionUnderPathLock(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.Config{QueueDir: "/queue", LocalDownDir: filepath.Join(root, "initial"), StateDir: filepath.Join(root, "state"), MaxParallel: 1}
+	d, err := OpenDownloader(cfg, baiduapi.NewClient("synthetic-token", "synthetic-app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Shutdown(context.Background())
+	expected := d.GetManagedPaths()
+	changed := ManagedPaths{QueueDir: "/other", LocalDownDir: filepath.Join(root, "changed")}
+	d.managedPathsAdmissionHook = func() {
+		d.pathMu.Lock()
+		d.queueDir, d.localDownDir = changed.QueueDir, changed.LocalDownDir
+		d.pathMu.Unlock()
+	}
+	target := ManagedPaths{QueueDir: "/target", LocalDownDir: filepath.Join(root, "target")}
+	_, err = d.SetManagedPathsConfirmed(context.Background(), target, false, "", expected)
+	if !errors.Is(err, ErrManagedPathsChanged) {
+		t.Fatalf("admission changed paths but result=%v", err)
+	}
+	if d.GetManagedPaths() != changed {
+		t.Fatal("old confirmation overwrote admitted current paths")
+	}
+	if _, statErr := os.Stat(target.LocalDownDir); !os.IsNotExist(statErr) {
+		t.Fatalf("stale confirmation created local target: %v", statErr)
+	}
+}
+
+func TestManagedPathQueueObservationReportsActiveDownloadsWithoutAcquiringMaintenance(t *testing.T) {
+	root := t.TempDir()
+	d, err := OpenDownloader(&config.Config{QueueDir: "/queue", LocalDownDir: filepath.Join(root, "downloads"), StateDir: filepath.Join(root, "state"), MaxParallel: 1}, baiduapi.NewClient("synthetic-token", "synthetic-app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		d.queue.mu.Lock()
+		delete(d.queue.active, 42)
+		d.queue.mu.Unlock()
+		_ = d.Shutdown(context.Background())
+	})
+	if reason := d.ManagedPathQueueBlockReason(); reason != "" {
+		t.Fatalf("idle queue is blocked: %s", reason)
+	}
+	d.queue.mu.Lock()
+	d.queue.active[42] = func() {}
+	d.queue.mu.Unlock()
+	if reason := d.ManagedPathQueueBlockReason(); !strings.Contains(reason, "下载任务正在运行") {
+		t.Fatalf("active download not observed: %s", reason)
+	}
+	d.queue.mu.Lock()
+	maintenance := d.queue.maintenance
+	delete(d.queue.active, 42)
+	d.queue.mu.Unlock()
+	if maintenance {
+		t.Fatal("read-only queue observation acquired maintenance")
+	}
+	if reason := d.ManagedPathQueueBlockReason(); reason != "" {
+		t.Fatalf("released active queue remains blocked: %s", reason)
+	}
+}
+
+func TestManagedPathsRejectPublicationBetweenPathReadAndMaintenanceAdmission(t *testing.T) {
+	root := t.TempDir()
+	d, err := OpenDownloader(&config.Config{QueueDir: "/queue", LocalDownDir: filepath.Join(root, "initial"), StateDir: filepath.Join(root, "state"), MaxParallel: 1}, baiduapi.NewClient("synthetic-token", "synthetic-app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Shutdown(context.Background())
+	expected := d.GetManagedPaths()
+	changed := ManagedPaths{QueueDir: "/published", LocalDownDir: filepath.Join(root, "published")}
+	d.queue.mu.Lock()
+	d.queue.maintenance = true
+	d.queue.mu.Unlock()
+	d.managedPathsMaintenanceHook = func() {
+		// A previous migration publishes paths before it releases queue maintenance.
+		d.pathMu.Lock()
+		d.queueDir, d.localDownDir = changed.QueueDir, changed.LocalDownDir
+		d.pathMu.Unlock()
+		d.EndMaintenance()
+	}
+	target := ManagedPaths{QueueDir: "/target", LocalDownDir: filepath.Join(root, "target")}
+	_, err = d.SetManagedPathsConfirmed(context.Background(), target, false, "", expected)
+	if !errors.Is(err, ErrManagedPathsChanged) {
+		t.Fatalf("migration publication was not rejected: %v", err)
+	}
+	if d.GetManagedPaths() != changed {
+		t.Fatal("stale source snapshot replaced the published paths")
+	}
+	if _, statErr := os.Stat(target.LocalDownDir); !os.IsNotExist(statErr) {
+		t.Fatalf("stale source created a target: %v", statErr)
+	}
+	if reason := d.ManagedPathQueueBlockReason(); reason != "" {
+		t.Fatalf("rejected write retained maintenance: %s", reason)
+	}
+}
+
 func TestSetManagedPathsIgnoresExpiredPreviewButBlocksValidPreview(t *testing.T) {
 	root := t.TempDir()
 	cfg := &config.Config{QueueDir: "/queue", LocalDownDir: filepath.Join(root, "downloads"), StateDir: filepath.Join(root, "state"), MaxParallel: 1}

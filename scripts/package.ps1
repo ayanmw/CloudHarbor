@@ -62,7 +62,9 @@ try {
     node scripts/userscript.test.cjs
     if ($LASTEXITCODE -ne 0) { throw 'Browser script tests failed.' }
     $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
-    go test ./...
+    # SQLite fixtures use synchronous disk writes. Keep package execution serial
+    # during release validation; retain every test and its original deadlines.
+    go test -p 1 ./...
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
     go vet ./...
     if ($LASTEXITCODE -ne 0) { throw 'Vet failed.' }

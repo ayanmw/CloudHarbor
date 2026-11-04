@@ -82,6 +82,11 @@ func (s *Server) HandleLocalDirectoryMigrations(w http.ResponseWriter, r *http.R
 		return
 	}
 	query := r.URL.Query()
+	exactCounters, formatErr := migrationStringCounters(query)
+	if formatErr != nil {
+		http.Error(w, "计数格式无效。", http.StatusBadRequest)
+		return
+	}
 	if len(query["offset"]) > 1 || len(query["limit"]) > 1 || len(query["status"]) > 1 || len(query["q"]) > 1 {
 		http.Error(w, "分页参数无效。", http.StatusBadRequest)
 		return
@@ -118,7 +123,7 @@ func (s *Server) HandleLocalDirectoryMigrations(w http.ResponseWriter, r *http.R
 		nextOffset = &next
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	jsonResponse(w, map[string]any{"entries": entries, "total": total, "offset": offset, "limit": limit, "next_offset": nextOffset})
+	jsonResponse(w, map[string]any{"entries": migrationHistoryResponse(entries, exactCounters), "total": total, "offset": offset, "limit": limit, "next_offset": nextOffset})
 }
 
 func localDirectoryMigrationFilterFromRequest(r *http.Request) (taskstore.LocalDirectoryMigrationFilter, error) {
@@ -186,6 +191,12 @@ func (s *Server) HandleLocalDirectoryMigrationEvents(w http.ResponseWriter, r *h
 		return
 	}
 	query := r.URL.Query()
+	format := query["identity_format"]
+	if len(format) > 1 || (len(format) == 1 && format[0] != "" && format[0] != "string") {
+		http.Error(w, "身份格式无效。", http.StatusBadRequest)
+		return
+	}
+	exact := query.Get("identity_format") == "string"
 	if len(query["before_sequence"]) > 1 || len(query["limit"]) > 1 {
 		http.Error(w, "分页参数无效。", http.StatusBadRequest)
 		return
@@ -223,7 +234,11 @@ func (s *Server) HandleLocalDirectoryMigrationEvents(w http.ResponseWriter, r *h
 		}
 		events[i].Evidence = evidence
 	}
-	jsonResponse(w, map[string]any{"migration_id": id, "events": events, "next_before_sequence": nextBefore, "has_more": hasMore})
+	var next any = nextBefore
+	if exact {
+		next = strconv.FormatInt(nextBefore, 10)
+	}
+	jsonResponse(w, map[string]any{"migration_id": id, "events": migrationEventResponse(events, exact), "next_before_sequence": next, "has_more": hasMore})
 }
 
 func (s *Server) HandleLocalDirectoryMigrationEvidenceExport(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +299,15 @@ func (s *Server) HandleEmptyCloudDirectories(w http.ResponseWriter, r *http.Requ
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效。", http.StatusBadRequest)
+		return
+	}
+	if r.URL.Query().Has("limit") || r.URL.Query().Has("offset") || r.URL.Query().Has("cache_generation") {
+		s.handleEmptyDirectoryPage(w, r)
+		return
+	}
 	items, err := s.backend.PreviewEmptyCloudDirectories(r.Context())
 	if err != nil {
 		readFailure(w, err)
@@ -294,16 +318,25 @@ func (s *Server) HandleEmptyCloudDirectories(w http.ResponseWriter, r *http.Requ
 		readFailure(w, err)
 		return
 	}
-	jsonResponse(w, map[string]any{"directories": items, "scan_run_id": state.RunID, "observed_at_utc": state.UpdatedAtUTC, "status": state.Status})
+	jsonResponse(w, map[string]any{"directories": cachedCloudEntriesResponse(items, exact), "scan_run_id": state.RunID, "observed_at_utc": state.UpdatedAtUTC, "status": state.Status})
 }
 
 func (s *Server) HandleDuplicateScan(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		exact, formatErr := cloudStringIdentity(r.URL.Query())
+		if formatErr != nil {
+			http.Error(w, "身份格式无效。", http.StatusBadRequest)
+			return
+		}
 		if r.URL.Query().Get("estimate") == "1" {
 			estimate, err := s.backend.CloudDuplicateScanEstimate()
 			if err != nil {
 				readFailure(w, err)
+				return
+			}
+			if exact {
+				jsonResponse(w, map[string]string{"files": strconv.FormatInt(estimate.Files, 10), "estimated_bytes": strconv.FormatInt(estimate.EstimatedBytes, 10)})
 				return
 			}
 			jsonResponse(w, estimate)
@@ -314,9 +347,23 @@ func (s *Server) HandleDuplicateScan(w http.ResponseWriter, r *http.Request) {
 			readFailure(w, err)
 			return
 		}
+		if exact {
+			active := false
+			if source, ok := s.backend.(interface{ CloudDuplicateScanWorkerActive() bool }); ok {
+				active = source.CloudDuplicateScanWorkerActive()
+			}
+			jsonResponse(w, duplicateScanStringStatus(state, active))
+			return
+		}
 		jsonResponse(w, state)
 	case http.MethodPost:
-		state, err := s.backend.StartCloudDuplicateScan(r.Context())
+		var request struct {
+			ExpectedRunID *string `json:"expected_run_id"`
+		}
+		if !decode(w, r, &request, true) {
+			return
+		}
+		state, err := s.backend.StartCloudDuplicateScan(downloader.WithInventoryExpectedRun(r.Context(), request.ExpectedRunID))
 		if err != nil {
 			failure(w, err)
 			return
@@ -324,7 +371,25 @@ func (s *Server) HandleDuplicateScan(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		jsonResponse(w, state)
 	case http.MethodDelete:
-		s.backend.PauseCloudDuplicateScan()
+		if ids, present := r.URL.Query()["expected_run_id"]; present {
+			if len(ids) != 1 || len(ids[0]) != 32 {
+				http.Error(w, "运行 ID 无效", http.StatusBadRequest)
+				return
+			}
+			guarded, ok := s.backend.(interface {
+				PauseCloudInventoryRun(context.Context, string, string) error
+			})
+			if !ok {
+				http.Error(w, "当前后端不支持固定运行暂停", http.StatusNotImplemented)
+				return
+			}
+			if err := guarded.PauseCloudInventoryRun(r.Context(), "duplicate", ids[0]); err != nil {
+				failure(w, err)
+				return
+			}
+		} else {
+			s.backend.PauseCloudDuplicateScan()
+		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.Header().Set("Allow", "GET, POST, DELETE")
@@ -385,6 +450,11 @@ func (s *Server) HandleDuplicatePreview(w http.ResponseWriter, r *http.Request) 
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效。", http.StatusBadRequest)
+		return
+	}
 	query := r.URL.Query()
 	if len(query["offset"]) > 1 || len(query["limit"]) > 1 {
 		http.Error(w, "invalid duplicate preview page", http.StatusBadRequest)
@@ -404,6 +474,15 @@ func (s *Server) HandleDuplicatePreview(w http.ResponseWriter, r *http.Request) 
 	if offset+len(groups) < total {
 		next := offset + len(groups)
 		nextOffset = &next
+	}
+	if exact {
+		var next *string
+		if nextOffset != nil {
+			value := strconv.Itoa(*nextOffset)
+			next = &value
+		}
+		jsonResponse(w, map[string]any{"groups": cleanupGroupsResponse(groups), "total": strconv.Itoa(total), "delete_count": strconv.Itoa(deleteCount), "offset": strconv.Itoa(offset), "limit": limit, "next_offset": next})
+		return
 	}
 	jsonResponse(w, map[string]any{"groups": groups, "total": total, "delete_count": deleteCount, "offset": offset, "limit": limit, "next_offset": nextOffset})
 }
@@ -583,6 +662,11 @@ func (s *Server) HandleCloud(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET") {
 		return
 	}
+	format := r.URL.Query()["identity_format"]
+	if len(format) > 1 || (len(format) == 1 && format[0] != "" && format[0] != "string") {
+		http.Error(w, "身份格式无效。", http.StatusBadRequest)
+		return
+	}
 	offset, limit, err := pagination(r, 100)
 	if err != nil {
 		readFailure(w, err)
@@ -634,13 +718,19 @@ func (s *Server) HandleCloud(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	jsonResponse(w, result)
+	jsonResponse(w, cloudListingResponse(result, r.URL.Query().Get("identity_format") == "string"))
 }
 
 func (s *Server) HandleInventory(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET") {
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效。", http.StatusBadRequest)
+		return
+	}
+
 	offset, limit, err := pagination(r, 100)
 	if err != nil {
 		readFailure(w, err)
@@ -665,7 +755,7 @@ func (s *Server) HandleInventory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"directory": dir, "entries": items, "metadata": metadata, "cache_generation": metadata.Generation, "total": total, "offset": offset, "next_offset": func() *int {
+	_ = json.NewEncoder(w).Encode(map[string]any{"directory": dir, "entries": cachedCloudEntriesResponse(items, exact), "metadata": metadata, "cache_generation": cloudGenerationResponse(metadata.Generation, exact), "total": total, "offset": offset, "next_offset": func() *int {
 		if offset+len(items) < total {
 			n := offset + len(items)
 			return &n
@@ -725,6 +815,12 @@ func (s *Server) HandleInventorySearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "搜索内容须为 1 至 128 个字符", http.StatusBadRequest)
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效。", http.StatusBadRequest)
+		return
+	}
+
 	offset, limit, err := pagination(r, 50)
 	if err != nil {
 		http.Error(w, "分页参数无效", http.StatusBadRequest)
@@ -749,11 +845,16 @@ func (s *Server) HandleInventorySearch(w http.ResponseWriter, r *http.Request) {
 		next := offset + len(items)
 		nextOffset = &next
 	}
-	jsonResponse(w, map[string]any{"query": query, "entries": items, "total": total, "offset": offset, "next_offset": nextOffset, "cache_generation": coverage.Generation, "coverage": coverage})
+	jsonResponse(w, map[string]any{"query": query, "entries": cachedCloudEntriesResponse(items, exact), "total": total, "offset": offset, "next_offset": nextOffset, "cache_generation": cloudGenerationResponse(coverage.Generation, exact), "coverage": coverage})
 }
 
 func (s *Server) HandleInventorySize(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET") {
+		return
+	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效。", http.StatusBadRequest)
 		return
 	}
 	dir := r.URL.Query().Get("dir")
@@ -766,23 +867,29 @@ func (s *Server) HandleInventorySize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(size)
+	_ = json.NewEncoder(w).Encode(cloudDirectorySizeResponse(size, exact))
 }
 
 func (s *Server) HandleInventoryScan(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		exact, formatErr := cloudStringIdentity(r.URL.Query())
+		if formatErr != nil {
+			http.Error(w, "身份格式无效。", http.StatusBadRequest)
+			return
+		}
 		state, err := s.backend.CloudInventoryScanStatus()
 		if err != nil {
 			readFailure(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(state)
+		_ = json.NewEncoder(w).Encode(cloudScanStatusResponse(state, exact))
 	case http.MethodPost:
 		var request struct {
-			RequestBudget    int64  `json:"request_budget"`
-			RequestLimitMode string `json:"request_limit_mode"`
+			RequestBudget    int64   `json:"request_budget"`
+			RequestLimitMode string  `json:"request_limit_mode"`
+			ExpectedRunID    *string `json:"expected_run_id"`
 		}
 		if !decode(w, r, &request, true) {
 			return
@@ -791,7 +898,7 @@ func (s *Server) HandleInventoryScan(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		state, err := s.backend.StartCloudInventoryScanWithLimit(r.Context(), request.RequestBudget, request.RequestLimitMode)
+		state, err := s.backend.StartCloudInventoryScanWithLimit(downloader.WithInventoryExpectedRun(r.Context(), request.ExpectedRunID), request.RequestBudget, request.RequestLimitMode)
 		if err != nil {
 			failure(w, err)
 			return
@@ -800,7 +907,25 @@ func (s *Server) HandleInventoryScan(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(state)
 	case http.MethodDelete:
-		s.backend.PauseCloudInventoryScan()
+		if ids, present := r.URL.Query()["expected_run_id"]; present {
+			if len(ids) != 1 || len(ids[0]) != 32 {
+				http.Error(w, "运行 ID 无效", http.StatusBadRequest)
+				return
+			}
+			guarded, ok := s.backend.(interface {
+				PauseCloudInventoryRun(context.Context, string, string) error
+			})
+			if !ok {
+				http.Error(w, "当前后端不支持固定运行暂停", http.StatusNotImplemented)
+				return
+			}
+			if err := guarded.PauseCloudInventoryRun(r.Context(), "scan", ids[0]); err != nil {
+				failure(w, err)
+				return
+			}
+		} else {
+			s.backend.PauseCloudInventoryScan()
+		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.Header().Set("Allow", "GET, POST, DELETE")
@@ -810,6 +935,11 @@ func (s *Server) HandleInventoryScan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) HandleCloudScanHistoryRuns(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodGet) {
+		return
+	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效", http.StatusBadRequest)
 		return
 	}
 	before, limit, ok := scanHistoryPaging(w, r, false)
@@ -824,6 +954,10 @@ func (s *Server) HandleCloudScanHistoryRuns(w http.ResponseWriter, r *http.Reque
 	runs, next, more, err := s.backend.CloudScanHistoryRuns(r.Context(), before, filter, limit)
 	if err != nil {
 		readFailure(w, err)
+		return
+	}
+	if exact {
+		jsonResponse(w, scanEvidencePage(runs, next, more))
 		return
 	}
 	jsonResponse(w, map[string]any{"runs": runs, "next_before_sequence": next, "has_more": more})
@@ -871,6 +1005,11 @@ func (s *Server) HandleCloudScanHistoryEvents(w http.ResponseWriter, r *http.Req
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效", http.StatusBadRequest)
+		return
+	}
 	before, limit, ok := scanHistoryPaging(w, r, true)
 	if !ok {
 		return
@@ -883,6 +1022,12 @@ func (s *Server) HandleCloudScanHistoryEvents(w http.ResponseWriter, r *http.Req
 	events, next, more, err := s.backend.CloudScanHistoryEvents(r.Context(), runID, before, limit)
 	if err != nil {
 		readFailure(w, err)
+		return
+	}
+	if exact {
+		page := scanEvidencePage(events, next, more)
+		page["run_id"] = runID
+		jsonResponse(w, page)
 		return
 	}
 	jsonResponse(w, map[string]any{"events": events, "next_before_sequence": next, "has_more": more})
@@ -971,7 +1116,7 @@ func cloudScanEventExportDTOFrom(event taskstore.CloudScanEvent) cloudScanEventE
 
 func scanHistoryPaging(w http.ResponseWriter, r *http.Request, withRun bool) (int64, int, bool) {
 	query := r.URL.Query()
-	allowed := map[string]bool{"before_sequence": true, "limit": true}
+	allowed := map[string]bool{"before_sequence": true, "limit": true, "identity_format": true}
 	if withRun {
 		allowed["run_id"] = true
 	} else {
@@ -1007,17 +1152,23 @@ func scanHistoryPaging(w http.ResponseWriter, r *http.Request, withRun bool) (in
 func (s *Server) HandleInventoryRefresh(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		exact, formatErr := cloudStringIdentity(r.URL.Query())
+		if formatErr != nil {
+			http.Error(w, "身份格式无效。", http.StatusBadRequest)
+			return
+		}
 		state, err := s.backend.CloudInventoryRefreshStatus()
 		if err != nil {
 			readFailure(w, err)
 			return
 		}
-		jsonResponse(w, state)
+		jsonResponse(w, cloudRefreshStatusResponse(state, exact))
 	case http.MethodPost:
 		var request struct {
-			Directory        string `json:"directory"`
-			RequestBudget    int64  `json:"request_budget"`
-			RequestLimitMode string `json:"request_limit_mode"`
+			Directory        string  `json:"directory"`
+			RequestBudget    int64   `json:"request_budget"`
+			RequestLimitMode string  `json:"request_limit_mode"`
+			ExpectedRunID    *string `json:"expected_run_id"`
 		}
 		if !decode(w, r, &request, false) {
 			return
@@ -1026,7 +1177,7 @@ func (s *Server) HandleInventoryRefresh(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		state, err := s.backend.StartCloudInventoryRefreshWithLimit(r.Context(), request.Directory, request.RequestBudget, request.RequestLimitMode)
+		state, err := s.backend.StartCloudInventoryRefreshWithLimit(downloader.WithInventoryExpectedRun(r.Context(), request.ExpectedRunID), request.Directory, request.RequestBudget, request.RequestLimitMode)
 		if err != nil {
 			failure(w, err)
 			return
@@ -1035,7 +1186,25 @@ func (s *Server) HandleInventoryRefresh(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(state)
 	case http.MethodDelete:
-		s.backend.PauseCloudInventoryRefresh()
+		if ids, present := r.URL.Query()["expected_run_id"]; present {
+			if len(ids) != 1 || len(ids[0]) != 32 {
+				http.Error(w, "运行 ID 无效", http.StatusBadRequest)
+				return
+			}
+			guarded, ok := s.backend.(interface {
+				PauseCloudInventoryRun(context.Context, string, string) error
+			})
+			if !ok {
+				http.Error(w, "当前后端不支持固定运行暂停", http.StatusNotImplemented)
+				return
+			}
+			if err := guarded.PauseCloudInventoryRun(r.Context(), "refresh", ids[0]); err != nil {
+				failure(w, err)
+				return
+			}
+		} else {
+			s.backend.PauseCloudInventoryRefresh()
+		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.Header().Set("Allow", "GET, POST, DELETE")
@@ -1047,9 +1216,14 @@ func (s *Server) HandleInventoryRefreshRuns(w http.ResponseWriter, r *http.Reque
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效", http.StatusBadRequest)
+		return
+	}
 	query := r.URL.Query()
 	for key, values := range query {
-		if (key != "before_sequence" && key != "limit" && key != "status" && key != "started_from_utc" && key != "started_through_utc") || len(values) != 1 {
+		if (key != "identity_format" && key != "before_sequence" && key != "limit" && key != "status" && key != "started_from_utc" && key != "started_through_utc") || len(values) != 1 {
 			http.Error(w, "刷新运行分页参数无效。", http.StatusBadRequest)
 			return
 		}
@@ -1080,6 +1254,10 @@ func (s *Server) HandleInventoryRefreshRuns(w http.ResponseWriter, r *http.Reque
 		readFailure(w, err)
 		return
 	}
+	if exact {
+		jsonResponse(w, scanEvidencePage(runs, next, hasMore))
+		return
+	}
 	jsonResponse(w, map[string]any{"runs": runs, "next_before_sequence": next, "has_more": hasMore})
 }
 
@@ -1099,9 +1277,14 @@ func (s *Server) HandleInventoryRefreshEvents(w http.ResponseWriter, r *http.Req
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效", http.StatusBadRequest)
+		return
+	}
 	query := r.URL.Query()
 	for key, values := range query {
-		if (key != "run_id" && key != "kind" && key != "restart_reason" && key != "before_sequence" && key != "limit") || len(values) != 1 {
+		if (key != "identity_format" && key != "run_id" && key != "kind" && key != "restart_reason" && key != "before_sequence" && key != "limit") || len(values) != 1 {
 			http.Error(w, "刷新历史分页参数无效。", http.StatusBadRequest)
 			return
 		}
@@ -1140,6 +1323,12 @@ func (s *Server) HandleInventoryRefreshEvents(w http.ResponseWriter, r *http.Req
 	events, next, hasMore, err := s.backend.CloudInventoryRefreshEventPage(r.Context(), runID, kind, restartReason, before, limit)
 	if err != nil {
 		readFailure(w, err)
+		return
+	}
+	if exact {
+		page := scanEvidencePage(events, next, hasMore)
+		page["run_id"] = runID
+		jsonResponse(w, page)
 		return
 	}
 	jsonResponse(w, map[string]any{"run_id": runID, "events": events, "next_before_sequence": next, "has_more": hasMore})
@@ -1321,8 +1510,13 @@ func (s *Server) HandleCloudMutation(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodPost) {
 		return
 	}
-	var request downloader.CloudMutationRequest
-	if !decode(w, r, &request, false) {
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效。", http.StatusBadRequest)
+		return
+	}
+	request, ok := decodeCloudMutation(w, r, exact)
+	if !ok {
 		return
 	}
 	result, err := s.backend.MutateCloud(r.Context(), request)
@@ -1330,18 +1524,18 @@ func (s *Server) HandleCloudMutation(w http.ResponseWriter, r *http.Request) {
 		if result.OperationID != "" {
 			if result.Status == "confirmed" {
 				result.Warning = "远端操作已确认，但后续本地队列核对或缓存更新未完成；请检查监控路径并刷新。"
-				jsonResponse(w, result)
+				jsonResponse(w, cloudMutationResponse(result, exact))
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]any{"operation": result, "message": "操作结果请按状态重新核对；未知结果不会自动重发。"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"operation": cloudMutationResponse(result, exact), "message": "操作结果请按状态重新核对；未知结果不会自动重发。"})
 			return
 		}
 		failure(w, err)
 		return
 	}
-	jsonResponse(w, result)
+	jsonResponse(w, cloudMutationResponse(result, exact))
 }
 func (s *Server) HandlePreview(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "POST") {

@@ -1,0 +1,30 @@
+<script setup lang="ts">
+import {onMounted,onUnmounted,ref,watch} from 'vue';
+import CloudCacheControls from './CloudCacheControls.vue';
+const props=defineProps<{kind:'scan'|'refresh';disabled:boolean}>(),emit=defineEmits<{authenticationRequired:[]}>();
+type State={run_id:string;status:string;phase:string;worker_active:boolean;current_directory:string;root_path?:string;pending_count:string;next_offset:string;pages_processed:string;items_processed:string;request_budget:string;requests_used:string;boundary_restart_count:string;retry_delay_millis:string;started_at_utc:string;updated_at_utc:string;retry_at_utc?:string|null;last_error:string;inventory_coverage?:{status:string;incomplete_directories:string;cache_generation:string;scan_updated_at_utc?:string|null}};
+const collapsed=ref(false);
+const value=ref<State|null>(null),loading=ref(false),error=ref(''),observed=ref('');let active=true,generation=0,controller:AbortController|undefined;let timer:ReturnType<typeof setTimeout>|undefined;
+const statuses:Record<string,string>={idle:'暂无运行记录',running:'运行中',paused:'已暂停',failed:'失败',complete:'本次遍历完成'};
+const phases:Record<string,string>={idle:'未开始',listing:'读取目录',backoff:'等待重试',paused:'暂停',request_budget_reached:'达到工具请求上限',failed:'失败',complete:'完成'};
+const count=(item:unknown)=>typeof item==='string'&&/^(0|[1-9][0-9]*)$/.test(item)&&item.length<=19&&BigInt(item)<=9223372036854775807n;
+const utc=(item:unknown)=>typeof item==='string'&&/Z$/.test(item)&&Number.isFinite(Date.parse(item));
+function stop(){clearTimeout(timer);active=false;generation++;controller?.abort();loading.value=false;}
+async function load(){
+ if(!active||loading.value||props.disabled)return;clearTimeout(timer);const request=++generation;controller=new AbortController();loading.value=true;
+ try{const response=await fetch('/api/cloud-inventory/'+props.kind+'?identity_format=string',{credentials:'same-origin',signal:controller.signal});if(request!==generation)return;
+  if(response.status===401){stop();emit('authenticationRequired');return;}if(!response.ok)throw Error(await response.text()||'状态暂不可读');const data=await response.json();if(request!==generation)return;
+  if(!data||!Object.hasOwn(statuses,data.status)||!Object.hasOwn(phases,data.phase)||typeof data.worker_active!=='boolean'||typeof data.current_directory!=='string'||typeof data.run_id!=='string'||(data.status!=='idle'&&!/^[a-f0-9]{32}$/.test(data.run_id))||!['pending_count','next_offset','pages_processed','items_processed','request_budget','requests_used','boundary_restart_count','retry_delay_millis'].every(key=>count(data[key]))||!utc(data.started_at_utc)||!utc(data.updated_at_utc)||(data.retry_at_utc!=null&&!utc(data.retry_at_utc))||typeof data.last_error!=='string'||(props.kind==='refresh'&&typeof data.root_path!=='string'))throw Error('扫描状态响应无效');
+  if(data.inventory_coverage&&(!count(data.inventory_coverage.incomplete_directories)||!count(data.inventory_coverage.cache_generation)||typeof data.inventory_coverage.status!=='string'))throw Error('缓存覆盖响应无效');
+  value.value=data;error.value='';observed.value=new Date().toISOString();
+ }catch(e:any){if(request===generation)error.value=e.message||'状态暂不可读';}
+ finally{if(request===generation){loading.value=false;if(active&&!props.disabled)timer=setTimeout(load,5000);}}
+}
+// A pre-submit observation cannot serve as the write's readback evidence.
+function readAfterControl(){generation++;controller?.abort();loading.value=false;load();}
+function resume(event:PageTransitionEvent){if(event.persisted&&!props.disabled){active=true;load();}}
+watch(()=>props.disabled,value=>{if(value)stop();});
+onMounted(()=>{window.addEventListener('pagehide',stop);window.addEventListener('pageshow',resume);load();});
+onUnmounted(()=>{stop();window.removeEventListener('pagehide',stop);window.removeEventListener('pageshow',resume);});
+</script>
+<template><section class="event-results" :data-testid="kind==='scan'?'cache-full-state':'cache-refresh-state'"><header class="page-header"><h2>{{kind==='scan'?'全盘缓存扫描':'指定目录刷新'}}</h2><button class="button secondary" :disabled="loading||disabled" @click="load">刷新状态</button></header><button class="button secondary" :disabled="disabled" @click="collapsed=!collapsed">{{collapsed?'展开进度':'收起进度'}}</button><p v-if="collapsed&&value">{{statuses[value.status]}} · {{phases[value.phase]}} · {{value.items_processed}} 项</p><div v-show="!collapsed"><p v-if="loading" role="status">正在读取检查点…</p><p v-if="error" class="notice danger" role="alert">{{error}}<span v-if="value"> · 下方为上次读取的历史状态。</span></p><template v-if="value"><p><strong>{{statuses[value.status]}}</strong> · {{phases[value.phase]}} · {{value.worker_active?'当前进程有执行器':'当前进程未执行；记录可能来自重启前'}}</p><p v-if="value.root_path">刷新范围：{{value.root_path}}</p><p v-if="value.current_directory">当前目录：{{value.current_directory}}</p><div class="event-table-scroll"><table><thead><tr><th>已读页数</th><th>已读项目</th><th>待处理目录</th><th>已预留请求 / 工具上限</th></tr></thead><tbody><tr><td>{{value.pages_processed}}</td><td>{{value.items_processed}}</td><td>{{value.pending_count}}</td><td>{{value.requests_used}} / {{value.request_budget==='0'?'不限':value.request_budget}}</td></tr></tbody></table></div><p v-if="value.retry_at_utc" class="notice">服务端计划重试 UTC：{{value.retry_at_utc}}。等待期间不表示正在请求网盘。</p><p v-if="value.last_error" class="notice danger">{{value.last_error}}</p><p class="muted">运行 ID：{{value.run_id||'尚无'}}<template v-if="!value.started_at_utc.startsWith('0001-')"><br>开始 UTC：{{value.started_at_utc}}</template><template v-if="!value.updated_at_utc.startsWith('0001-')"><br>检查点更新 UTC：{{value.updated_at_utc}}</template></p><p v-if="value.inventory_coverage" class="muted">缓存覆盖：{{value.inventory_coverage.status}} · 未完整目录 {{value.inventory_coverage.incomplete_directories}} · 代次 {{value.inventory_coverage.cache_generation}}。遍历完成不代表远端原子快照。</p></template><CloudCacheControls v-if="value" :kind="kind" :state="value" :disabled="disabled||loading||!!error" @changed="readAfterControl" @authentication-required="emit('authenticationRequired')"/></div><p v-if="observed" class="muted">本机读取 UTC：{{observed}}</p></section></template>

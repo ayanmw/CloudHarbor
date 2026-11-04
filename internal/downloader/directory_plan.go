@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 )
@@ -18,6 +19,10 @@ func (d *Downloader) prepareDirectoryTree(ctx context.Context, root baiduapi.Fil
 		task.DirectoryPrepared = false
 	}
 	d.taskMutex.Unlock()
+	recorder, err := d.beginDownloadManifest(ctx, root, relative)
+	if err != nil {
+		return nil, err
+	}
 	lists := make(map[string][]baiduapi.FileInfo)
 	type directory struct {
 		info     baiduapi.FileInfo
@@ -55,6 +60,7 @@ func (d *Downloader) prepareDirectoryTree(ctx context.Context, root baiduapi.Fil
 			return nil, err
 		}
 		lists[current.info.Path] = children
+		observedAt := time.Now().UTC()
 		for _, child := range children {
 			if !validName(child.ServerFilename) || child.Path != path.Join(current.info.Path, child.ServerFilename) {
 				return nil, fmt.Errorf("网盘子项路径或名称无效，停止准备本地目录")
@@ -75,7 +81,13 @@ func (d *Downloader) prepareDirectoryTree(ctx context.Context, root baiduapi.Fil
 				}
 				d.preparePendingFile(child, local)
 			}
+			if err := recorder.add(ctx, child, path.Join(current.relative, child.ServerFilename), observedAt); err != nil {
+				return nil, err
+			}
 		}
+	}
+	if err := recorder.publish(ctx); err != nil {
+		return nil, err
 	}
 	d.taskMutex.Lock()
 	if task := d.tasks[root.FsID]; task != nil {
@@ -98,6 +110,10 @@ func (d *Downloader) preparePendingFile(info baiduapi.FileInfo, local string) {
 
 func (d *Downloader) downloadLocalFolder(ctx context.Context, info baiduapi.FileInfo, relative string) error {
 	lists, err := d.prepareDirectoryTree(ctx, info, relative)
+	if err != nil {
+		return err
+	}
+	ctx, err = d.bindPreparedDownloadManifest(ctx, info)
 	if err != nil {
 		return err
 	}

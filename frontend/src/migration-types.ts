@@ -1,0 +1,1 @@
+export type Migration={id:string;source_path:string;target_path:string;status:string;phase:string;started_at_utc:string;updated_at_utc:string;finished_at_utc?:string;last_error?:string;total_files:string;processed_files:string;total_bytes:string;processed_bytes:string};
