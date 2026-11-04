@@ -1,4 +1,8 @@
-# 下载可靠性独立测试版（版本见 BUILD-INFO.txt）
+# 百度网盘管理工作台运行与验证说明（版本见 BUILD-INFO.txt）
+
+## 当前活动版本 v0.8.31
+
+本版内容以随包VERSION-NOTES.zh-CN.md为准，构建提交/内容快照/UTC见BUILD-INFO.txt和SOURCE-SNAPSHOT.txt。同版本更新只替换程序白名单，保留.nas-downloader、.env、downloads和用户文件；用户明确切版前不递增preview号。v0.8.31承接已验证的.166功能，产品完善路线尚未全部实施。以下为历史功能与测试记录，不代表新的版本切换。
 
 
 ## v0.8.30-preview.166 网盘浏览、入队与批量上传

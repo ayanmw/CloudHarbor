@@ -1,19 +1,25 @@
 param(
-    [Parameter(Mandatory = $true)][string]$Version,
+    [string]$Version = '',
     [string]$OutputRoot = '',
     [switch]$AllowDirty,
-    [switch]$UpdatePreview
+    [switch]$UpdatePreview,
+    [switch]$UpdateCurrent
 )
 $ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path $PSScriptRoot -Parent
+$currentManifest = Get-Content -LiteralPath (Join-Path $repoRoot 'release/current-version.json') -Raw | ConvertFrom-Json
+if ($currentManifest.version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid active version configuration.' }
+if (!$Version) { $Version = $currentManifest.version; $UpdateCurrent = $true }
+if ($UpdateCurrent -and $Version -ne $currentManifest.version) { throw '-UpdateCurrent only updates the explicitly configured active version.' }
+$replaceExisting = $UpdateCurrent -or $UpdatePreview
 if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid version.' }
 if ($UpdatePreview -and $Version -notmatch '-preview\.[0-9]+$') { throw '-UpdatePreview is only allowed for preview versions.' }
-$repoRoot = Split-Path $PSScriptRoot -Parent
 if (!$OutputRoot) { $OutputRoot = Join-Path (Split-Path $repoRoot -Parent) 'nas_baidupan_auto_downloader-releases' }
 $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
 $finalReleasePath = Join-Path $OutputRoot $Version
 $finalArchivePath = "$finalReleasePath.zip"
 $artifactExists = (Test-Path -LiteralPath $finalReleasePath) -or (Test-Path -LiteralPath $finalArchivePath)
-if ($artifactExists -and !$UpdatePreview) { throw 'Version already exists. Use -UpdatePreview to rebuild this preview, or choose a new version.' }
+if ($artifactExists -and !$replaceExisting) { throw 'Version already exists. Use -UpdateCurrent for the active version. Only the user can authorize a new version.' }
 $stagingRoot = Join-Path $OutputRoot ('.staging-' + $Version + '-' + [guid]::NewGuid().ToString('N'))
 $releasePath = Join-Path $stagingRoot $Version
 $archivePath = Join-Path $stagingRoot "$Version.zip"
@@ -36,26 +42,22 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read source revision.' }
     $status = @(git status --porcelain)
     if ($status.Count -gt 0 -and !$AllowDirty) { throw 'Working tree is dirty. Pass -AllowDirty to package a content-addressed source snapshot.' }
-    $sourceRevision = $baseRevision
-    $snapshotText = ''
-    $sourceManifest = @("Base revision: $baseRevision")
-    if ($status.Count -gt 0) {
-        $sourceManifest = @()
-        $sourceFiles = @(git -c core.quotepath=false ls-files --cached --others --exclude-standard)
-        if ($LASTEXITCODE -ne 0 -or $sourceFiles.Count -eq 0) { throw 'Cannot enumerate source snapshot files.' }
-        foreach ($relative in ($sourceFiles | Sort-Object -Unique)) {
-            if (!(Test-Path -LiteralPath $relative -PathType Leaf)) { continue }
-            $hash = (Get-FileHash -LiteralPath $relative -Algorithm SHA256).Hash.ToLowerInvariant()
-            $sourceManifest += "$hash  $($relative.Replace('\', '/'))"
-        }
-        $manifestText = [string]::Join("`n", $sourceManifest) + "`n"
-        $manifestBytes = [Text.Encoding]::UTF8.GetBytes($manifestText)
-        $sha256 = [Security.Cryptography.SHA256]::Create()
-        try { $treeHash = ([BitConverter]::ToString($sha256.ComputeHash($manifestBytes))).Replace('-', '').ToLowerInvariant() }
-        finally { $sha256.Dispose() }
-        $sourceRevision = "$baseRevision-dirty-$($treeHash.Substring(0, 16))"
-        $snapshotText = "Base revision: $baseRevision`nSnapshot SHA256: $treeHash`n`n$manifestText"
+    $sourceManifest = @()
+    $sourceFiles = @(git -c core.quotepath=false ls-files --cached --others --exclude-standard)
+    if ($LASTEXITCODE -ne 0 -or $sourceFiles.Count -eq 0) { throw 'Cannot enumerate source snapshot files.' }
+    foreach ($relative in ($sourceFiles | Sort-Object -Unique)) {
+        if (!(Test-Path -LiteralPath $relative -PathType Leaf)) { continue }
+        $hash = (Get-FileHash -LiteralPath $relative -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sourceManifest += "$hash  $($relative.Replace('\', '/'))"
     }
+    $manifestText = [string]::Join("`n", $sourceManifest) + "`n"
+    $manifestBytes = [Text.Encoding]::UTF8.GetBytes($manifestText)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { $treeHash = ([BitConverter]::ToString($sha256.ComputeHash($manifestBytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha256.Dispose() }
+    $sourceMarker = if ($status.Count -gt 0) { 'dirty' } else { 'snapshot' }
+    $sourceRevision = "$baseRevision-$sourceMarker-$($treeHash.Substring(0, 16))"
+    $snapshotText = "Base revision: $baseRevision`nSnapshot SHA256: $treeHash`n`n$manifestText"
     # Run each node:test file as its own process; the multi-file runner in recent Node versions spawns workers that are denied in the Windows package environment.
     node scripts/webui.test.cjs
     if ($LASTEXITCODE -ne 0) { throw 'Web UI tests failed.' }
@@ -84,7 +86,13 @@ try {
         Copy-Item -LiteralPath (Join-Path $repoRoot "release/$name") -Destination $releasePath
     }
     Copy-Item -LiteralPath (Join-Path $repoRoot 'tampermonkey_baidupan_nas_queue.user.js') -Destination $releasePath
-    $buildInfo = "Version: $Version`nRevision: $sourceRevision`nBase revision: $baseRevision`nDirty snapshot: $($status.Count -gt 0)`nToolchain: $(go version)`n"
+    if ($Version -eq $currentManifest.version) {
+        $notesPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $currentManifest.notes))
+        $notesRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'docs/releases')) + [IO.Path]::DirectorySeparatorChar
+        if (!$notesPath.StartsWith($notesRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Version notes must stay under docs/releases.' }
+        Copy-Item -LiteralPath $notesPath -Destination (Join-Path $releasePath 'VERSION-NOTES.zh-CN.md')
+    }
+    $buildInfo = "Version: $Version`nRevision: $sourceRevision`nBase revision: $baseRevision`nDirty snapshot: $($status.Count -gt 0)`nToolchain: $(go version)`nBuilt at UTC: $([DateTime]::UtcNow.ToString('o'))`n"
     [IO.File]::WriteAllText((Join-Path $releasePath 'BUILD-INFO.txt'), $buildInfo, [Text.UTF8Encoding]::new($false))
     $checksums = Get-ChildItem -LiteralPath $releasePath -File -Recurse | Sort-Object FullName | ForEach-Object {
         $relative = $_.FullName.Substring($releasePath.Length + 1).Replace('\', '/')
@@ -92,9 +100,24 @@ try {
     }
     [IO.File]::WriteAllLines((Join-Path $releasePath 'SHA256SUMS.txt'), $checksums, [Text.UTF8Encoding]::new($false))
     Compress-Archive -Path (Join-Path $releasePath '*') -DestinationPath $archivePath
-    if ($UpdatePreview -and $artifactExists) {
+    if ($replaceExisting -and $artifactExists) {
+        # Build and verify first; stop only the executable installed in this target.
+        $installedExe = [IO.Path]::GetFullPath((Join-Path $finalReleasePath 'bin/windows-amd64/baidu-downloader.exe'))
+        if ($env:OS -eq 'Windows_NT') {
+            $running = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $installedExe, [StringComparison]::OrdinalIgnoreCase) })
+            foreach ($process in $running) {
+                $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($process.ProcessId)"
+                if ($current -and [string]::Equals($current.ExecutablePath, $installedExe, [StringComparison]::OrdinalIgnoreCase)) {
+                    Write-Output "Stopping running version $Version, PID $($current.ProcessId), before program replacement; user data is preserved."
+                    Stop-Process -Id $current.ProcessId -Force
+                    Wait-Process -Id $current.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+                    $remaining = Get-CimInstance Win32_Process -Filter "ProcessId=$($current.ProcessId)"
+                    if ($remaining -and [string]::Equals($remaining.ExecutablePath, $installedExe, [StringComparison]::OrdinalIgnoreCase)) { throw 'Target version is still running; program files were not replaced.' }
+                }
+            }
+        }
         # Replace only package-managed paths. Runtime data such as .nas-downloader and downloads stays in place.
-        $managedPaths = @('bin', 'Start.ps1', 'start.sh', 'Dockerfile', 'compose.yml', 'preview.env.example', 'TESTING.md', 'tampermonkey_baidupan_nas_queue.user.js', 'BUILD-INFO.txt', 'SHA256SUMS.txt', 'SOURCE-SNAPSHOT.txt')
+        $managedPaths = @('bin', 'Start.ps1', 'start.sh', 'Dockerfile', 'compose.yml', 'preview.env.example', 'TESTING.md', 'tampermonkey_baidupan_nas_queue.user.js', 'BUILD-INFO.txt', 'SHA256SUMS.txt', 'SOURCE-SNAPSHOT.txt', 'VERSION-NOTES.zh-CN.md')
         $backupRoot = Join-Path $stagingRoot 'backup'
         $updatedPaths = New-Object 'System.Collections.Generic.List[string]'
         $archiveBackedUp = $false
@@ -141,7 +164,7 @@ try {
             }
             if ($rollbackErrors.Count -gt 0) {
                 $preserveStaging = $true
-                throw "Preview update failed and rollback was incomplete. Backup retained at '$stagingRoot'. $($rollbackErrors -join '; ')"
+                throw "Version update failed and rollback was incomplete. Backup retained at '$stagingRoot'. $($rollbackErrors -join '; ')"
             }
             throw
         }
@@ -156,7 +179,7 @@ try {
     }
     Get-FileHash -LiteralPath $finalArchivePath -Algorithm SHA256 | Format-List
     Write-Output "Release directory: $finalReleasePath"
-    if ($UpdatePreview -and $artifactExists) { Write-Output 'Updated existing preview; unrecognized runtime files were preserved.' }
+    if ($replaceExisting -and $artifactExists) { Write-Output 'Updated current version in place; runtime and user data were preserved.' }
 } finally {
     $env:GOOS = $savedGoos; $env:GOARCH = $savedGoarch; $env:CGO_ENABLED = $savedCgo
     Set-Location $originalLocation
