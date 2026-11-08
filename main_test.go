@@ -1119,6 +1119,13 @@ func TestGlobalTaskEventHistoryPageAndAPIRequireManagementAuthentication(t *test
 	}{
 		{"/task-events", http.StatusSeeOther},
 		{"/api/task-events", http.StatusUnauthorized},
+		// Upload recovery history uses the same management gate, including before service readiness.
+		{"/api/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/recovery", http.StatusUnauthorized},
+		{"/api/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/items/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/session", http.StatusUnauthorized},
+		{"/api/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/items/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/verify-receipt", http.StatusUnauthorized},
+		{"/api/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/transfer-statistics", http.StatusUnauthorized},
+		{"/api/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/pause", http.StatusUnauthorized},
+		{"/api/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/resume", http.StatusUnauthorized},
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target.path, nil))
@@ -1336,6 +1343,9 @@ func TestManagedPathsHTTPReadAndSave(t *testing.T) {
 	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"queue_dir":"/old"`) {
 		t.Fatalf("path settings GET: %d %s", get.Code, get.Body.String())
 	}
+	if !strings.Contains(get.Body.String(), `"queue_source":"startup"`) || !strings.Contains(get.Body.String(), `"local_download_source":"startup"`) {
+		t.Fatalf("missing startup sources: %s", get.Body.String())
+	}
 	requestBody, err := json.Marshal(downloader.ManagedPaths{QueueDir: "/new", LocalDownDir: filepath.Join(root, "new-downloads")})
 	if err != nil {
 		t.Fatal(err)
@@ -1345,6 +1355,12 @@ func TestManagedPathsHTTPReadAndSave(t *testing.T) {
 	if post.Code != http.StatusOK || !strings.Contains(post.Body.String(), `"queue_dir":"/new"`) {
 		t.Fatalf("path settings POST: %d %s", post.Code, post.Body.String())
 	}
+	after := httptest.NewRecorder()
+	handleManagedPaths(after, httptest.NewRequest(http.MethodGet, "/api/settings/paths", nil))
+	if after.Code != http.StatusOK || !strings.Contains(after.Body.String(), `"queue_source":"saved"`) || !strings.Contains(after.Body.String(), `"local_download_source":"saved"`) {
+		t.Fatalf("saved sources missing: %d %s", after.Code, after.Body.String())
+	}
+
 }
 
 func TestManagedPathsHTTPImpactPreviewAndConfirmation(t *testing.T) {

@@ -504,6 +504,7 @@ func (d *Downloader) runLocalDirectoryMigration(ctx context.Context, migration t
 			}
 			d.pathMu.Lock()
 			d.queueDir, d.localDownDir = queueDir, localDir
+			d.queuePathSaved, d.localPathSaved = true, true
 			d.pathMu.Unlock()
 			migration.Status, migration.Phase = "completed", "complete"
 			migration.LastError = ""

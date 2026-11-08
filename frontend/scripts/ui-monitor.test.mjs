@@ -1,15 +1,14 @@
+import {mountBuiltWorkspace} from './built-workspace.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {JSDOM,VirtualConsole} from 'jsdom';
 const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8');
-const asset=html.match(/src="\/app\/(assets\/[^\"]+\.js)"/)[1];
-const bundle=await readFile(new URL('../../internal/webui/app/'+asset,import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function render(failed=false,url='http://localhost/monitor-history',beforeMount,virtualConsole){
  const requests=[],dom=new JSDOM(html,{url,runScripts:'outside-only',pretendToBeVisual:true,...(virtualConsole?{virtualConsole}:{})});
  dom.window.fetch=async(url,init={})=>{requests.push({url:String(url),method:init.method||'GET'});if(typeof failed==='function')return failed(String(url));return failed?{ok:false,status:503,text:async()=> '监控历史暂不可读'}:{ok:true,json:async()=>({runs:[{sequence:'1',run_id:'a'.repeat(32),status:'interrupted',monitor_path:'/模拟监控目录',started_at_utc:'2026-11-03T03:00:00Z',recorded_at_utc:'2026-11-03T03:00:01Z'}],has_more:false,next_before_sequence:null})};};
- beforeMount?.(dom.window);dom.window.eval(bundle);await tick();await tick();return {dom,requests};
+ beforeMount?.(dom.window);await mountBuiltWorkspace(dom);await tick();await tick();return {dom,requests};
 }
 test('monitor history mounts its own compact table without treating interrupted scans as success',async()=>{
  const {dom,requests}=await render();try{
@@ -108,4 +107,11 @@ test('monitor authorization expiry stops detail fallbacks and does not download 
  assert.match(doc.querySelector('[role=alert]').textContent,/请重新登录/);assert.equal(navigations,1,mode);assert.equal(downloads,0);
  if(mode==='list'){assert.equal(requests.length,1);assert.equal(doc.querySelector('main').hasAttribute('inert'),false);}else assert.equal(doc.querySelector('[data-testid=monitor-export]').disabled,true);
  }finally{dom.window.close();}}
+});
+
+
+test('monitor event titles use Chinese labels while preserving exact event codes',async()=>{
+ const kinds=['completed','cloud_listed','started','failed','interrupted','future_kind'],labels=['本轮巡检完成','已读取网盘目录','开始巡检','本轮巡检失败','进程中断（未判定成功）','future_kind'],run='a'.repeat(32);
+ const {dom,requests}=await render(async raw=>({ok:true,json:async()=>raw.includes('/events?')?{events:kinds.map((kind,i)=>({run_id:run,sequence:String(6-i),kind,recorded_at_utc:'2026-11-06T20:00:00Z'})),has_more:false,next_before_sequence:null}:{runs:[{sequence:'1',run_id:run,status:'success',monitor_path:'/test',started_at_utc:'2026-11-06T20:00:00Z'}],has_more:false,next_before_sequence:null}}));
+ try{const d=dom.window.document;d.querySelector('[data-testid=monitor-details]').click();await tick();await tick();const rows=[...d.querySelectorAll('.timeline li')];assert.equal(rows.length,6);rows.forEach((row,i)=>{assert.equal(row.querySelector('strong').textContent,labels[i]);assert.match(row.querySelector('details').textContent,/事件代码/);assert.ok(row.querySelector('details').textContent.includes(kinds[i]));});assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close();}
 });

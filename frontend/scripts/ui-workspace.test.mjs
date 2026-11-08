@@ -1,14 +1,10 @@
+import {mountBuiltWorkspace} from './built-workspace.mjs';
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { JSDOM } from "jsdom";
 const html = await readFile(
   new URL("../../internal/webui/app/index.html", import.meta.url),
-  "utf8",
-);
-const asset = html.match(/src="\/app\/(assets\/[^\"]+\.js)"/)[1];
-const bundle = await readFile(
-  new URL("../../internal/webui/app/" + asset, import.meta.url),
   "utf8",
 );
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -110,7 +106,7 @@ async function render(overrides = {}, fileOverrides = {}, options = {}) {
     return { ok: true, status: 200, json: async () => data };
   };
   options.beforeMount?.(dom.window);
-  dom.window.eval(bundle);
+  await mountBuiltWorkspace(dom);
   await tick();
   await tick();
   return {
@@ -644,4 +640,48 @@ test("root statistics show measured download duration and average without invent
   const legacy = await render();
   try { assert.match(legacy.dom.window.document.querySelector("tbody").textContent, /历史统计未记录/); }
   finally { legacy.dom.window.close(); }
+});
+
+test('root download guidance exposes an unknown postprocess without offering a blind retry',async()=>{const {dom,methods}=await render({status:'source_unknown',can_retry:false,can_pause:false,can_cancel:false,error:'remote receipt unavailable',files:0,prepared:false},{},{url:'http://localhost/?task='+root.id});try{const d=dom.window.document,p=d.querySelector('[data-testid=download-state-guidance]');assert.match(p.textContent,/后处理结果待核对/);assert.match(p.textContent,/remote receipt unavailable/);assert.match(p.textContent,/不要重复/);assert.equal(p.querySelector('button'),null);assert.equal(p.querySelector('[data-testid=download-state-events]').getAttribute('href'),'/task-events?task_id='+root.id);assert.equal(p.querySelector('[data-testid=download-state-operations]').getAttribute('href'),'/operations');assert.ok(methods.every(m=>m==='GET'));}finally{dom.window.close();}});
+test('failed root explanation renders server text as text and retains it as historical on refresh failure',async()=>{const {dom,setFailure,poll}=await render({status:'failed',error:'<img src=x onerror=alert(1)> disk unavailable'},{},{url:'http://localhost/?task='+root.id});try{const d=dom.window.document,p=d.querySelector('[data-testid=download-state-guidance]');assert.match(p.textContent,/下载失败/);assert.match(p.textContent,/disk unavailable/);assert.equal(p.querySelector('img'),null);setFailure();poll();await tick();await tick();assert.match(d.querySelector('[data-testid=download-state-guidance]').textContent,/上次.*状态/);}finally{dom.window.close();}});
+test('preparation and authorization guidance link to their relevant existing workspaces',async()=>{for(const [state,target] of [['downloading','/monitor-history'],['auth_wait','/oauth']]){const {dom,methods}=await render({status:state,prepared:false,files:0},{},{url:'http://localhost/?task='+root.id});try{const p=dom.window.document.querySelector('[data-testid=download-state-guidance]');assert.ok(p);assert.ok([...p.querySelectorAll('a')].some(a=>a.getAttribute('href')===target));assert.doesNotMatch(p.textContent,/空文件夹/);assert.ok(methods.every(m=>m==='GET'));}finally{dom.window.close();}}});
+
+test('an unknown historical root never displays the new-task empty state',async()=>{const {dom}=await render({status:'source_unknown',files:0,prepared:false},{},{url:'http://localhost/?task='+root.id});try{const empty=dom.window.document.querySelector('.empty-state');assert.match(empty.textContent,/历史文件明细未记录/);assert.doesNotMatch(empty.textContent,/还没有下载任务|已发现的文件会显示/);}finally{dom.window.close();}});
+
+test('download detail suppresses duplicate direct-file subtitles while keeping the full path discoverable',async()=>{const {dom}=await render({}, {},{url:'http://localhost/?task='+root.id});try{const doc=dom.window.document,buttons=[...doc.querySelectorAll('tbody .file-name')];assert.equal(buttons.length,3);assert.ok(buttons.every(b=>!b.querySelector('small')));assert.equal(buttons[0].title,root.path+'/下载中.bin');}finally{dom.window.close();}});
+test('download detail retains nested and unexpected full paths and overview keeps root location',async()=>{for(const path of [root.path+'/子目录/下载中.bin','/different-root/下载中.bin']){const {dom}=await render({}, {path},{url:'http://localhost/?task='+root.id});try{const small=dom.window.document.querySelector('tbody .file-name small');assert.ok(small);assert.equal(small.textContent,path.startsWith(root.path+'/')?'子目录/下载中.bin':path);}finally{dom.window.close();}}const {dom}=await render();try{assert.equal(dom.window.document.querySelector('tbody .file-name small').textContent,root.path);}finally{dom.window.close();}});
+
+test('unknown postprocess prioritizes its task events without promising a file-management operation record',async()=>{const {dom,methods}=await render({status:'source_unknown',files:0,prepared:false,mode:'delete',can_retry:false},{},{url:'http://localhost/?task='+root.id});try{const panel=dom.window.document.querySelector('[data-testid=download-state-guidance]');assert.match(panel.textContent,/本次后处理以任务事件为准/);assert.match(panel.textContent,/不保证包含本任务/);const events=panel.querySelector('[data-testid=download-state-events]'),other=panel.querySelector('[data-testid=download-state-operations]');assert.ok(events.classList.contains('primary'));assert.equal(events.getAttribute('href'),'/task-events?task_id='+root.id);assert.equal(other.textContent,'其他网盘操作记录');assert.ok(methods.every(m=>m==='GET'));}finally{dom.window.close();}});
+
+
+test('download overview can isolate pending tasks while retaining its applied search without writes',async()=>{
+ const {dom,requests,methods}=await render({status:'pending',can_pause:false},{},{url:'http://localhost/?q='+encodeURIComponent('课程')});
+ try{const d=dom.window.document,tab=[...d.querySelectorAll('[role=tab]')].find(b=>b.textContent.trim()==='等待下载');assert.ok(tab,'overview exposes pending filter');tab.click();await tick();await tick();const url=new URL(requests.filter(raw=>raw.startsWith('/api/task-workspace?')).at(-1),'http://localhost');assert.equal(url.searchParams.get('status'),'pending');assert.equal(url.searchParams.get('q'),'课程');assert.equal(url.searchParams.get('offset'),'0');assert.equal(tab.getAttribute('aria-selected'),'true');assert.equal(new URL(dom.window.location.href).searchParams.get('status'),'pending');assert.match(d.querySelector('tbody').textContent,/课程目录/);assert.ok(methods.every(m=>m==='GET'));}finally{dom.window.close()}
+});
+
+test('clearing a historical root confirms reset, sends its exact token once and returns to overview',async()=>{
+ const token='a'.repeat(64);let removed=false,writes=[];
+ const {dom}=await render({status:'source_unknown',can_clear:true,clear_token:token,can_cancel:false,can_retry:false},{},{respond:async(url,init)=>{
+  if(init.method==='POST'){writes.push({url,body:JSON.parse(init.body)});removed=true;return {ok:true,json:async()=>({message:'accepted'})}}
+  if(removed&&url.startsWith('/api/task-workspace?'))return {ok:true,json:async()=>({items:[],root:null,total:0,root_count:0,counts:{}})};
+ }});
+ try{const d=dom.window.document;d.querySelector('[aria-label="查看详情"]').click();await tick();await tick();d.querySelector('[aria-label="查看任务信息"]').click();await tick();d.querySelector('[data-testid=clear-download-record]').click();await tick();const dialog=d.querySelector('[aria-labelledby=action-confirm-title]');assert.match(dialog.textContent,/清理下载记录/);assert.match(dialog.textContent,/隔离.*无法恢复.*本地文件和网盘内容保留.*新任务/);assert.equal(writes.length,0);const confirm=[...dialog.querySelectorAll('button')].find(b=>b.textContent.includes('确认清理'));confirm.click();confirm.click();await tick();await tick();assert.equal(writes.length,1);assert.equal(writes[0].url,'/api/tasks/'+root.id+'/clear');assert.deepEqual(writes[0].body,{acknowledge_reset:true,clear_token:token});assert.equal(new URL(dom.window.location.href).searchParams.get('task'),null);assert.equal(d.querySelector('[aria-label="查看任务信息"]'),null)}finally{dom.window.close()}
+});
+
+test('failed record clearing preserves the task and requires another explicit confirmation',async()=>{
+ const {dom,methods}=await render({status:'done',can_clear:true,clear_token:'a'.repeat(64)},{},{respond:async(url,init)=>init.method==='POST'?{ok:false,status:409,text:async()=> '记录已变化，请重新核对'}:undefined});
+ try{const d=dom.window.document;d.querySelector('[aria-label="查看详情"]').click();await tick();await tick();d.querySelector('[aria-label="查看任务信息"]').click();await tick();d.querySelector('[data-testid=clear-download-record]').click();await tick();[...d.querySelector('[aria-labelledby=action-confirm-title]').querySelectorAll('button')].find(b=>b.textContent.includes('确认清理')).click();await tick();await tick();assert.match(d.body.textContent,/记录已变化/);assert.equal(new URL(dom.window.location.href).searchParams.get('task'),root.id);assert.equal(methods.filter(m=>m==='POST').length,1)}finally{dom.window.close()}
+});
+
+
+test('download overview and file detail allocate every column in a keyboard scroll region',async()=>{
+ const {dom}=await render();try{const d=dom.window.document;
+ const check=(count,label)=>{const table=d.querySelector('.table-scroll table');assert.equal(table.querySelectorAll('thead th').length,count);const cols=[...table.querySelectorAll('colgroup col')];assert.equal(cols.length,count);assert.ok(cols.every(c=>parseFloat(c.style.width)>0));assert.equal(cols.reduce((sum,c)=>sum+parseFloat(c.style.width),0),100);const region=table.parentElement;assert.equal(region.getAttribute('role'),'region');assert.equal(region.getAttribute('aria-label'),label);assert.equal(region.tabIndex,0);};
+ check(7,'下载任务列表');d.querySelector('.file-name').click();await tick();await tick();check(5,'任务文件列表');
+ }finally{dom.window.close();}
+});
+test('missing historical destination is not presented as a directory currently being prepared',async()=>{
+ for(const [status,prepared,expected] of [['source_unknown',false,'未记录本地路径'],['done',true,'未记录本地路径'],['downloading',false,'正在准备本地目录']]){
+ const {dom}=await render({status,prepared,local_path:''},{},{url:'http://localhost/?task='+root.id});try{assert.ok(dom.window.document.querySelector('.summary-main').textContent.includes(expected));}finally{dom.window.close();}
+ }
 });

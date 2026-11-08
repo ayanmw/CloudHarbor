@@ -1,5 +1,5 @@
 import {validDay} from './event-route';
-export const operationKinds:Record<string,string>={mkdir:'新建目录',move:'移动',rename:'重命名',delete:'删除'};
+export const operationKinds:Record<string,string>={mkdir:'新建目录',move:'移动',copy:'复制',rename:'重命名',delete:'删除'};
 export const operationStatuses:Record<string,string>={prepared:'待确认',confirmed:'已确认',unknown:'结果未知（隔离）',failed:'失败'};
 export const emptyOperationFilters=()=>({status:'',kind:'',q:'',from:'',to:''});
 export type OperationFilters=ReturnType<typeof emptyOperationFilters>;

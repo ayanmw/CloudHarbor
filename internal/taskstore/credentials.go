@@ -97,6 +97,11 @@ func (s *Store) BindAccount(id string) error {
 func (s *Store) BoundAccountFingerprint() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.boundAccountFingerprintLocked()
+}
+
+// The caller holds s.mu; restart recovery already owns this lock and its SQL transaction.
+func (s *Store) boundAccountFingerprintLocked() (string, error) {
 	if s.closed {
 		return "", os.ErrClosed
 	}

@@ -1,7 +1,9 @@
-export type ManagedPathSettings={queue_dir:string;local_download_dir:string;queue_editable:boolean;local_download_editable:boolean;queue_busy:boolean;queue_busy_reason:string};
+export type ManagedPathSource="environment"|"saved"|"startup";
+export type ManagedPathSettings={queue_dir:string;local_download_dir:string;queue_editable:boolean;local_download_editable:boolean;queue_busy:boolean;queue_busy_reason:string;queue_source?:ManagedPathSource;local_download_source?:ManagedPathSource};
 export function validateManagedPathSettings(value:ManagedPathSettings):ManagedPathSettings{
  if(!value||typeof value.queue_dir!=='string'||!value.queue_dir.startsWith('/')||typeof value.local_download_dir!=='string'||!value.local_download_dir||typeof value.queue_editable!=='boolean'||typeof value.local_download_editable!=='boolean'||typeof value.queue_busy!=='boolean'||typeof value.queue_busy_reason!=='string'||value.queue_busy!==(value.queue_busy_reason!==''))throw Error('路径配置响应无效，请重新读取');
- return {queue_dir:value.queue_dir,local_download_dir:value.local_download_dir,queue_editable:value.queue_editable,local_download_editable:value.local_download_editable,queue_busy:value.queue_busy,queue_busy_reason:value.queue_busy_reason};
+ for(const [source,editable] of [[value.queue_source,value.queue_editable],[value.local_download_source,value.local_download_editable]]){if(source!==undefined&&(!['environment','saved','startup'].includes(String(source))||(source==='environment')===editable))throw Error('路径配置来源响应无效，请重新读取');}
+ return {queue_dir:value.queue_dir,local_download_dir:value.local_download_dir,queue_editable:value.queue_editable,local_download_editable:value.local_download_editable,queue_busy:value.queue_busy,queue_busy_reason:value.queue_busy_reason,...(value.queue_source===undefined?{}:{queue_source:value.queue_source}),...(value.local_download_source===undefined?{}:{local_download_source:value.local_download_source})};
 }
 export type PathImpactTask={fs_id:string;path:string;server_filename:string;status:'pending'|'auth_wait'|'retry_wait';attempts:number;download_mode:'keep'|'delete'};
 export type PathImpact={current_queue_dir:string;target_queue_dir:string;count:number;offset:number;limit:number;has_more:boolean;tasks:PathImpactTask[];digest:string};

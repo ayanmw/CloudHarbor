@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 42
+const sqliteSchemaVersion = 43
 
 type Event struct {
 	Sequence              int64           `json:"sequence"`
@@ -421,6 +421,9 @@ CREATE TRIGGER IF NOT EXISTS job_events_no_delete BEFORE DELETE ON job_events BE
 		if _, err = db.ExecContext(ctx, downloadManifestSchema); err != nil {
 			return fail(err)
 		}
+		if _, err = db.ExecContext(ctx, cleanupBatchSchema); err != nil {
+			return fail(err)
+		}
 		if _, err = db.ExecContext(ctx, `INSERT OR IGNORE INTO store_meta(key, value) VALUES('schema_version', ?), ('scope', ?)`, fmt.Sprint(sqliteSchemaVersion), scope); err != nil {
 			return fail(err)
 		}
@@ -457,6 +460,9 @@ func sqliteDataSourceName(path string) string {
 }
 
 func validateSQLiteSchemaAndScope(ctx context.Context, db *sql.DB, scope string) error {
+	if err := validateCleanupBatchSchema(ctx, db); err != nil {
+		return err
+	}
 	if err := validateDownloadManifestSchema(ctx, db); err != nil {
 		return err
 	}

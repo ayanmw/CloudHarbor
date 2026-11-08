@@ -4,6 +4,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { vModal } from "./modal";
 import WorkspaceSidebar from "./WorkspaceSidebar.vue";
 import DownloadSettings from "./DownloadSettings.vue";
+import DownloadStateGuidance from "./DownloadStateGuidance.vue";
 import { readDownloadRoute, downloadRouteURL, type DownloadRoute } from "./download-route";
 import {
   Folder,
@@ -44,6 +45,8 @@ type Task = {
   can_resume: boolean;
   can_cancel: boolean;
   can_retry: boolean;
+  can_clear?: boolean;
+  clear_token?: string;
   prepared: boolean;
 };
 type Workspace = {
@@ -99,7 +102,8 @@ const actionMessage = ref("");
 const eventLoading = ref(false), eventPage = ref(0), eventNext = ref<string | null>(null);
 const eventCursors = ref<(string | null)[]>([null]);
 let eventGeneration = 0;
-const confirmation = ref<{ task: Task; kind: "cancel" | "retry" } | null>(null);
+const confirmation = ref<{ task: Task; kind: "cancel" | "retry" | "clear" } | null>(null);
+let workspaceActive=true;
 let refreshInFlight = false;
 let timer: ReturnType<typeof setInterval> | undefined,
   controller: AbortController | undefined,
@@ -143,6 +147,22 @@ const root = computed(() => data.value?.root),
     rootID.value ? root.value?.name || "任务详情" : "下载任务",
   );
 const bytes = formatBytes;
+// Browser acceptance found direct files repeated their name as the path subtitle.
+function taskPathLabel(task: Task) {
+  const relative = rootID.value && root.value && task.path.startsWith(root.value.path + "/")
+    ? task.path.slice(root.value.path.length + 1) : task.path;
+  return rootID.value && root.value && task.path.startsWith(root.value.path + "/") && relative === task.name ? "" : relative;
+}
+
+// Browser review found historical roots were incorrectly described as new empty queues.
+const emptyState = computed(() => {
+  if (appliedSearch.value || status.value) return {title: rootID.value ? "没有匹配的文件" : "没有匹配的任务", text: "请调整已应用的搜索或状态筛选，当前空结果不代表整个任务或目录为空。"};
+  if (!rootID.value) return {title: "这里还没有下载任务", text: "添加网盘项目到监控目录后，下载会自动开始。"};
+  const task = root.value;
+  if (task && ["done", "source_unknown"].includes(task.status) && !task.prepared && !task.files) return {title: "历史文件明细未记录", text: "根任务记录仍保留；不根据当前本地文件反推历史清单，请结合任务事件核对。"};
+  if (task?.prepared && !task.files) return {title: "清单中没有文件", text: "当前记录仅包含文件夹，文件夹不单独展示为下载条目。"};
+  return {title: "当前没有可展示的文件", text: "请结合任务状态和清单依据核对；文件夹仅统计数量，空列表本身不能证明网盘目录为空。"};
+});
 const downloadDuration = (t: Task) => {
   const stats = t.transfer_statistics;
   if (!stats) return t.status === "pending" ? "尚未开始" : "历史统计未记录";
@@ -299,7 +319,7 @@ function changePage(delta: number) {
 }
 async function action(t: Task, kind: string) {
   if (busy.value || error.value || health.value?.queue_healthy === false) return;
-  if (kind === "cancel" || kind === "retry") {
+  if (kind === "cancel" || kind === "retry" || kind === "clear") {
     confirmation.value = { task: t, kind };
     return;
   }
@@ -320,10 +340,13 @@ async function executeAction(t: Task, kind: string) {
   try {
     await api(`/api/tasks/${encodeURIComponent(t.id)}/${kind}`, {
       method: "POST",
+      ...(kind === "clear" ? {headers:{"Content-Type":"application/json"},body:JSON.stringify({acknowledge_reset:true,clear_token:t.clear_token})}:{}),
     });
-    const label = { pause: "暂停任务", resume: "恢复任务", cancel: "取消任务", retry: "重试任务" }[kind] || "任务操作";
+    if(kind === "clear"&&!workspaceActive)return;
+    const label = { pause: "暂停任务", resume: "恢复任务", cancel: "取消任务", retry: "重试任务", clear:"清理记录" }[kind] || "任务操作";
     actionMessage.value = `${label}「${t.name}」请求已接受。`;
     if (dialog.value === t) dialog.value = null;
+    if(kind === "clear") { eventGeneration++;events.value=[];eventLoading.value=false;generation++;controller?.abort();refreshInFlight=false;manifestConflict.value=false;displayedRoute=undefined;data.value=null; if(rootID.value===t.id){rootID.value="";manifestID.value="";offset.value=0;status.value="";search.value="";appliedSearch.value="";writeRoute("replace");} }
     await load(true);
   } catch (e: any) {
     actionError.value = e.message;
@@ -412,6 +435,7 @@ onMounted(() => {
   window.addEventListener("popstate", pop);
 });
 onUnmounted(() => {
+  workspaceActive=false;
   clearInterval(timer);
   controller?.abort();
   window.removeEventListener("popstate", pop);
@@ -480,7 +504,7 @@ onUnmounted(() => {
               }}</span>
               <h2>{{ root.name }}</h2>
               <p class="truncate" :title="root.local_path">
-                保存至 {{ root.local_path || "正在准备本地目录" }}
+                保存至 {{ root.local_path || (root.status === "downloading" && !root.prepared ? "正在准备本地目录" : "未记录本地路径") }}
               </p>
               <div class="summary-meta">
                 <span :title="statisticsHint">下载用时 {{ downloadDuration(root) }}</span>
@@ -519,6 +543,7 @@ onUnmounted(() => {
               </button>
             </div>
           </section>
+          <DownloadStateGuidance :task="root" :stale="!!error" />
           <p v-if="root.download_history" class="discovery-note history-provenance">{{ historyHint(root) }}</p>
           <p
             v-if="
@@ -602,6 +627,7 @@ onUnmounted(() => {
                   : [
                       ['', '全部任务'],
                       ['downloading', '下载中'],
+                      ['pending', '等待下载'],
                       ['done', '已完成'],
                       ['failed', '下载失败'],
                       ['paused', '已暂停'],
@@ -658,8 +684,12 @@ onUnmounted(() => {
               </button>
             </form>
           </div>
-          <div class="table-scroll">
-            <table>
+          <div class="table-scroll" role="region" :aria-label="rootID ? '任务文件列表' : '下载任务列表'" tabindex="0">
+            <table class="download-task-table" :class="rootID ? 'download-files-table' : 'download-overview-table'">
+              <!-- Real browser review found the two new statistics columns squeezed
+                   to zero by the old five-column widths. Allocate every column. -->
+              <colgroup v-if="!rootID"><col style="width:27%"/><col style="width:13%"/><col style="width:23%"/><col style="width:8%"/><col style="width:12%"/><col style="width:10%"/><col style="width:7%"/></colgroup>
+              <colgroup v-else><col style="width:40%"/><col style="width:13%"/><col style="width:25%"/><col style="width:13%"/><col style="width:9%"/></colgroup>
               <thead>
                 <tr>
                   <th class="name-column">
@@ -676,6 +706,7 @@ onUnmounted(() => {
                   <td>
                     <button
                       class="file-name"
+                      :title="t.path"
                       @click="rootID ? details(t) : open(t)"
                     >
                       <span class="file-icon" :class="{ folder: !rootID }"
@@ -684,11 +715,7 @@ onUnmounted(() => {
                           :size="21" /></span
                       ><span class="name-text"
                         ><strong :title="t.name">{{ t.name }}<span v-if="t.file_evidence?.historical" class="badge">历史</span></strong
-                        ><small :title="t.path">{{
-                          rootID && root && t.path.startsWith(root.path + "/")
-                            ? t.path.slice(root.path.length + 1)
-                            : t.path
-                        }}</small></span
+                        ><small v-if="taskPathLabel(t)" :title="t.path">{{ taskPathLabel(t) }}</small></span
                       ><ChevronRight
                         v-if="!rootID"
                         class="row-arrow"
@@ -791,14 +818,10 @@ onUnmounted(() => {
           <div v-else-if="!data?.items.length" class="empty-state">
             <CheckCircle2 :size="36" />
             <h3>
-              {{ search || status ? "没有匹配的任务" : "这里还没有下载任务" }}
+              {{ emptyState.title }}
             </h3>
             <p>
-              {{
-                rootID
-                  ? "已发现的文件会显示在这里，文件夹仅统计数量。"
-                  : "添加网盘项目到监控目录后，下载会自动开始。"
-              }}
+              {{ emptyState.text }}
             </p>
             <a
               v-if="!rootID && !status && !search"
@@ -918,6 +941,7 @@ onUnmounted(() => {
             取消任务
           </button>
         </div>
+        <button v-if="dialog.can_clear&amp;&amp;dialog.clear_token" class="button danger-button" data-testid="clear-download-record" :disabled="!!busy||!!error||health?.queue_healthy===false" @click="action(dialog,'clear')">清理记录</button>
         <template v-if="!dialog.file_evidence">
         <h4>最近任务事件</h4>
         <p v-if="eventError" class="notice danger">{{ eventError }}</p>
@@ -957,14 +981,14 @@ onUnmounted(() => {
     </div>
     <div v-if="confirmation" class="modal-backdrop action-confirm-backdrop" @click.self="closeConfirmation">
       <section class="action-confirm" role="dialog" aria-modal="true" aria-labelledby="action-confirm-title" v-modal="closeConfirmation">
-        <h2 id="action-confirm-title">{{ confirmation.kind === 'cancel' ? '取消任务' : '重试任务' }}</h2>
+        <h2 id="action-confirm-title">{{ confirmation.kind === 'clear' ? '清理下载记录' : confirmation.kind === 'cancel' ? '取消任务' : '重试任务' }}</h2>
         <h3>{{ confirmation.task.name }}</h3>
         <p class="confirmation-path">{{ confirmation.task.path }}</p>
-        <p>{{ confirmation.kind === 'cancel' ? '停止此任务的后续调度。已发送的网盘操作不能撤回，本地已下载文件会保留。' : '按此任务既定策略重新尝试，由程序重新核对当前状态；不会解除结果未知的隔离。' }}</p>
+        <p>{{ confirmation.kind === 'clear' ? '永久清理此任务的下载事件、文件清单、统计和历史隔离信息，无法恢复。本地文件和网盘内容保留；若项目仍在监控目录，会按当前策略作为新任务重新处理，包括可能的网盘改名或删除。' : confirmation.kind === 'cancel' ? '停止此任务的后续调度。已发送的网盘操作不能撤回，本地已下载文件会保留。' : '按此任务既定策略重新尝试，由程序重新核对当前状态；不会解除结果未知的隔离。' }}</p>
         <p v-if="error" class="notice danger" role="alert">当前状态读取异常，请返回并重新核对。</p>
         <div class="drawer-actions">
           <button class="button secondary" :disabled="!!busy" @click="closeConfirmation">返回</button>
-          <button class="button primary" :disabled="!!busy || !!error || health?.queue_healthy === false" @click="confirmAction">{{ busy ? '正在提交…' : confirmation.kind === 'cancel' ? '确认取消' : '确认重试' }}</button>
+          <button class="button primary" :disabled="!!busy || !!error || health?.queue_healthy === false" @click="confirmAction">{{ busy ? '正在提交…' : confirmation.kind === 'clear' ? '确认清理记录并重置隔离' : confirmation.kind === 'cancel' ? '确认取消' : '确认重试' }}</button>
         </div>
       </section>
     </div>

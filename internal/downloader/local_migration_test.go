@@ -294,6 +294,9 @@ func TestLocalDirectoryMigrationVerifiesThenRemovesSource(t *testing.T) {
 		t.Fatal("expected a durable migration record")
 	}
 	waitForLocalMigration(t, d, "completed")
+	if snapshot := d.GetManagedPathSnapshot(); snapshot.QueueSource != "saved" || snapshot.LocalDownloadSource != "saved" {
+		t.Fatalf("migration did not activate saved sources: %#v", snapshot)
+	}
 	d.queue.mu.Lock()
 	staleCandidate := queuedJob.candidate != nil || d.queue.eligible[queued.FsID] != nil
 	d.queue.mu.Unlock()

@@ -430,6 +430,9 @@ func TestRestartBetweenRootRegistrationAndMoveReceiptPreservesPendingRoot(t *tes
 	if err != nil || result.Items[0].State != "moved" || calls.Load() != 0 {
 		t.Fatalf("restart recheck failed: %v", err)
 	}
+	if result.Items[0].SyncConfirmedAtUTC != "" || result.Items[0].QueueRegisteredAtUTC == "" {
+		t.Fatal("recheck must record local registration verification without inventing an old synchronous receipt time")
+	}
 	assertStatus(t, reopened, destination.FsID, "pending")
 }
 
@@ -630,4 +633,284 @@ func TestDurableSynchronousReceiptAllowsDirectoryRecoveryAfterLookupFailure(t *t
 	if err != nil || result.Items[0].State != "moved" || len(reopened.GetTasks()) != 1 || calls.Load() != 1 {
 		t.Fatalf("durable directory receipt did not recover: %v", err)
 	}
+}
+
+func TestIntakeStageTimesSurviveRestart(t *testing.T) {
+	d, _, _, _, _ := intakeFixture(t)
+	preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC()
+	result, err := d.CommitIntake(context.Background(), preview.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(result.Items[0])
+	var fields map[string]interface{}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"sync_confirmed_at_utc", "queue_registered_at_utc"} {
+		value, ok := fields[key].(string)
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if !ok || err != nil || parsed.Before(before) || parsed.After(time.Now().UTC()) || !strings.HasSuffix(value, "Z") {
+			t.Fatalf("missing or invalid %s: %v", key, fields)
+		}
+	}
+	shutdown(t, d)
+	reopened, err := OpenDownloader(d.cfg, d.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, reopened)
+	stored, err := reopened.findIntake(preview.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := json.Marshal(stored.Items[0])
+	if string(raw) != string(after) {
+		t.Fatalf("stage evidence changed across restart: %s -> %s", raw, after)
+	}
+}
+
+func TestIntakeTaskLinkRequiresDurableBatchOrigin(t *testing.T) {
+	d, _, _, _, _ := intakeFixture(t)
+	preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.CommitIntake(context.Background(), preview.ID); err != nil {
+		t.Fatal(err)
+	}
+	check := func(d *Downloader, want bool) {
+		t.Helper()
+		raw, _ := json.Marshal(d.GetIntakes())
+		var records []struct {
+			Items []struct {
+				DownloadTask *struct {
+					TaskID   string `json:"task_id"`
+					Status   string `json:"status"`
+					Observed string `json:"observed_at_utc"`
+				} `json:"download_task"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(raw, &records); err != nil {
+			t.Fatal(err)
+		}
+		link := records[0].Items[0].DownloadTask
+		if (link != nil) != want {
+			t.Fatalf("want link %v, got %s", want, raw)
+		}
+		if link != nil && (link.TaskID != "123" || link.Status != "pending" || !strings.HasSuffix(link.Observed, "Z")) {
+			t.Fatalf("invalid link: %s", raw)
+		}
+	}
+	check(d, true)
+	shutdown(t, d)
+	reopened, err := OpenDownloader(d.cfg, d.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, reopened)
+	check(reopened, true)
+	reopened.queue.mu.Lock()
+	origin := reopened.queue.jobs[123].IntakeID
+	reopened.queue.jobs[123].IntakeID = ""
+	reopened.queue.mu.Unlock()
+	check(reopened, false)
+	reopened.queue.mu.Lock()
+	reopened.queue.jobs[123].IntakeID = origin
+	reopened.queue.mu.Unlock()
+	reopened.intakeMutex.Lock()
+	isolated := reopened.intakes[preview.ID]
+	isolated.Items[0].State = "unknown"
+	reopened.intakes[preview.ID] = isolated
+	reopened.intakeMutex.Unlock()
+	check(reopened, false)
+	reopened.intakeMutex.Lock()
+	isolated.Items[0].State = "moved"
+	reopened.intakes[preview.ID] = isolated
+	reopened.intakeMutex.Unlock()
+	reopened.intakeMutex.Lock()
+	r := reopened.intakes[preview.ID]
+	r.ID = strings.Repeat("f", 32)
+	reopened.intakes = map[string]intakeRecord{r.ID: r}
+	reopened.intakeMutex.Unlock()
+	check(reopened, false)
+}
+
+func TestIntakeMonitorEvidenceIsFirstObservationAndSurvivesRestart(t *testing.T) {
+	d, _, _, _, _ := intakeFixture(t)
+	// The complete downloader suite exposed a race: this evidence-only fixture
+	// rejects downloads, but ScanAndDownload also wakes the transfer scheduler.
+	// Pause transfers explicitly while retaining real monitor scans and restart.
+	if _, err := d.SetQueuePaused(true); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.CommitIntake(context.Background(), preview.ID); err != nil {
+		t.Fatal(err)
+	}
+	evidence := func(d *Downloader) json.RawMessage {
+		t.Helper()
+		raw, _ := json.Marshal(d.GetIntakes())
+		var records []struct {
+			Items []struct {
+				Task struct {
+					Monitor json.RawMessage `json:"monitor_observation"`
+				} `json:"download_task"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(raw, &records); err != nil {
+			t.Fatal(err)
+		}
+		return records[0].Items[0].Task.Monitor
+	}
+	if len(evidence(d)) != 0 {
+		t.Fatal("registration invented monitor observation")
+	}
+	if err = d.ScanAndDownload(); err != nil {
+		t.Fatal(err)
+	}
+	first := evidence(d)
+	var observed struct {
+		RunID string `json:"run_id"`
+		Path  string `json:"path"`
+		Time  string `json:"observed_at_utc"`
+	}
+	if err = json.Unmarshal(first, &observed); err != nil {
+		t.Fatalf("missing evidence: %s %v", first, err)
+	}
+	if !validIntakeID(observed.RunID) || observed.Path != "/queue/a.txt" || !strings.HasSuffix(observed.Time, "Z") {
+		t.Fatalf("invalid observation: %s", first)
+	}
+	if err = d.ScanAndDownload(); err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(evidence(d)) {
+		t.Fatal("later scan replaced first observation")
+	}
+	shutdown(t, d)
+	reopened, err := OpenDownloader(d.cfg, d.getClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(t, reopened)
+	if string(first) != string(evidence(reopened)) {
+		t.Fatal("restart changed first observation")
+	}
+}
+
+func TestIntakeMonitorEvidenceFailureDoesNotPublishObservation(t *testing.T) {
+	d, _, _, _, _ := intakeFixture(t)
+	preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.CommitIntake(context.Background(), preview.ID); err != nil {
+		t.Fatal(err)
+	}
+	d.clientMutex.RLock()
+	epoch := d.authEpoch
+	d.clientMutex.RUnlock()
+	d.queue.mu.Lock()
+	info := d.queue.jobs[123].Info
+	d.queue.mu.Unlock()
+	if err = d.queue.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = d.queue.reconcileMonitorObserved([]baiduapi.FileInfo{info}, epoch, time.Now().UTC(), strings.Repeat("a", 32))
+	if err == nil || d.QueueError() == nil || d.ctx.Err() == nil {
+		t.Fatal("failed observation persistence must stop scheduling")
+	}
+	d.queue.mu.Lock()
+	observation := d.queue.jobs[123].MonitorObservation
+	d.queue.mu.Unlock()
+	if observation != nil {
+		t.Fatal("failed persistence published observation")
+	}
+}
+
+func TestIntakeWaitReasonsReflectCurrentQueue(t *testing.T) {
+	d, _, _, _, _ := intakeFixture(t)
+	preview, err := d.PreviewIntake(context.Background(), []string{"/source/a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.CommitIntake(context.Background(), preview.ID); err != nil {
+		t.Fatal(err)
+	}
+	check := func(want string) {
+		t.Helper()
+		raw, _ := json.Marshal(d.GetIntakes())
+		var records []struct {
+			Items []struct {
+				Task struct {
+					Reason string `json:"wait_reason"`
+				} `json:"download_task"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(raw, &records); err != nil {
+			t.Fatal(err)
+		}
+		if records[0].Items[0].Task.Reason != want {
+			t.Fatalf("want %s, got %s", want, raw)
+		}
+	}
+	check("awaiting_scan")
+	d.queue.mu.Lock()
+	d.queue.userPaused = true
+	d.queue.mu.Unlock()
+	check("queue_paused")
+	d.queue.mu.Lock()
+	d.queue.maintenance = true
+	d.queue.mu.Unlock()
+	check("maintenance")
+	d.queue.mu.Lock()
+	d.queue.maintenance = false
+	d.queue.userPaused = false
+	job := d.queue.jobs[123]
+	d.queue.eligible[123] = &job.Info
+	d.queue.mu.Unlock()
+	check("waiting_schedule")
+	d.queue.mu.Lock()
+	d.queue.blockedSources[job.Info.Path] = true
+	d.queue.mu.Unlock()
+	check("source_isolated")
+	d.queue.mu.Lock()
+	delete(d.queue.blockedSources, job.Info.Path)
+	changed := job.Info
+	changed.Size++
+	d.queue.eligible[123] = &changed
+	d.queue.mu.Unlock()
+	check("source_changed")
+	d.clientMutex.Lock()
+	managed, ready := d.authManaged, d.authReady
+	d.authManaged = true
+	d.authReady = false
+	d.clientMutex.Unlock()
+	check("authorization_wait")
+	d.clientMutex.Lock()
+	d.authManaged, d.authReady = managed, ready
+	d.clientMutex.Unlock()
+	d.queue.mu.Lock()
+	d.queue.stopping = true
+	d.queue.mu.Unlock()
+	check("stopped")
+	d.queue.mu.Lock()
+	d.queue.err = errors.New("test storage failure")
+	d.queue.mu.Unlock()
+	check("storage_error")
+	d.queue.mu.Lock()
+	d.queue.err = nil
+	d.queue.stopping = false
+	d.queue.mu.Unlock()
+	d.queue.mu.Lock()
+	job.Status = "done"
+	d.queue.mu.Unlock()
+	check("")
 }

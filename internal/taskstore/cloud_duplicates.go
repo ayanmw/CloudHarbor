@@ -511,8 +511,17 @@ func (s *Store) ListVerifiedCloudDuplicateGroups(account string) ([]CloudDuplica
 }
 
 func (s *Store) ListVerifiedCloudDuplicateGroupsPage(account string, offset, limit int) ([]CloudDuplicateGroup, int, int, error) {
+	return s.ListVerifiedCloudDuplicateGroupsInDirectory(account, "/", offset, limit)
+}
+
+// Both group discovery and member expansion use the same subtree range: a
+// retained copy outside the selected directory cannot authorize its cleanup.
+func (s *Store) ListVerifiedCloudDuplicateGroupsInDirectory(account, directory string, offset, limit int) ([]CloudDuplicateGroup, int, int, error) {
 	if account == "" || offset < 0 || offset > 1_000_000 || limit < 1 || limit > 50 {
 		return nil, 0, 0, fmt.Errorf("invalid duplicate preview page")
+	}
+	if !validInventoryPath(directory) || strings.ContainsRune(directory, 0) {
+		return nil, 0, 0, fmt.Errorf("invalid duplicate directory")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -525,10 +534,14 @@ func (s *Store) ListVerifiedCloudDuplicateGroupsPage(account string, offset, lim
 	}
 	defer tx.Rollback()
 	var totalGroups, totalDelete int
-	if err = tx.QueryRow(countVerifiedCloudDuplicateGroupsSQL, account).Scan(&totalGroups, &totalDelete); err != nil {
+	prefix, upper := cloudDirectoryPathRange(directory)
+	countQuery := strings.Replace(countVerifiedCloudDuplicateGroupsSQL, "WHERE h.account_fingerprint=?", "WHERE h.account_fingerprint=? AND i.path>=? AND i.path<?", 1)
+	pageQuery := strings.Replace(listVerifiedCloudDuplicateGroupsPageSQL, "WHERE h.account_fingerprint=?", "WHERE h.account_fingerprint=? AND i.path>=? AND i.path<?", 1)
+	pageQuery = strings.Replace(pageQuery, "ORDER BY h.sha256,h.size_bytes,i.path,i.fs_id", "WHERE i.path>=? AND i.path<? ORDER BY h.sha256,h.size_bytes,i.path,i.fs_id", 1)
+	if err = tx.QueryRow(countQuery, account, prefix, upper).Scan(&totalGroups, &totalDelete); err != nil {
 		return nil, 0, 0, err
 	}
-	rows, err := tx.Query(listVerifiedCloudDuplicateGroupsPageSQL, account, limit, offset)
+	rows, err := tx.Query(pageQuery, account, prefix, upper, limit, offset, prefix, upper)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -631,9 +644,16 @@ func (s *Store) LoadCloudDuplicateScanState(account string) (CloudDuplicateScanS
 	if s.closed {
 		return v, sql.ErrConnDone
 	}
+	return scanCloudDuplicateState(s.db.QueryRow(cloudDuplicateStateQuery, account))
+}
+
+const cloudDuplicateStateQuery = `SELECT account_fingerprint,run_id,status,phase,next_fs_id,total_files,processed_files,total_bytes,processed_bytes,started_at_utc,updated_at_utc,last_error,retry_delay_ms,retry_backoff_base_millis,retry_at_utc,current_fs_id,current_path,current_name,current_size,current_provider_mtime,current_content_md5,current_bytes,current_sha256_state FROM cloud_duplicate_scan_state WHERE account_fingerprint=?`
+
+func scanCloudDuplicateState(row *sql.Row) (CloudDuplicateScanState, error) {
+	var v CloudDuplicateScanState
 	var a, b int64
 	var retryAt sql.NullInt64
-	err := s.db.QueryRow(`SELECT account_fingerprint,run_id,status,phase,next_fs_id,total_files,processed_files,total_bytes,processed_bytes,started_at_utc,updated_at_utc,last_error,retry_delay_ms,retry_backoff_base_millis,retry_at_utc,current_fs_id,current_path,current_name,current_size,current_provider_mtime,current_content_md5,current_bytes,current_sha256_state FROM cloud_duplicate_scan_state WHERE account_fingerprint=?`, account).Scan(&v.AccountFingerprint, &v.RunID, &v.Status, &v.Phase, &v.NextFsID, &v.TotalFiles, &v.ProcessedFiles, &v.TotalBytes, &v.ProcessedBytes, &a, &b, &v.LastError, &v.RetryDelayMillis, &v.RetryBackoffBaseMillis, &retryAt, &v.CurrentFsID, &v.CurrentPath, &v.CurrentName, &v.CurrentSize, &v.CurrentProviderMtime, &v.CurrentContentMD5, &v.CurrentBytes, &v.CurrentSHA256State)
+	err := row.Scan(&v.AccountFingerprint, &v.RunID, &v.Status, &v.Phase, &v.NextFsID, &v.TotalFiles, &v.ProcessedFiles, &v.TotalBytes, &v.ProcessedBytes, &a, &b, &v.LastError, &v.RetryDelayMillis, &v.RetryBackoffBaseMillis, &retryAt, &v.CurrentFsID, &v.CurrentPath, &v.CurrentName, &v.CurrentSize, &v.CurrentProviderMtime, &v.CurrentContentMD5, &v.CurrentBytes, &v.CurrentSHA256State)
 	if err != nil {
 		return v, err
 	}

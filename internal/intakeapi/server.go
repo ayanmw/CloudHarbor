@@ -401,7 +401,21 @@ func (s *Server) HandleDuplicateScanEvents(w http.ResponseWriter, r *http.Reques
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	query := r.URL.Query()
+	exact, formatErr := cloudStringIdentity(query)
+	if formatErr != nil {
+		http.Error(w, "invalid duplicate scan event format", http.StatusBadRequest)
+		return
+	}
+	if exact {
+		for key, values := range query {
+			if len(values) != 1 || (key != "identity_format" && key != "before_sequence" && key != "limit") {
+				http.Error(w, "invalid duplicate scan event page", http.StatusBadRequest)
+				return
+			}
+		}
+	}
 	if len(query["before_sequence"]) > 1 || len(query["limit"]) > 1 || query.Has("offset") {
 		http.Error(w, "invalid duplicate scan event page", http.StatusBadRequest)
 		return
@@ -410,7 +424,7 @@ func (s *Server) HandleDuplicateScanEvents(w http.ResponseWriter, r *http.Reques
 	var err error
 	if raw := query.Get("before_sequence"); raw != "" {
 		before, err = strconv.ParseInt(raw, 10, 64)
-		if err != nil || before < 0 {
+		if err != nil || before < 0 || (exact && strconv.FormatInt(before, 10) != raw) {
 			http.Error(w, "invalid duplicate scan event page", http.StatusBadRequest)
 			return
 		}
@@ -439,6 +453,10 @@ func (s *Server) HandleDuplicateScanEvents(w http.ResponseWriter, r *http.Reques
 		}
 		events[i].Evidence = evidence
 	}
+	if exact {
+		jsonResponse(w, hashHistoryEvents(events, "", nextBefore, more))
+		return
+	}
 	var next *int64
 	if more {
 		next = &nextBefore
@@ -465,7 +483,26 @@ func (s *Server) HandleDuplicatePreview(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid duplicate preview page", http.StatusBadRequest)
 		return
 	}
-	groups, total, deleteCount, err := s.backend.CloudDuplicatePreview(r.Context(), offset, limit)
+	directory := "/"
+	if values, ok := query["directory"]; ok {
+		if len(values) != 1 || !taskstore.IsValidCloudInventoryPath(values[0]) || strings.ContainsRune(values[0], 0) {
+			http.Error(w, "invalid duplicate directory", 400)
+			return
+		}
+		directory = values[0]
+	}
+	var groups []taskstore.CloudDuplicateGroup
+	var total, deleteCount int
+	if scoped, ok := s.backend.(interface {
+		CloudDuplicatePreviewInDirectory(context.Context, string, int, int) ([]taskstore.CloudDuplicateGroup, int, int, error)
+	}); ok {
+		groups, total, deleteCount, err = scoped.CloudDuplicatePreviewInDirectory(r.Context(), directory, offset, limit)
+	} else if directory == "/" {
+		groups, total, deleteCount, err = s.backend.CloudDuplicatePreview(r.Context(), offset, limit)
+	} else {
+		http.Error(w, "directory preview unavailable", 503)
+		return
+	}
 	if err != nil {
 		readFailure(w, err)
 		return
@@ -481,10 +518,10 @@ func (s *Server) HandleDuplicatePreview(w http.ResponseWriter, r *http.Request) 
 			value := strconv.Itoa(*nextOffset)
 			next = &value
 		}
-		jsonResponse(w, map[string]any{"groups": cleanupGroupsResponse(groups), "total": strconv.Itoa(total), "delete_count": strconv.Itoa(deleteCount), "offset": strconv.Itoa(offset), "limit": limit, "next_offset": next})
+		jsonResponse(w, map[string]any{"directory": directory, "groups": cleanupGroupsResponse(groups), "total": strconv.Itoa(total), "delete_count": strconv.Itoa(deleteCount), "offset": strconv.Itoa(offset), "limit": limit, "next_offset": next})
 		return
 	}
-	jsonResponse(w, map[string]any{"groups": groups, "total": total, "delete_count": deleteCount, "offset": offset, "limit": limit, "next_offset": nextOffset})
+	jsonResponse(w, map[string]any{"directory": directory, "groups": groups, "total": total, "delete_count": deleteCount, "offset": offset, "limit": limit, "next_offset": nextOffset})
 }
 
 type Server struct {
@@ -667,6 +704,11 @@ func (s *Server) HandleCloud(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "身份格式无效。", http.StatusBadRequest)
 		return
 	}
+	order, orderErr := cloudOrder(r.URL.Query())
+	if orderErr != nil {
+		http.Error(w, "排序参数无效。", http.StatusBadRequest)
+		return
+	}
 	offset, limit, err := pagination(r, 100)
 	if err != nil {
 		readFailure(w, err)
@@ -676,10 +718,10 @@ func (s *Server) HandleCloud(w http.ResponseWriter, r *http.Request) {
 	if dir == "" {
 		dir = "/"
 	}
-	result, err := s.backend.ListCloud(r.Context(), dir, offset, limit)
+	result, err := s.listCloudOrdered(r.Context(), dir, offset, limit, order)
 	reanchored := false
 	if offset > 0 && errors.Is(err, baiduapi.ErrDuplicatePageItem) {
-		result, err = s.backend.ListCloud(r.Context(), dir, 0, limit)
+		result, err = s.listCloudOrdered(r.Context(), dir, 0, limit, order)
 		if err == nil {
 			result.BoundaryChanged = true
 			result.BoundaryChangeReason = "provider_duplicate_page_id"
@@ -705,10 +747,10 @@ func (s *Server) HandleCloud(w http.ResponseWriter, r *http.Request) {
 			if len(result.Entries) > 0 {
 				entry := result.Entries[0]
 				entryBoundary := downloader.CloudPageBoundary{FsID: entry.FsID, Path: entry.Path, Name: entry.Name, Directory: entry.Directory, Size: entry.ProviderSize, ProviderMtime: entry.Mtime, ContentMD5: entry.MD5}
-				matches = strings.EqualFold(expected.Fingerprint, entryBoundary.ComputeFingerprint())
+				matches = strings.EqualFold(expected.Fingerprint, entryBoundary.FingerprintForListing(dir, order))
 			}
 			if !matches {
-				result, err = s.backend.ListCloud(r.Context(), dir, 0, limit)
+				result, err = s.listCloudOrdered(r.Context(), dir, 0, limit, order)
 				if err != nil {
 					readFailure(w, err)
 					return
@@ -768,8 +810,9 @@ func (s *Server) HandleIncompleteCloudInventoryDirectories(w http.ResponseWriter
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	query := r.URL.Query()
-	allowed := map[string]bool{"before_path": true, "reason": true, "q": true, "limit": true, "cache_generation": true}
+	allowed := map[string]bool{"before_path": true, "reason": true, "q": true, "limit": true, "cache_generation": true, "identity_format": true}
 	for key, values := range query {
 		if !allowed[key] || len(values) != 1 {
 			http.Error(w, "参数无效。", http.StatusBadRequest)
@@ -778,6 +821,11 @@ func (s *Server) HandleIncompleteCloudInventoryDirectories(w http.ResponseWriter
 	}
 	if (query.Get("before_path") != "" && !taskstore.IsValidCloudInventoryPath(query.Get("before_path"))) || !taskstore.IsValidCloudInventoryIncompleteReason(query.Get("reason")) || utf8.RuneCountInString(strings.TrimSpace(query.Get("q"))) > 128 {
 		http.Error(w, "筛选参数无效。", http.StatusBadRequest)
+		return
+	}
+	exact, identityErr := cloudStringIdentity(query)
+	if identityErr != nil {
+		http.Error(w, "参数无效。", http.StatusBadRequest)
 		return
 	}
 	limit := 25
@@ -790,17 +838,28 @@ func (s *Server) HandleIncompleteCloudInventoryDirectories(w http.ResponseWriter
 		limit = parsed
 	}
 	expected, err := optionalGeneration(r)
-	if err != nil {
+	if err != nil || (exact && expected != nil && strconv.FormatInt(*expected, 10) != query.Get("cache_generation")) {
 		http.Error(w, "缓存代次参数无效。", http.StatusBadRequest)
 		return
 	}
 	page, err := s.backend.ListIncompleteCloudInventoryDirectories(r.Context(), query.Get("before_path"), query.Get("reason"), query.Get("q"), limit, expected)
 	if errors.Is(err, taskstore.ErrCloudInventoryGenerationChanged) {
-		jsonResponseStatus(w, http.StatusConflict, map[string]any{"code": "cache_generation_changed", "cache_generation": page.Generation})
+		jsonResponseStatus(w, http.StatusConflict, map[string]any{"code": "cache_generation_changed", "cache_generation": cloudGenerationResponse(page.Generation, exact)})
 		return
 	}
 	if err != nil {
 		readFailure(w, err)
+		return
+	}
+	if exact {
+		jsonResponse(w, map[string]any{
+			"entries": page.Entries, "total": strconv.Itoa(page.Total),
+			"cache_generation": strconv.FormatInt(page.Generation, 10),
+			"next_before_path": page.NextBeforePath, "has_more": page.HasMore,
+			"source": "local_cache", "reason": query.Get("reason"),
+			"query": strings.TrimSpace(query.Get("q")), "before_path": query.Get("before_path"),
+			"limit": limit, "observed_at_utc": time.Now().UTC().Format(time.RFC3339Nano),
+		})
 		return
 	}
 	jsonResponse(w, page)
@@ -810,7 +869,43 @@ func (s *Server) HandleInventorySearch(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodGet) {
 		return
 	}
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	params := r.URL.Query()
+	for _, key := range []string{"q", "scope", "kind", "extensions", "modified_from", "modified_before"} {
+		if len(params[key]) > 1 {
+			http.Error(w, "搜索参数不能重复", http.StatusBadRequest)
+			return
+		}
+	}
+	filter := taskstore.CloudInventorySearchFilter{Scope: "/", Kind: "all"}
+	if values, present := params["scope"]; present {
+		filter.Scope = values[0]
+	}
+	if values, present := params["kind"]; present {
+		filter.Kind = values[0]
+	}
+	if values, present := params["extensions"]; present {
+		filter.Extensions = values[0]
+		if filter.Extensions == "" {
+			http.Error(w, "扩展名条件无效", http.StatusBadRequest)
+			return
+		}
+	}
+	for key, target := range map[string]*int64{"modified_from": &filter.ModifiedFrom, "modified_before": &filter.ModifiedBefore} {
+		if values, present := params[key]; present {
+			value, err := strconv.ParseInt(values[0], 10, 64)
+			if err != nil || value <= 0 || strconv.FormatInt(value, 10) != values[0] {
+				http.Error(w, "修改时间条件无效", http.StatusBadRequest)
+				return
+			}
+			*target = value
+		}
+	}
+	filtered := params.Has("scope") || params.Has("kind") || params.Has("extensions") || params.Has("modified_from") || params.Has("modified_before")
+	if !filter.Valid() || (filtered && params.Has("directories_only")) {
+		http.Error(w, "搜索范围、类型、扩展名或修改时间无效", http.StatusBadRequest)
+		return
+	}
+	query := strings.TrimSpace(params.Get("q"))
 	if query == "" || utf8.RuneCountInString(query) > 128 {
 		http.Error(w, "搜索内容须为 1 至 128 个字符", http.StatusBadRequest)
 		return
@@ -831,7 +926,35 @@ func (s *Server) HandleInventorySearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "缓存代次参数无效", http.StatusBadRequest)
 		return
 	}
-	items, total, coverage, err := s.backend.SearchCachedCloud(r.Context(), query, offset, limit, expected)
+	search := s.backend.SearchCachedCloud
+	directoriesOnly := r.URL.Query()["directories_only"]
+	if len(directoriesOnly) > 1 || (len(directoriesOnly) == 1 && directoriesOnly[0] != "1") {
+		http.Error(w, "目录搜索参数无效", http.StatusBadRequest)
+		return
+	}
+	if len(directoriesOnly) == 1 {
+		backend, ok := s.backend.(interface {
+			SearchCachedCloudDirectories(context.Context, string, int, int, *int64) ([]taskstore.CloudInventoryEntry, int, taskstore.CloudInventorySearchCoverage, error)
+		})
+		if !ok {
+			http.Error(w, "目录搜索不可用", http.StatusServiceUnavailable)
+			return
+		}
+		search = backend.SearchCachedCloudDirectories
+	}
+	if filtered {
+		backend, ok := s.backend.(interface {
+			SearchCachedCloudFiltered(context.Context, string, int, int, *int64, taskstore.CloudInventorySearchFilter) ([]taskstore.CloudInventoryEntry, int, taskstore.CloudInventorySearchCoverage, error)
+		})
+		if !ok {
+			http.Error(w, "筛选搜索不可用", http.StatusServiceUnavailable)
+			return
+		}
+		search = func(ctx context.Context, query string, offset, limit int, expected *int64) ([]taskstore.CloudInventoryEntry, int, taskstore.CloudInventorySearchCoverage, error) {
+			return backend.SearchCachedCloudFiltered(ctx, query, offset, limit, expected, filter)
+		}
+	}
+	items, total, coverage, err := search(r.Context(), query, offset, limit, expected)
 	if err != nil {
 		if errors.Is(err, taskstore.ErrCloudInventoryGenerationChanged) {
 			jsonResponseStatus(w, http.StatusConflict, map[string]any{"code": "cache_generation_changed", "cache_generation": coverage.Generation})
@@ -845,7 +968,17 @@ func (s *Server) HandleInventorySearch(w http.ResponseWriter, r *http.Request) {
 		next := offset + len(items)
 		nextOffset = &next
 	}
-	jsonResponse(w, map[string]any{"query": query, "entries": cachedCloudEntriesResponse(items, exact), "total": total, "offset": offset, "next_offset": nextOffset, "cache_generation": cloudGenerationResponse(coverage.Generation, exact), "coverage": coverage})
+	if len(directoriesOnly) == 1 {
+		filter.Kind = "directory"
+	}
+	from, before := "", ""
+	if filter.ModifiedFrom != 0 {
+		from = strconv.FormatInt(filter.ModifiedFrom, 10)
+	}
+	if filter.ModifiedBefore != 0 {
+		before = strconv.FormatInt(filter.ModifiedBefore, 10)
+	}
+	jsonResponse(w, map[string]any{"extensions": filter.Extensions, "modified_from": from, "modified_before": before, "scope": filter.Scope, "kind": filter.Kind, "directories_only": len(directoriesOnly) == 1, "query": query, "entries": cachedCloudEntriesResponse(items, exact), "total": total, "offset": offset, "next_offset": nextOffset, "cache_generation": cloudGenerationResponse(coverage.Generation, exact), "coverage": coverage})
 }
 
 func (s *Server) HandleInventorySize(w http.ResponseWriter, r *http.Request) {
@@ -1338,9 +1471,14 @@ func (s *Server) HandleInventoryRefreshChanges(w http.ResponseWriter, r *http.Re
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效", http.StatusBadRequest)
+		return
+	}
 	query := r.URL.Query()
 	for key, values := range query {
-		if (key != "run_id" && key != "event_sequence" && key != "before_sequence" && key != "limit" && key != "kind" && key != "q") || len(values) != 1 {
+		if (key != "identity_format" && key != "run_id" && key != "event_sequence" && key != "before_sequence" && key != "limit" && key != "kind" && key != "q") || len(values) != 1 {
 			http.Error(w, "刷新变更明细分页参数无效。", http.StatusBadRequest)
 			return
 		}
@@ -1384,6 +1522,10 @@ func (s *Server) HandleInventoryRefreshChanges(w http.ResponseWriter, r *http.Re
 		readFailure(w, err)
 		return
 	}
+	if exact {
+		jsonResponse(w, refreshChangesExact(runID, eventSequence, kind, search, page))
+		return
+	}
 	jsonResponse(w, map[string]any{"run_id": runID, "event_sequence": eventSequence, "kind": kind, "query": search, "changes": page.Changes, "counts": page.Counts, "total_count": page.Counts.Total, "matched_count": page.MatchedCount, "next_before_sequence": page.NextBeforeSequence, "has_more": page.HasMore})
 }
 
@@ -1392,9 +1534,14 @@ func (s *Server) HandleInventoryRefreshChangesExport(w http.ResponseWriter, r *h
 	if !method(w, r, http.MethodGet) {
 		return
 	}
+	exact, formatErr := cloudStringIdentity(r.URL.Query())
+	if formatErr != nil {
+		http.Error(w, "身份格式无效", http.StatusBadRequest)
+		return
+	}
 	query := r.URL.Query()
 	for key, values := range query {
-		if (key != "run_id" && key != "event_sequence" && key != "kind" && key != "q") || len(values) != 1 {
+		if (key != "identity_format" && key != "run_id" && key != "event_sequence" && key != "kind" && key != "q") || len(values) != 1 {
 			http.Error(w, "刷新变更明细导出参数无效。", http.StatusBadRequest)
 			return
 		}
@@ -1429,6 +1576,14 @@ func (s *Server) HandleInventoryRefreshChangesExport(w http.ResponseWriter, r *h
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="cloud-refresh-changes.json"`)
+	if exact {
+		page := refreshChangesExact(bundle.RunID, bundle.EventSequence, bundle.Kind, bundle.Query, taskstore.CloudInventoryRefreshChangePage{Changes: bundle.Changes, Counts: bundle.Counts, MatchedCount: bundle.MatchedCount})
+		page["exported_at_utc"] = time.Now().UTC()
+		page["recorded_at_utc"] = bundle.RecordedAtUTC
+		page["cloud_observed_at_utc"] = bundle.CloudObservedAtUTC
+		_ = json.NewEncoder(w).Encode(page)
+		return
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"exported_at_utc": time.Now().UTC(), "run_id": bundle.RunID, "event_sequence": bundle.EventSequence, "recorded_at_utc": bundle.RecordedAtUTC, "cloud_observed_at_utc": bundle.CloudObservedAtUTC, "kind": bundle.Kind, "query": bundle.Query, "counts": bundle.Counts, "matched_count": bundle.MatchedCount, "changes": bundle.Changes})
 }
 
@@ -1530,6 +1685,9 @@ func (s *Server) HandleCloudMutation(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(map[string]any{"operation": cloudMutationResponse(result, exact), "message": "操作结果请按状态重新核对；未知结果不会自动重发。"})
+			return
+		}
+		if writeCloudMutationRejection(w, err) {
 			return
 		}
 		failure(w, err)

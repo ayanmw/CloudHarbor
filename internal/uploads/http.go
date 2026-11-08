@@ -67,8 +67,9 @@ func (m *Manager) Handle(w http.ResponseWriter, r *http.Request) {
 		write(w, map[string]any{"batches": rows, "limit": 50})
 	case http.MethodPost:
 		var input struct {
-			Target string  `json:"target"`
-			Files  []Input `json:"files"`
+			Target      string   `json:"target"`
+			Directories []string `json:"directories"`
+			Files       []Input  `json:"files"`
 		}
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4*1024*1024))
 		decoder.DisallowUnknownFields()
@@ -76,7 +77,16 @@ func (m *Manager) Handle(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "上传清单无效", 400)
 			return
 		}
-		b, err := m.Create(input.Target, input.Files)
+		if len(input.Directories) > 0 {
+			m.mu.Lock()
+			available := m.runDirectory != nil
+			m.mu.Unlock()
+			if !available {
+				http.Error(w, "当前服务未配置目录上传执行器", 409)
+				return
+			}
+		}
+		b, err := m.createManifest(input.Target, input.Files, input.Directories)
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 			return

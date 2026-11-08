@@ -206,11 +206,7 @@ function localStorageKindText(local) {
 function localStorageByteText(value) {
     const bytes = Number(value);
     if (!Number.isSafeInteger(bytes) || bytes < 0) return '未知';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-    let amount = bytes, unit = 0;
-    while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit++; }
-    const readable = unit === 0 ? `${amount} ${units[unit]}` : `${amount.toFixed(2)} ${units[unit]}`;
-    return `${readable}（${bytes} 字节）`;
+    return `${formatBytes(bytes)}（${bytes} 字节）`;
 }
 
 function localStorageDiagnosticMarkup(local) {
@@ -576,29 +572,42 @@ async function triggerScan() {
     finally { button.disabled = false; }
 }
 // 共享的工具函数
-function formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+// Capacity audit found binary KB labels and missing units above GiB.
+// Keep integer rounding consistent with frontend/src/format-bytes.ts.
+function formatBytes(value) {
+    if (value === null || value === undefined) return '—';
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value) || value < 0) return '—';
+        value = BigInt(Math.round(value));
+    }
+    let bytes;
+    try {
+        if (typeof value === 'string' && !/^(0|[1-9][0-9]*)$/.test(value)) return '—';
+        bytes = BigInt(value);
+    } catch { return '—'; }
+    if (bytes < 0n) return '—';
+    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB'];
+    let power = 1n, unit = 0;
+    while (unit < units.length - 1 && bytes >= power * 1024n) { power *= 1024n; unit++; }
+    if (!unit) return bytes + ' B';
+    let rounded = (bytes * 100n + power / 2n) / power;
+    if (rounded >= 102400n && unit < units.length - 1) { power *= 1024n; unit++; rounded = (bytes * 100n + power / 2n) / power; }
+    const fraction = (rounded % 100n).toString().padStart(2, '0').replace(/0+$/, '');
+    return (rounded / 100n).toString() + (fraction ? '.' + fraction : '') + ' ' + units[unit];
 }
 
 function formatSpeed(bytesPerSecond) {
-    if (bytesPerSecond === 0) return '0 B/s';
-    const k = 1024;
-    const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-    const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
-    return Math.round(bytesPerSecond / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    const value = formatBytes(bytesPerSecond);
+    return value === '—' ? value : value + '/s';
 }
 
 function formatTime(timeStr) {
     if (!timeStr) return '—';
     const date = new Date(timeStr);
-    return date.toLocaleString('zh-CN', { 
-        month: '2-digit', 
-        day: '2-digit', 
-        hour: '2-digit', 
+    return date.toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
         minute: '2-digit',
         second: '2-digit'
     });

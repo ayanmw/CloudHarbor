@@ -45,6 +45,8 @@ type Task struct {
 	CanCancel         bool
 	CanPause          bool
 	CanResume         bool
+	CanClear          bool
+	ClearToken        string
 	CanRetry          bool
 	LocalStorage      *LocalStorageEvidence `json:"local_storage,omitempty"`
 }
@@ -83,7 +85,11 @@ type Downloader struct {
 	tasks                  map[int64]*Task
 	taskMutex              sync.RWMutex
 	scanMutex              sync.Mutex
+	cleanupWorkerMu        sync.Mutex
+	cleanupWorkerStarted   bool
 	cloudMutex             sync.RWMutex
+	displaySizeMu          sync.Mutex
+	displaySizeSnapshots   map[string]*cloudDisplaySizeSnapshot
 	pathOperations         sync.RWMutex
 	intakeMutex            sync.RWMutex
 	intakeBoot             string
@@ -99,6 +105,8 @@ type Downloader struct {
 	pathMu                 sync.RWMutex
 	queueDir               string
 	localDownDir           string
+	queuePathSaved         bool
+	localPathSaved         bool
 	settingsMu             sync.Mutex
 	localMigrationMu       sync.Mutex
 	localMigrationRunning  bool
@@ -109,7 +117,10 @@ type Downloader struct {
 	inventoryScanMutex     sync.Mutex
 	inventoryScanCancel    context.CancelFunc
 	inventoryScanStarting  bool
-	inventoryScanKind      string
+	// Upload group/namespace state shares inventoryScanMutex and its lock order.
+	uploadLeaseMembers  int
+	uploadNamespaceGate chan struct{}
+	inventoryScanKind   string
 	// inventoryPageCommitHook synchronizes the read/commit race regression test.
 	inventoryPageCommitHook func(string)
 	// inventoryScanAdmissionHook synchronizes path-maintenance admission regression tests.
@@ -264,7 +275,11 @@ func (d *Downloader) ScanAndDownload() error {
 			return fmt.Errorf("记录百度目录观察时间失败: %w", err)
 		}
 	}
-	err = d.queue.reconcileObserved(files, epoch, observedAt)
+	monitorRunID := ""
+	if store != nil {
+		monitorRunID = runID
+	}
+	err = d.queue.reconcileMonitorObserved(files, epoch, observedAt, monitorRunID)
 	if err != nil {
 		var finishErr error
 		if store != nil {
@@ -1015,6 +1030,10 @@ func (d *Downloader) taskWithActionsLocked(id int64, task *Task) *Task {
 	task.TaskID = strconv.FormatInt(task.FileInfo.FsID, 10)
 	job := d.queue.jobs[id]
 	if task.Root && job != nil && !d.queue.stopping && d.queue.err == nil && d.ctx.Err() == nil {
+		task.CanClear = d.queue.store != nil && !d.queue.maintenance && clearableDownloadRecord(d.queue, job)
+		if task.CanClear {
+			task.ClearToken = downloadClearToken(job)
+		}
 		task.CanCancel = job.Status == "pending" || job.Status == "downloading" || job.Status == "retry_wait" || job.Status == "auth_wait" || job.Status == "paused"
 		task.CanPause = job.SourceState == "" && (job.Status == "pending" || job.Status == "retry_wait" || job.Status == "downloading")
 		task.CanResume = job.SourceState == "" && job.Status == "paused" && d.queue.active[id] == nil

@@ -1,8 +1,9 @@
+import {mountBuiltWorkspace} from './built-workspace.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {JSDOM,VirtualConsole} from 'jsdom';
-const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8'),asset=html.match(/src="\/app\/(assets\/[^\"]+\.js)"/)[1],bundle=await readFile(new URL('../../internal/webui/app/'+asset,import.meta.url),'utf8');
+const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const entry={id:'a'.repeat(32),source_path:'D:\\old',target_path:'D:\\new',status:'completed',phase:'complete',total_files:'2',processed_files:'2',total_bytes:'50',processed_bytes:'50',started_at_utc:'2026-11-03T01:00:00Z',updated_at_utc:'2026-11-03T01:01:00Z',finished_at_utc:'2026-11-03T01:01:00Z'};
 test('migration history requests exact counters and displays int64 without rounding',async()=>{
@@ -10,7 +11,7 @@ test('migration history requests exact counters and displays int64 without round
 });
 async function render(respond=async()=>({ok:true,json:async()=>({entries:[entry],total:1,offset:0,limit:20,next_offset:null})}),search=''){
  const dom=new JSDOM(html,{url:'http://localhost/settings/migrations'+search,runScripts:'outside-only',pretendToBeVisual:true,virtualConsole:new VirtualConsole()}),requests=[];
- dom.window.fetch=async(raw,init={})=>{requests.push({url:String(raw),method:init.method||'GET'});return respond(String(raw),init);};dom.window.eval(bundle);await tick();await tick();return {dom,requests};
+ dom.window.fetch=async(raw,init={})=>{requests.push({url:String(raw),method:init.method||'GET'});return respond(String(raw),init);};await mountBuiltWorkspace(dom);await tick();await tick();return {dom,requests};
 }
 test('migration history has an independent compact read-only table and path navigation',async()=>{
  const {dom,requests}=await render();try{const doc=dom.window.document;assert.match(doc.querySelector('h1').textContent,/迁移历史/);const table=doc.querySelector('[data-testid=migration-history-table]');assert.ok(table);assert.match(table.textContent,/D:\\old/);assert.match(table.textContent,/D:\\new/);assert.match(table.textContent,/2026-11-03T01:00:00Z/);assert.ok(doc.querySelector('a[href="/settings/paths"]'));assert.ok(requests.every(r=>r.method==='GET'&&r.url.startsWith('/api/settings/local-migrations?')));}finally{dom.window.close();}

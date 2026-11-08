@@ -59,7 +59,8 @@ func (d *Downloader) SetAuthentication(client *baiduapi.Client, ready bool, expi
 		return
 	}
 	d.clientMutex.Lock()
-	changed := !d.authManaged || d.authReady != ready || !d.authExpiry.Equal(expiry) || d.client.Fingerprint() != client.Fingerprint()
+	// Upload scope review found that an app change also invalidates prior admission.
+	changed := !d.authManaged || d.authReady != ready || !d.authExpiry.Equal(expiry) || d.client.Fingerprint() != client.Fingerprint() || d.client.AppKey != client.AppKey
 	d.authManaged = true
 	d.authReady = ready
 	d.authExpiry = expiry

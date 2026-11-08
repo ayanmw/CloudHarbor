@@ -1,16 +1,20 @@
 <script setup lang="ts">
+import {formatBytes} from "./format-bytes";
 import {computed,onMounted,onUnmounted,ref,watch} from 'vue';
 import {Folder,File,ArrowUp,RefreshCw} from 'lucide-vue-next';
 import WorkspaceSidebar from './WorkspaceSidebar.vue';
 import IntakePreview from './IntakePreview.vue';
 import IntakeHistory from './IntakeHistory.vue';
 import IntakeRecordDetails from './IntakeRecordDetails.vue';
+import {validCloudDirectory} from './cloud-files-route';
 import {validateIntake,resultMessage,type IntakeRecord} from './intake-types';
 
 type Entry={id:string;path:string;name:string;directory:boolean;size:number;can_enqueue:boolean};
 type Listing={directory:string;queue_dir:string;entries:Entry[];offset:number;total:number|null;next_offset?:number|null};
-const pathParameter=new URLSearchParams(location.search).get('path')||'';
-const confirmationPath=pathParameter.startsWith('/')&&!pathParameter.includes('\0')?pathParameter:'';
+const pathParameters=new URLSearchParams(location.search).getAll('path');
+const selectionRouteError=pathParameters.length>20?'下载预检每批最多20项':pathParameters.some(path=>!validCloudDirectory(path))?'下载路径无效':new Set(pathParameters).size!==pathParameters.length?'下载路径重复，请重新选择':'';
+const confirmationPaths=selectionRouteError?[]:pathParameters;
+const confirmationPath=pathParameters.length?(confirmationPaths[0]||'/'):'';
 const historyOnly=location.pathname==='/intake-history';
 const draftDirectory=ref('/'),requestedDirectory=ref('/'),listing=ref<Listing|null>(null),loading=ref(false),error=ref(''),inputError=ref(''),authenticationRequired=ref(false);
 const selectedText=ref('');
@@ -49,7 +53,8 @@ async function load(directory:string,offset=0){
  finally{if(request===generation)loading.value=false;}
 }
 function parent(){const path=requestedDirectory.value.replace(/\/+$/,'');return path.slice(0,path.lastIndexOf('/'))||'/';}
-function bytes(value:number){if(!value)return '0 B';const units=['B','KB','MB','GB','TB'];const power=Math.min(Math.floor(Math.log(value)/Math.log(1024)),units.length-1);return `${(value/1024**power).toLocaleString('zh-CN',{maximumFractionDigits:1})} ${units[power]}`;}
+// Capacity audit found this legacy browser still labelled binary units as KB/TB.
+const bytes = formatBytes;
 function canPage(){return !!listing.value&&!loading.value&&!error.value&&!authenticationRequired.value&&listing.value.directory===requestedDirectory.value;}
 function setPaths(paths:string[]){selectedText.value=paths.join('\n');}
 function removePath(path:string){setPaths(selectedPaths.value.filter(value=>value!==path));}
@@ -128,7 +133,7 @@ function consumeHandoff(){
  }catch{selectionNotice.value='外部选择数据无效，未导入；请在本页直接选择项目。';}
 }
 consumeHandoff();
-onMounted(()=>{document.title=(historyOnly?'入队记录':'下载预检')+' · NAS Downloader';loadAuth();if(confirmationPath)selectedText.value=confirmationPath;else if(!historyOnly)load('/');timer=setInterval(()=>clock.value=Date.now(),500);});
+onMounted(()=>{document.title=(historyOnly?'入队记录':'下载预检')+' · NAS Downloader';loadAuth();if(confirmationPath)selectedText.value=confirmationPaths.join('\n');else if(!historyOnly)load('/');timer=setInterval(()=>clock.value=Date.now(),500);});
 onUnmounted(()=>{generation++;controller?.abort();actionGeneration++;actionController?.abort();authGeneration++;authController?.abort();clearInterval(timer);});
 </script>
 
@@ -136,8 +141,8 @@ onUnmounted(()=>{generation++;controller?.abort();actionGeneration++;actionContr
  <div class="workspace event-workspace intake-workspace">
   <WorkspaceSidebar :active="historyOnly?'/intake-history':'/cloud/files'" :inert="!!selectedRecord" @error="error=$event"/>
   <main class="main" :inert="!!selectedRecord">
-   <header class="page-header"><div><p class="eyebrow">网盘 → 自动下载队列</p><h1>{{historyOnly?'入队记录':confirmationPath?'下载预检':'添加网盘项目'}}</h1><p class="muted">选择网盘项目，核对后移动到自动监控目录，由后台检测下载。</p></div><a class="button secondary" href="/cloud/files">返回网盘文件</a><button v-if="!historyOnly&&!confirmationPath" class="button secondary" :disabled="loading||authenticationRequired" @click="load(requestedDirectory)"><RefreshCw :size="16"/>刷新目录</button></header>
-   <section class="intake-account-status"><p data-testid="intake-auth" role="status">{{authText}}</p><button class="button secondary" data-testid="intake-auth-refresh" :disabled="authLoading||authenticationRequired" @click="loadAuth">刷新账号状态</button><a href="/oauth">账号与授权</a></section>
+   <header class="page-header"><div><p class="eyebrow">网盘 → 自动下载队列</p><h1>{{historyOnly?'入队记录':confirmationPath?'下载预检':'添加网盘项目'}}</h1><p class="muted">{{historyOnly?'只读查看预检、入队及核对记录；不会自动重发移动。':'选择网盘项目，核对后移动到自动监控目录，由后台检测下载。'}}</p></div><a class="button secondary" href="/cloud/files">返回网盘文件</a><button v-if="!historyOnly&&!confirmationPath" class="button secondary" :disabled="loading||authenticationRequired" @click="load(requestedDirectory)"><RefreshCw :size="16"/>刷新目录</button></header>
+   <p v-if="selectionRouteError" class="notice danger" role="alert">{{selectionRouteError}}</p><section class="intake-account-status"><p data-testid="intake-auth" role="status">{{authText}}</p><button class="button secondary" data-testid="intake-auth-refresh" :disabled="authLoading||authenticationRequired" @click="loadAuth">刷新账号状态</button><a href="/oauth">账号与授权</a></section>
    <section v-if="!historyOnly&&!confirmationPath" class="event-results intake-browser" data-testid="intake-browser" aria-label="网盘目录浏览">
     <form class="intake-directory-toolbar" data-testid="intake-directory-form" @submit.prevent="load(draftDirectory)">
      <button class="button secondary" type="button" data-testid="intake-up" :disabled="requestedDirectory==='/'||authenticationRequired" @click="load(parent())"><ArrowUp :size="16"/>上一级</button>
@@ -166,7 +171,7 @@ onUnmounted(()=>{generation++;controller?.abort();actionGeneration++;actionContr
     <p v-if="actionError" data-testid="intake-action-error" class="notice danger" role="alert">{{actionError}}</p>
     <p v-if="result" data-testid="intake-result" class="notice" role="status">{{result}}</p>
    </section>
-  <p><a href="/intake-history">查看入队记录</a></p><IntakePreview v-if="preview" :key="preview.id" :record="preview" :now="clock" :busy="!!action" :disabled="!authReady" @confirm="commit"/>
+  <p v-if="!historyOnly"><a href="/intake-history">查看入队记录</a></p><IntakePreview v-if="preview" :key="preview.id" :record="preview" :now="clock" :busy="!!action" :disabled="!authReady" @confirm="commit"/>
   <IntakeHistory v-if="historyOnly||!confirmationPath" :revision="historyRevision" :disabled="authenticationRequired" @select="selectedRecord=$event" @authentication-required="requireLogin"/>
   </main>
   <IntakeRecordDetails v-if="selectedRecord" :key="selectedRecord.id" :record="selectedRecord" :busy="!!action" :disabled="!authReady" :feedback="actionRecordID===selectedRecord.id?result:''" @recheck="recheck" @close="selectedRecord=null"/>

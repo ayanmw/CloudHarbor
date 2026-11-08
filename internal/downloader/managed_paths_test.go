@@ -626,3 +626,82 @@ func TestSetManagedPathsReadsCurrentPathAfterAdmission(t *testing.T) {
 		t.Fatalf("migration used a pre-admission source path: got %q want %q", outcome.migration.SourcePath, middle)
 	}
 }
+
+func TestManagedPathSourcesFollowSavedAndEnvironmentPrecedence(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.Config{QueueDir: "/default", LocalDownDir: filepath.Join(root, "downloads"), StateDir: filepath.Join(root, "state"), MaxParallel: 1}
+	d, err := OpenDownloader(cfg, baiduapi.NewClient("token", "app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := d.GetManagedPathSnapshot()
+	if first.QueueSource != "startup" || first.LocalDownloadSource != "startup" {
+		t.Fatalf("startup sources: %#v", first)
+	}
+	if _, err = d.SetManagedPaths(context.Background(), ManagedPaths{QueueDir: "/saved", LocalDownDir: filepath.Join(root, "saved")}, false); err != nil {
+		t.Fatal(err)
+	}
+	saved := d.GetManagedPathSnapshot()
+	if saved.QueueSource != "saved" || saved.LocalDownloadSource != "saved" {
+		t.Fatalf("saved sources: %#v", saved)
+	}
+	if err = d.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, explicit := range []bool{false, true} {
+		next := *cfg
+		next.QueueDirExplicit = explicit
+		reopened, e := OpenDownloader(&next, baiduapi.NewClient("token", "app"))
+		if e != nil {
+			t.Fatal(e)
+		}
+		got := reopened.GetManagedPathSnapshot()
+		want := "saved"
+		if explicit {
+			want = "environment"
+		}
+		if got.QueueSource != want || got.LocalDownloadSource != "saved" {
+			t.Fatalf("explicit=%v snapshot=%#v", explicit, got)
+		}
+		if explicit && got.QueueDir != "/default" || !explicit && got.QueueDir != "/saved" {
+			t.Fatalf("wrong effective path: %#v", got)
+		}
+		if e = reopened.Shutdown(context.Background()); e != nil {
+			t.Fatal(e)
+		}
+	}
+}
+
+func TestManagedPathSourcesDoNotInferMissingSavedFields(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.Config{QueueDir: "/default", LocalDownDir: filepath.Join(root, "downloads"), StateDir: filepath.Join(root, "state"), MaxParallel: 1}
+	d, err := OpenDownloader(cfg, baiduapi.NewClient("token", "app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = d.queue.store.SaveSettings([]byte(`{"managed_queue_dir":"/saved-only"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, explicit := range []bool{false, true} {
+		next := *cfg
+		next.LocalDownDirExplicit = explicit
+		reopened, e := OpenDownloader(&next, baiduapi.NewClient("token", "app"))
+		if e != nil {
+			t.Fatal(e)
+		}
+		got := reopened.GetManagedPathSnapshot()
+		want := "startup"
+		if explicit {
+			want = "environment"
+		}
+		if got.QueueSource != "saved" || got.QueueDir != "/saved-only" || got.LocalDownloadSource != want {
+			t.Fatalf("missing-field source inferred: %#v", got)
+		}
+		if e = reopened.Shutdown(context.Background()); e != nil {
+			t.Fatal(e)
+		}
+	}
+}

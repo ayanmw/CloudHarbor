@@ -1,0 +1,12 @@
+import type {CleanupCandidate,CleanupEntry} from './cleanup-types';
+export type CleanupBatchRecord={batch_id:string;status:string;item_count:number;pending:number;sending:number;confirmed:number;failed:number;unknown:number;stop_requested:boolean;created_at_utc:string};
+export const batchID=(v:unknown):v is string=>typeof v==='string'&&/^[a-f0-9]{32}$/.test(v);
+export function validBatch(v:any,id:string):v is CleanupBatchRecord{return v&&v.batch_id===id&&['queued','running','completed','stopped','failed','unknown'].includes(v.status)&&Number.isSafeInteger(v.item_count)&&v.item_count>0&&v.item_count<=1000&&['pending','sending','confirmed','failed','unknown'].every(k=>Number.isSafeInteger(v[k])&&v[k]>=0)&&v.pending+v.sending+v.confirmed+v.failed+v.unknown===v.item_count&&typeof v.stop_requested==='boolean'&&Number.isFinite(Date.parse(v.created_at_utc));}
+const identity=(e:CleanupEntry)=>({fs_id:e.fs_id,path:e.path,name:e.name,directory:e.directory,size:e.size,provider_mtime:e.provider_mtime,content_md5:e.content_md5});
+export function freezeCleanupRequest(id:string,candidates:CleanupCandidate[]){return JSON.stringify({batch_id:id,items:candidates.map(item=>({kind:item.kind,expected:identity(item.entry),retained:item.retained?identity(item.retained):undefined,expected_sha256:item.sha256,client_preview_observed_at_utc:item.observedAt}))},(key,value)=>key==='content_verified_at_utc'?undefined:value);}
+export const cleanupStatus=(v:string)=>({queued:'等待执行',running:'正在执行',completed:'已完成',stopped:'已停止',failed:'已失败',unknown:'结果待核对',pending:'未执行',sending:'发送中',confirmed:'已确认'}[v]||v);
+
+export function createCleanupBatchID(){const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');}
+
+export const cleanupEventLabel=(kind:string)=>({created:'批次已保存',stop_requested:'请求停止后续',item_prepared:'准备发送项目',item_result:'项目结果已记录',preflight_failed:'执行前核对失败'}[kind]||'其他事件');
+export const cleanupReasonLabel=(reason:string)=>({remote_confirmed:'远端操作已确认',remote_failed:'远端操作明确失败',remote_unknown:'远端结果未知，保持隔离',confirmed_before_local_reconciliation:'远端已确认，本地同步待核对；批次停止',source_identity_changed:'来源身份已变化，未发送删除',retained_identity_changed:'保留副本身份已变化，未发送删除',content_changed:'内容已变化，未发送删除',directory_not_empty:'目录已出现内容，未发送删除',remote_read_failed:'读取或核对失败，未发送删除',operation_conflict:'对象仍处于隔离或存在冲突，未发送删除',observation_changed:'文件身份或授权观察已变化，需重新核对'}[reason]||(reason?'未识别原因，请核对操作记录':'—'));

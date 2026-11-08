@@ -1,0 +1,11 @@
+<script setup lang="ts">
+import {computed,ref,watch} from 'vue';
+import {directoryNames,directorySummary,type UploadDirectory} from './upload-directory-types';
+const props=defineProps<{directories:UploadDirectory[]}>(),filter=ref(''),page=ref(0);
+const counts=computed(()=>directorySummary(props.directories)),matched=computed(()=>props.directories.filter(d=>!filter.value||d.state===filter.value));
+watch(()=>matched.value.length,count=>page.value=Math.min(page.value,Math.max(0,Math.ceil(count/100)-1)));
+const visible=computed(()=>matched.value.slice(page.value*100,(page.value+1)*100));
+</script>
+<template><section v-if="directories.length" class="upload-directory-results" data-testid="upload-directory-results"><h3>目录处理</h3><p>共 {{counts.total}} 个目录 · 创建已确认 {{counts.confirmed}} · 已存在 {{counts.existing}} · 等待 {{counts.queued}} · 请求已发送 {{counts.sending}} · 失败 {{counts.failed}} · 待核对 {{counts.unknown}} · 已停止 {{counts.cancelled}}</p><p class="muted">目录不计入文件字节和速度。请求已发送是持久化状态，不代表当前仍有活跃请求；待核对或未完成目录会阻止同批后续文件，不能按线上路径存在自动放行。</p><label>目录状态 <select v-model="filter" @change="page=0"><option value="">全部目录</option><option v-for="(label,state) in directoryNames" :key="state" :value="state">{{label}}</option></select></label><div class="event-table-scroll"><table><thead><tr><th>目录</th><th>状态</th><th>记录 UTC</th><th>结果与证据</th></tr></thead><tbody><tr v-for="directory in visible" :key="directory.id"><td>{{directory.path}}</td><td>{{directoryNames[directory.state]}}</td><td>{{directory.updated_at_utc}}</td><td><span>{{directory.error||directory.actual_path||'等待执行结果'}}</span><a v-if="directory.operation_id" class="button secondary compact" :href="'/operations?operation_id='+directory.operation_id">操作记录</a></td></tr><tr v-if="!visible.length"><td colspan="4">没有匹配的目录。</td></tr></tbody></table></div><div class="toolbar"><span>{{matched.length}} 项<template v-if="matched.length"> · 第 {{page+1}} 页</template></span><button class="button secondary compact" :disabled="page===0" @click="page--">上一页目录</button><button class="button secondary compact" :disabled="(page+1)*100>=matched.length" @click="page++">下一页目录</button></div></section></template>
+
+<style scoped>.upload-directory-results{border-top:1px solid var(--line);margin-top:16px;padding-top:12px}</style>

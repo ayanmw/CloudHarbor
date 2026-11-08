@@ -128,15 +128,20 @@ func (s *Store) CreateRemoteOperation(op RemoteOperation) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO remote_operations(operation_id,account_fingerprint,operation_kind,object_id,source_path,destination_path,status,created_at_utc,evidence_json) VALUES(?,?,?,?,?,?,?,?,?)`, op.ID, op.AccountFingerprint, op.Kind, op.ObjectID, op.SourcePath, op.DestinationPath, op.Status, op.CreatedAtUTC.UTC().UnixNano(), []byte(op.Evidence))
-	if err == nil {
-		_, err = tx.Exec(`INSERT INTO remote_operation_events(operation_id,status,recorded_at_utc,evidence_json) VALUES(?,?,?,?)`, op.ID, op.Status, time.Now().UTC().UnixNano(), []byte(op.Evidence))
-	}
+	err = insertRemoteOperationTx(context.Background(), tx, op)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
 	}
 	return tx.Commit()
+}
+
+func insertRemoteOperationTx(ctx context.Context, tx *sql.Tx, op RemoteOperation) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO remote_operations(operation_id,account_fingerprint,operation_kind,object_id,source_path,destination_path,status,created_at_utc,evidence_json) VALUES(?,?,?,?,?,?,?,?,?)`, op.ID, op.AccountFingerprint, op.Kind, op.ObjectID, op.SourcePath, op.DestinationPath, op.Status, op.CreatedAtUTC.UTC().UnixNano(), []byte(op.Evidence))
+	if err == nil {
+		_, err = tx.ExecContext(ctx, `INSERT INTO remote_operation_events(operation_id,status,recorded_at_utc,evidence_json) VALUES(?,?,?,?)`, op.ID, op.Status, time.Now().UTC().UnixNano(), []byte(op.Evidence))
+	}
+	return err
 }
 
 func (s *Store) UpdateRemoteOperation(id, status string, evidence json.RawMessage, responseObservedAt time.Time) error {
@@ -700,7 +705,7 @@ func normalizeRemoteOperationFilter(filter RemoteOperationFilter) (RemoteOperati
 
 func validRemoteOperationKind(kind string) bool {
 	switch kind {
-	case "mkdir", "move", "rename", "delete":
+	case "mkdir", "move", "copy", "rename", "delete":
 		return true
 	}
 	return false
@@ -880,6 +885,11 @@ func (s *Store) recoverRemoteOperations() error {
 	}
 	rows.Close()
 	for _, operation := range operations {
+		cacheAccount, scopeErr := s.remoteOperationCacheNamespaceTx(tx, operation.id, operation.account)
+		if scopeErr != nil {
+			_ = tx.Rollback()
+			return scopeErr
+		}
 		cachePaths := remoteOperationCachePaths(operation.source, operation.destination)
 		evidence, marshalErr := json.Marshal(map[string]any{
 			"reason":                  "process_restart_before_confirmation",
@@ -898,7 +908,7 @@ func (s *Store) recoverRemoteOperations() error {
 			return err
 		}
 		if len(cachePaths) > 0 {
-			if err = invalidateRemoteOperationCacheTx(tx, operation.account, cachePaths); err != nil {
+			if err = invalidateRemoteOperationCacheTx(tx, cacheAccount, cachePaths); err != nil {
 				_ = tx.Rollback()
 				return err
 			}
@@ -932,6 +942,11 @@ func (s *Store) recoverRemoteOperations() error {
 	}
 	rows.Close()
 	for _, operation := range operations {
+		cacheAccount, scopeErr := s.remoteOperationCacheNamespaceTx(tx, operation.id, operation.account)
+		if scopeErr != nil {
+			_ = tx.Rollback()
+			return scopeErr
+		}
 		cachePaths := remoteOperationCachePaths(operation.source, operation.destination)
 		eventName, reason := "confirmed_cache_recovery", "process_restart_before_local_reconciliation"
 		if operation.status == "unknown" {
@@ -946,7 +961,7 @@ func (s *Store) recoverRemoteOperations() error {
 			_ = tx.Rollback()
 			return marshalErr
 		}
-		if err = invalidateRemoteOperationCacheTx(tx, operation.account, cachePaths); err != nil {
+		if err = invalidateRemoteOperationCacheTx(tx, cacheAccount, cachePaths); err != nil {
 			_ = tx.Rollback()
 			return err
 		}

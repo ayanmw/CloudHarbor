@@ -29,6 +29,16 @@ func TestCloudMutationOptInStringExpectedIdentity(t *testing.T) {
 	}
 }
 
+func TestCloudCopyStringIdentityKeepsSourceSeparateFromDestination(t *testing.T) {
+	f := &mutationCaptureBackend{fakeBackend: &fakeBackend{}}
+	w := httptest.NewRecorder()
+	body := `{"operation":"copy","expected":{"fs_id":"9007199254740993","path":"/source/a","server_filename":"a","size":"7","isdir":0,"server_mtime":"123"},"destination_directory":"/archive","new_name":"b"}`
+	New(f, nil).HandleCloudMutation(w, httptest.NewRequest("POST", "/api/cloud/mutations?identity_format=string", strings.NewReader(body)))
+	if w.Code != 200 || f.request.Operation != "copy" || f.request.Expected.FsID != 9007199254740993 || f.request.Expected.Path != "/source/a" || f.request.DestinationDirectory != "/archive" || f.request.NewName != "b" || !strings.Contains(w.Body.String(), `"object_id":"9007199254740993"`) {
+		t.Fatalf("status=%d request=%+v body=%s", w.Code, f.request, w.Body.String())
+	}
+}
+
 func TestCloudMutationLegacyRequestStillReachesBackend(t *testing.T) {
 	f := &mutationCaptureBackend{fakeBackend: &fakeBackend{}}
 	w := httptest.NewRecorder()
@@ -57,5 +67,15 @@ func TestCleanupRetainedIdentityUsesExactStringFormat(t *testing.T) {
 	New(f, nil).HandleCloudMutation(w, httptest.NewRequest("POST", "/api/cloud/mutations?identity_format=string", strings.NewReader(body)))
 	if w.Code != 200 || f.request.ExpectedRetained == nil || f.request.ExpectedRetained.FsID != 9007199254740995 {
 		t.Fatalf("retained precision status=%d request=%+v", w.Code, f.request)
+	}
+}
+
+func TestCleanupRetainedIdentityLegacyNumericFormatReachesBackend(t *testing.T) {
+	f := &mutationCaptureBackend{fakeBackend: &fakeBackend{}}
+	w := httptest.NewRecorder()
+	body := `{"operation":"delete","expected":{"fs_id":81,"path":"/copy.bin","server_filename":"copy.bin","size":7,"isdir":0,"server_mtime":9},"expected_content_sha256":"` + strings.Repeat("a", 64) + `","expected_retained":{"fs_id":82,"path":"/keep.bin","server_filename":"keep.bin","size":7,"isdir":0,"server_mtime":10,"md5":"metadata"}}`
+	New(f, nil).HandleCloudMutation(w, httptest.NewRequest("POST", "/api/cloud/mutations", strings.NewReader(body)))
+	if w.Code != 200 || f.request.ExpectedRetained == nil || f.request.ExpectedRetained.FsID != 82 || f.request.ExpectedRetained.Path != "/keep.bin" || f.request.ExpectedRetained.Mtime != 10 || f.request.ExpectedRetained.IsDir != 0 || f.request.ExpectedRetained.MD5 != "metadata" {
+		t.Fatalf("legacy retained lost: code=%d request=%+v", w.Code, f.request)
 	}
 }

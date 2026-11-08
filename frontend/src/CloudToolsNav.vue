@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import {Folder,Database,Copy,FileClock,SlidersHorizontal} from 'lucide-vue-next';
+import {computed} from 'vue';
+import {Folder,Database} from 'lucide-vue-next';
+import {validCloudDirectory} from './cloud-files-route';
 const props=defineProps<{active:string;directory?:string}>();
-const links=[{path:'/cloud/files',label:'网盘文件',icon:Folder},{path:'/cloud/cache',label:'缓存与刷新',icon:Database},{path:'/cloud/cleanup',label:'重复与空目录',icon:Copy},{path:'/cloud/history',label:'扫描历史',icon:FileClock},{path:'/cloud',label:'高级管理',icon:SlidersHorizontal}];
-function href(path:string){return path==='/cloud/cache'&&props.directory!==undefined?path+'?directory='+encodeURIComponent(props.directory):path;}
+// The sidebar owns full page navigation; keep only context-sensitive tools here.
+const directory=computed(()=>props.directory&&validCloudDirectory(props.directory)?props.directory:'/');
+const cacheHref=computed(()=>'/cloud/cache?directory='+encodeURIComponent(directory.value));
+const filesHref=computed(()=>directory.value==='/'?'/cloud/files':'/cloud/files?dir='+encodeURIComponent(directory.value));
 </script>
-<template><nav class="cloud-tools-nav" aria-label="网盘管理快捷导航"><a v-for="link in links" :key="link.path" class="button secondary" :class="{current:active===link.path}" :href="href(link.path)" :aria-current="active===link.path?'page':undefined"><component :is="link.icon" :size="15"/>{{link.label}}</a></nav></template>
+<template><section class="cloud-tools-group"><div class="cloud-tools-nav" role="group" aria-label="网盘上下文操作"><a v-if="active==='/cloud/files'" class="button secondary" data-testid="cloud-directory-tools" :href="cacheHref" :title="'打开 '+directory+' 的缓存工具'"><Database :size="15" aria-hidden="true"/>目录缓存工具</a><a v-else class="button secondary" data-testid="cloud-return-files" :href="filesHref" :title="'返回 '+directory"><Folder :size="15" aria-hidden="true"/>返回网盘文件</a><slot/></div></section></template>
+
+<style scoped>
+.cloud-tools-group{margin:8px 0 12px;min-width:0}.cloud-tools-nav{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0}.cloud-tools-nav .button{border:1px solid var(--border,#dce3ed)}
+</style>

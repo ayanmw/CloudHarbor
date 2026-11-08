@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -69,5 +70,67 @@ func TestTransferStatisticsUnionExcludesIdleAndRestart(t *testing.T) {
 	stats := restored.GetTasks()[0].TransferStats
 	if stats == nil || stats.ActiveNanos != int64(10*time.Second) || stats.NetworkBytes != 1000 {
 		t.Fatalf("restart counted offline time: %+v", stats)
+	}
+}
+
+func TestRecoveredActiveTransferMarksExistingMeasurementsPartialWithoutChangingCounts(t *testing.T) {
+	for _, status := range []string{"downloading", "pending", "done"} {
+		t.Run(status, func(t *testing.T) {
+			d, _ := setup(t, func(http.ResponseWriter, *http.Request) { t.Error("recovery must not request the provider") })
+			store := openEventStore(t, d)
+			measured := &TransferStatistics{ActiveNanos: int64(2 * time.Second), NetworkBytes: 100, RecordedAtUTC: time.Now().UTC()}
+			job := &queueJob{Version: 1, Info: file(19101, "measured.bin", 1000), Mode: DownloadModeKeep, Status: status, Attempts: 1, TransferStats: measured, Created: time.Now().UTC()}
+			d.queue.jobs[job.Info.FsID] = job
+			if err := d.queue.persist(job); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			d.queue.store = nil
+			restored, err := OpenDownloader(d.cfg, d.getClient())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer shutdown(t, restored)
+			got := restored.queue.jobs[job.Info.FsID].TransferStats
+			if got == nil || got.ActiveNanos != measured.ActiveNanos || got.NetworkBytes != measured.NetworkBytes || !got.RecordedAtUTC.Equal(measured.RecordedAtUTC) {
+				t.Fatalf("recovery invented measurements: %+v", got)
+			}
+			if got.Partial != (status == "downloading") {
+				t.Fatalf("interrupted measurements not distinguished from inactive history: status=%s statistics=%+v", status, got)
+			}
+			if status == "downloading" {
+				events, e := restored.queue.store.Events(job.Info.FsID)
+				if e != nil {
+					t.Fatal(e)
+				}
+				found := false
+				for _, event := range events {
+					if event.Kind == "startup_recovery" {
+						var evidence struct {
+							Incomplete bool `json:"transfer_statistics_may_be_incomplete"`
+						}
+						if json.Unmarshal(event.Evidence, &evidence) != nil || !evidence.Incomplete {
+							t.Fatal("recovery has no incomplete-statistics evidence")
+						}
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("recovery event missing")
+				}
+			}
+			shutdown(t, restored)
+			again, e := OpenDownloader(d.cfg, d.getClient())
+			if e != nil {
+				t.Fatal(e)
+			}
+			defer shutdown(t, again)
+			persisted := again.queue.jobs[job.Info.FsID].TransferStats
+			if *persisted != *got {
+				t.Fatalf("statistic coverage changed on second reopen: %+v -> %+v", got, persisted)
+			}
+		})
 	}
 }

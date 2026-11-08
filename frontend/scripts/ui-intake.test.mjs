@@ -1,16 +1,15 @@
+import {mountBuiltWorkspace} from './built-workspace.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {JSDOM} from 'jsdom';
 const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8');
-const asset=html.match(/src="\/app\/(assets\/[^\"]+\.js)"/)[1];
-const bundle=await readFile(new URL('../../internal/webui/app/'+asset,import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function listing(directory='/',entries=[]){return {directory,queue_dir:'/queue',entries,offset:0,total:entries.length,next_offset:null};}
 async function render(respond=async()=>({ok:true,json:async()=>listing()}),historyRespond=async()=>({ok:true,json:async()=>({records:[],total:0,next_cursor:null})}),options={}){
  const requests=[],dom=new JSDOM(html,{url:options.url||'http://localhost/intake',runScripts:'outside-only',pretendToBeVisual:true});
  dom.window.fetch=async(raw,init={})=>{requests.push({url:String(raw),method:init.method||'GET',body:init.body,hash:dom.window.location.hash});if(raw==='/api/oauth/status')return options.auth?options.auth():{ok:true,json:async()=>({state:'ready',ready:true})};return String(raw).startsWith('/api/intakes?')?historyRespond(String(raw),init):respond(String(raw),init);};
- dom.window.eval(bundle);await tick();await tick();return {dom,requests};
+ await mountBuiltWorkspace(dom);await tick();await tick();return {dom,requests};
 }
 test('intake has a persistent directory table and parent navigation even for an empty directory',async()=>{
  const {dom,requests}=await render();try{const doc=dom.window.document;
@@ -104,7 +103,7 @@ test('backend authentication-change rejection consumes the old confirmation and 
 test('intake separates directory type and file size and returns to the parent directory',async()=>{
  const dir={id:'9007199254740993',path:'/课程',name:'课程',directory:true,size:0,can_enqueue:true};
  const {dom,requests}=await render(async raw=>({ok:true,json:async()=>new URL(raw,'http://localhost').searchParams.get('dir')==='/'?listing('/',[dir,{...dir,id:'2',path:'/文件.txt',name:'文件.txt',directory:false,size:1024}]):listing('/课程')}));
- try{const doc=dom.window.document,rows=doc.querySelectorAll('tbody tr');assert.equal(rows.length,2);assert.equal(rows[0].querySelector('[data-testid=intake-size]').textContent,'—');assert.match(rows[1].querySelector('[data-testid=intake-size]').textContent,/1.*KB/);
+ try{const doc=dom.window.document,rows=doc.querySelectorAll('tbody tr');assert.equal(rows.length,2);assert.equal(rows[0].querySelector('[data-testid=intake-size]').textContent,'—');assert.equal(rows[1].querySelector('[data-testid=intake-size]').textContent,'1 KiB');
  doc.querySelector('[data-testid=intake-open]').click();await tick();await tick();assert.match(doc.querySelector('[data-testid=intake-path]').textContent,/课程/);assert.equal(doc.querySelector('[data-testid=intake-up]').disabled,false);
  doc.querySelector('[data-testid=intake-up]').click();await tick();await tick();assert.equal(new URL(requests.at(-1).url,'http://localhost').searchParams.get('dir'),'/');
  }finally{dom.window.close();}
@@ -148,4 +147,47 @@ test('download confirmation links retain the exact selected path without a secon
 });
 test('intake history has an independent menu and no download-selection form',async()=>{
  const {dom,requests}=await render(undefined,undefined,{url:'http://localhost/intake-history'});try{const doc=dom.window.document;assert.match(doc.querySelector('h1').textContent,/入队记录/);assert.equal(doc.querySelector('textarea'),null);assert.equal(doc.querySelector('[data-testid=intake-browser]'),null);assert.ok(requests.some(r=>r.url.startsWith('/api/intakes?')));assert.ok(!requests.some(r=>r.url.startsWith('/api/cloud?')));}finally{dom.window.close();}
+});
+
+test('multi-path download preflight keeps every selected path and never auto-submits',async()=>{const {dom,requests}=await render(undefined,undefined,{url:'http://localhost/intake?path=%2F一%20号&path=%2F二号'});try{assert.equal(dom.window.document.querySelector('textarea').value,'/一 号\n/二号');assert.ok(requests.every(r=>r.method==='GET'));assert.equal(dom.window.document.querySelector('[data-testid=intake-browser]'),null)}finally{dom.window.close()}});
+
+test('invalid or oversized path selections are never split into different download intents',async()=>{for(const query of ['?path=%2Fa%0A%2Fb','?path=%2Fa&path=%2Fa','?'+Array.from({length:21},(_,i)=>'path=%2F'+i).join('&')]){const {dom,requests}=await render(undefined,undefined,{url:'http://localhost/intake'+query});try{assert.ok(dom.window.document.querySelector('[role=alert]'));assert.equal(dom.window.document.querySelector('textarea').value,'');assert.equal(dom.window.document.querySelector('[data-testid=intake-preview]').disabled,true);assert.ok(requests.every(r=>r.method==='GET'))}finally{dom.window.close()}}});
+
+test('intake details distinguish receipt and local registration times without claiming download started',async()=>{
+ const record=historyRecord();record.items[0]={...record.items[0],state:'moved',error:undefined,sync_confirmed:true,sync_confirmed_at_utc:'2026-11-05T01:02:03Z',queue_registered_at_utc:'2026-11-05T01:02:04Z'};
+ const {dom}=await render(undefined,async()=>historyResponse([record]));
+ try{const doc=dom.window.document;doc.querySelector('[data-testid=intake-record-details]').click();await tick();const text=doc.querySelector('[role=dialog]').textContent;assert.match(text,/2026-11-05T01:02:03Z/);assert.match(text,/2026-11-05T01:02:04Z/);assert.match(text,/不代表监控已发现/);}finally{dom.window.close();}
+});
+test('intake history rejects invalid stage timestamps and accepts old records without invented evidence',async()=>{
+ const old=historyRecord();old.items[0]={...old.items[0],state:'moved',sync_confirmed:true,error:undefined};
+ const {dom}=await render(undefined,async()=>historyResponse([old]));try{const doc=dom.window.document;doc.querySelector('[data-testid=intake-record-details]').click();await tick();assert.match(doc.querySelector('[role=dialog]').textContent,/历史时间未记录/);}finally{dom.window.close();}
+ const bad=structuredClone(old);bad.items[0].queue_registered_at_utc='yesterday';
+ const result=await render(undefined,async()=>historyResponse([bad]));try{assert.equal(result.dom.window.document.querySelector('[data-testid=intake-record-details]'),null);assert.match(result.dom.window.document.querySelector('[data-testid=intake-history-error]').textContent,/入队项目响应无效/);}finally{result.dom.window.close();}
+});
+
+test('intake task links retain exact object IDs and reject a different task identity',async()=>{
+ const record=historyRecord();record.items[0]={...record.items[0],state:'moved',error:undefined,download_task:{task_id:record.items[0].source_id,status:'pending',observed_at_utc:'2026-11-05T01:02:04Z'}};
+ const {dom}=await render(undefined,async()=>historyResponse([record]));try{const doc=dom.window.document;doc.querySelector('[data-testid=intake-record-details]').click();await tick();const dialog=doc.querySelector('[role=dialog]'),link=dialog.querySelector('a[href^="/?task="]');assert.equal(new URL(link.href).searchParams.get('task'),'9007199254740993');assert.match(dialog.textContent,/等待下载/);assert.match(dialog.textContent,/状态读取于/);}finally{dom.window.close();}
+ record.items[0].download_task.task_id='123';const bad=await render(undefined,async()=>historyResponse([record]));try{assert.match(bad.dom.window.document.querySelector('[data-testid=intake-history-error]').textContent,/下载任务关联响应无效/);}finally{bad.dom.window.close();}
+});
+
+test('intake monitor evidence opens the exact scan and keeps historical observation separate from current state',async()=>{
+ const record=historyRecord();record.items[0]={...record.items[0],state:'moved',error:undefined,download_task:{task_id:record.items[0].source_id,status:'pending',observed_at_utc:'2026-11-05T01:02:04Z',monitor_observation:{run_id:'b'.repeat(32),path:'/queue/历史路径',observed_at_utc:'2026-11-05T00:00:00Z'}}};
+ const {dom}=await render(undefined,async()=>historyResponse([record]));try{const doc=dom.window.document;doc.querySelector('[data-testid=intake-record-details]').click();await tick();const dialog=doc.querySelector('[role=dialog]');assert.equal(new URL(dialog.querySelector('a[href^="/monitor-history"]').href).searchParams.get('run_id'),'b'.repeat(32));assert.match(dialog.textContent,/首次核对到：2026-11-05T00:00:00Z/);assert.match(dialog.textContent,/当时路径：\/queue\/历史路径/);assert.match(dialog.textContent,/不保证整轮扫描成功/);}finally{dom.window.close();}
+ record.items[0].download_task.monitor_observation.run_id='bad';const bad=await render(undefined,async()=>historyResponse([record]));try{assert.match(bad.dom.window.document.querySelector('[data-testid=intake-history-error]').textContent,/监控观察响应无效/);}finally{bad.dom.window.close();}
+});
+
+test('intake pending task explains the current blocker and rejects unknown wait reasons',async()=>{
+ const record=historyRecord();record.items[0]={...record.items[0],state:'moved',error:undefined,download_task:{task_id:record.items[0].source_id,status:'pending',observed_at_utc:'2026-11-05T01:02:04Z',wait_reason:'queue_paused'}};
+ const {dom}=await render(undefined,async()=>historyResponse([record]));try{const doc=dom.window.document;doc.querySelector('[data-testid=intake-record-details]').click();await tick();assert.match(doc.querySelector('[role=dialog]').textContent,/下载队列已暂停；可到下载列表恢复/);}finally{dom.window.close();}
+ record.items[0].download_task.wait_reason='invented';const bad=await render(undefined,async()=>historyResponse([record]));try{assert.match(bad.dom.window.document.querySelector('[data-testid=intake-history-error]').textContent,/下载等待原因响应无效/);}finally{bad.dom.window.close();}
+});
+
+test('intake file sizes use the shared readable IEC units while directories have no download size',async()=>{const entries=[{id:'1',path:'/small.bin',name:'small.bin',directory:false,size:1024,can_enqueue:true},{id:'2',path:'/large.bin',name:'large.bin',directory:false,size:2405652891274,can_enqueue:true},{id:'3',path:'/folder',name:'folder',directory:true,size:0,can_enqueue:true}];const {dom,requests}=await render(async()=>({ok:true,json:async()=>listing('/',entries)}));try{assert.deepEqual([...dom.window.document.querySelectorAll('[data-testid=intake-size]')].map(n=>n.textContent),['1 KiB','2.19 TiB','—']);assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close();}});
+
+
+test('intake history explains its read-only role and does not link back to itself',async()=>{
+ for(const path of ['/intake-history','/intake']){
+ const {dom}=await render(undefined,undefined,{url:'http://localhost'+path});try{const d=dom.window.document,links=[...d.querySelectorAll('main a[href="/intake-history"]')];if(path==='/intake-history'){assert.equal(links.length,0);assert.match(d.querySelector('.page-header').textContent,/只读查看/);}else{assert.equal(links.length,1);assert.equal(links[0].textContent,'查看入队记录');}}finally{dom.window.close();}
+ }
 });

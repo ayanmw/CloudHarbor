@@ -25,7 +25,7 @@ func checkInventoryExpectedRun(ctx context.Context, actual string) error {
 
 // PauseCloudInventoryRun only cancels the worker belonging to the confirmed run.
 func (d *Downloader) PauseCloudInventoryRun(ctx context.Context, kind, expected string) error {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -37,15 +37,15 @@ func (d *Downloader) PauseCloudInventoryRun(ctx context.Context, kind, expected 
 	var actual string
 	switch kind {
 	case "scan":
-		state, e := d.queue.store.LoadCloudScanState(client.Fingerprint())
+		state, e := d.queue.store.LoadCloudScanState(client.CloudCacheNamespace())
 		err = e
 		actual = state.RunID
 	case "refresh":
-		state, e := d.queue.store.LoadCloudInventoryRefreshState(client.Fingerprint())
+		state, e := d.queue.store.LoadCloudInventoryRefreshState(client.CloudCacheNamespace())
 		err = e
 		actual = state.RunID
 	case "duplicate":
-		state, e := d.queue.store.LoadCloudDuplicateScanState(client.Fingerprint())
+		state, e := d.queue.store.LoadCloudDuplicateScanState(client.CloudCacheNamespace())
 		err = e
 		actual = state.RunID
 	default:

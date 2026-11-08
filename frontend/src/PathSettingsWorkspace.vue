@@ -9,6 +9,7 @@ import {vModal} from './modal';
 const settings=ref<ManagedPathSettings|null>(null),loading=ref(false),error=ref(''),sidebarError=ref(''),observedAt=ref(''),authenticationRequired=ref(false),active=ref(true);
 const draftQueue=ref(''),draftLocal=ref(''),migrate=ref(false),impact=ref<PathImpact|null>(null),saving=ref(false),ack=ref(false),result=ref(''),unknown=ref(false);
 const migrationRefresh=ref(0);
+function sourceLabel(source:string|undefined,editable:boolean){return source==='environment'?'环境配置（.env 或启动环境）':source==='saved'?'已保存设置（SQLite）':source==='startup'?'启动默认值（未使用已保存值）':editable?'服务端未提供来源':'环境配置（由只读状态确认）';}
 const receiptID=ref(''),submittedAt=ref('');
 // Migration polling can finish during POST; do not invalidate its receipt generation.
 function migrationChanged(){if(!saving.value)load();}
@@ -39,7 +40,8 @@ async function save(){
   if(!response.ok){result.value=response.status===409?'配置或任务状态已变化，保存被拒绝；请刷新配置并重新预览确认。':'保存被拒绝，请刷新配置后重新确认。';impact.value=null;await load();return;}
   const value=await response.json();if(request!==generation)return;
   const paths=response.status===202?value.paths:value;
-  if(!paths||typeof paths.queue_dir!=='string'||typeof paths.local_download_dir!=='string'||(response.status!==200&&response.status!==202))throw Error('保存响应无效');
+  // A successful HTTP response still needs usable paths before it can confirm a save.
+  if(!paths||typeof paths.queue_dir!=='string'||queueTargetError(paths.queue_dir)||typeof paths.local_download_dir!=='string'||!paths.local_download_dir.trim()||/[\u0000-\u001f\u007f-\u009f]/u.test(paths.local_download_dir)||(response.status!==200&&response.status!==202))throw Error('保存响应无效');
   if(response.status===202){if(!value.migration||typeof value.migration.id!=='string'||!/^[a-f0-9]{32}$/.test(value.migration.id))throw Error('迁移凭据缺失');receiptID.value=value.migration.id;}
   result.value=response.status===202?'服务端已受理本地目录迁移，尚未完成；请查看迁移状态。':'服务端已确认保存路径配置。';impact.value=null;await load();
  }catch{if(request===generation){unknown.value=true;impact.value=null;result.value='保存结果未知，可能已生效；不会自动重发。请刷新配置，并查看迁移记录核对。';}}
@@ -76,8 +78,8 @@ onUnmounted(()=>{stop();window.removeEventListener('pagehide',stop);window.remov
    <p v-if="loading" class="muted" role="status">正在读取路径配置…</p>
    <section v-if="settings" class="event-results" aria-label="当前路径总览">
     <p v-if="settings.queue_busy" class="notice" data-testid="path-queue-block" role="status">{{settings.queue_busy_reason}}<span v-if="error">（上次读取状态）</span></p>
-    <h2>当前路径</h2><dl class="path-settings-overview"><div><dt><Cloud :size="18"/>网盘自动监控目录</dt><dd data-testid="path-current-queue">{{settings.queue_dir}}</dd><p class="muted" data-testid="path-queue-policy">{{settings.queue_editable?'未由环境锁定；保存仍需通过运行状态检查':'由 .env 或启动环境配置，网页只读'}}</p></div><div><dt><Folder :size="18"/>本地下载目录</dt><dd data-testid="path-current-local">{{settings.local_download_dir}}</dd><p class="muted" data-testid="path-local-policy">{{settings.local_download_editable?'未由环境锁定；保存仍需通过运行状态检查':'由 .env 或启动环境配置，网页只读'}}</p></div></dl>
-    <p class="muted">本机读回 UTC：{{observedAt}}。这里显示服务端返回的当前配置，不代表已重新检查远端目录或本地磁盘内容。</p>
+    <h2>当前路径</h2><dl class="path-settings-overview"><div><dt><Cloud :size="18"/>网盘自动监控目录</dt><dd data-testid="path-current-queue">{{settings.queue_dir}}</dd><p class="muted" data-testid="path-queue-source">来源：{{sourceLabel(settings.queue_source,settings.queue_editable)}}</p><p class="muted" data-testid="path-queue-policy">{{settings.queue_editable?'未由环境锁定；保存仍需通过运行状态检查':'由 .env 或启动环境配置，网页只读'}}</p></div><div><dt><Folder :size="18"/>本地下载目录</dt><dd data-testid="path-current-local">{{settings.local_download_dir}}</dd><p class="muted" data-testid="path-local-source">来源：{{sourceLabel(settings.local_download_source,settings.local_download_editable)}}</p><p class="muted" data-testid="path-local-policy">{{settings.local_download_editable?'未由环境锁定；保存仍需通过运行状态检查':'由 .env 或启动环境配置，网页只读'}}</p></div></dl>
+    <p class="muted">生效优先级：.env / 启动环境明确配置 → 已保存设置 → 启动默认值。来源表示当前生效依据，不表示最后修改人或迁移完成。</p><p class="muted">本机读回 UTC：{{observedAt}}。这里显示服务端返回的当前配置，不代表已重新检查远端目录或本地磁盘内容。</p>
    </section>
    <section v-if="settings" class="event-results" aria-label="路径变更草稿">
     <h2>路径变更草稿</h2><p class="muted">网盘目录变更需先预览影响。本地目标以服务端规范化结果为准，建议填写绝对路径。</p>

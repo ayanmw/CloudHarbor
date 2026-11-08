@@ -1,15 +1,14 @@
+import {mountBuiltWorkspace} from './built-workspace.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {JSDOM,VirtualConsole} from 'jsdom';
 const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8');
-const asset=html.match(/src="\/app\/(assets\/[^\"]+\.js)"/)[1];
-const bundle=await readFile(new URL('../../internal/webui/app/'+asset,import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function render(respond, url='http://localhost/task-events',beforeMount,virtualConsole){
  const requests=[],dom=new JSDOM(html,{url,runScripts:'outside-only',pretendToBeVisual:true,...(virtualConsole?{virtualConsole}:{})});
  dom.window.fetch=async (url,init={})=>{requests.push({url:String(url),method:init.method||'GET'});if(respond)return respond(String(url));const q=new URL(url,'http://localhost').searchParams,asOf=q.get('as_of_sequence')||'9007199254740993',before=q.get('before_sequence');return {ok:true,json:async()=>({events:[{sequence:before?String(BigInt(before)-1n):asOf,job_id:'9007199254740995',kind:'job_completed',recorded_at_utc:'2026-11-03T03:00:00Z'}],as_of_sequence:asOf,total_matches:1,kind_counts:[{kind:'job_completed',count:1}],has_more:false,next_before_sequence:null})};};
- beforeMount?.(dom.window);dom.window.eval(bundle);await tick();await tick();return {dom,requests};
+ beforeMount?.(dom.window);await mountBuiltWorkspace(dom);await tick();await tick();return {dom,requests};
 }
 test('event workspace mounts a compact read-only table and preserves all filter controls',async()=>{
  const {dom,requests}=await render();try{

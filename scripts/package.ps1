@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = '',
     [string]$OutputRoot = '',
     [switch]$AllowDirty,
@@ -7,6 +7,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot 'package-notes.ps1')
 $currentManifest = Get-Content -LiteralPath (Join-Path $repoRoot 'release/current-version.json') -Raw | ConvertFrom-Json
 if ($currentManifest.version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid active version configuration.' }
 if (!$Version) { $Version = $currentManifest.version; $UpdateCurrent = $true }
@@ -72,6 +73,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Vet failed.' }
     New-Item -ItemType Directory -Path $releasePath -Force | Out-Null
     if ($snapshotText) { [IO.File]::WriteAllText((Join-Path $releasePath 'SOURCE-SNAPSHOT.txt'), $snapshotText, [Text.UTF8Encoding]::new($false)) }
+    $buildTimestampUTC = [DateTime]::UtcNow.ToString('o')
     foreach ($target in @('windows-amd64', 'linux-amd64', 'linux-arm64')) {
         $parts = $target.Split('-')
         $env:GOOS = $parts[0]; $env:GOARCH = $parts[1]
@@ -79,8 +81,22 @@ try {
         New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
         $binaryName = 'baidu-downloader'
         if ($parts[0] -eq 'windows') { $binaryName += '.exe' }
-        go build -trimpath -ldflags "-s -w -X main.version=$Version -X main.revision=$sourceRevision" -o (Join-Path $targetDir $binaryName) .
+        go build -trimpath -ldflags "-s -w -X main.version=$Version -X main.revision=$sourceRevision -X main.builtAtUTC=$buildTimestampUTC -X main.sourceSnapshot=$treeHash" -o (Join-Path $targetDir $binaryName) .
         if ($LASTEXITCODE -ne 0) { throw "Build failed: $target" }
+    }
+    # Verify compiled identity before replacing any installed program files.
+    # This CLI exits before configuration/state initialization, so it needs no account data.
+    $compiledInfoText = & (Join-Path $releasePath 'bin/windows-amd64/baidu-downloader.exe') -build-info
+    if ($LASTEXITCODE -ne 0) { throw 'Compiled build identity command failed.' }
+    $compiledInfo = $compiledInfoText | ConvertFrom-Json
+    # Reproduced on PowerShell 7.5+: ConvertFrom-Json converts UTC strings to DateTime.
+    # Restore its exact UTC round-trip format before comparing with the injected text.
+    $compiledBuildUTC = $compiledInfo.built_at_utc
+    if ($compiledBuildUTC -is [DateTime]) { $compiledBuildUTC = $compiledBuildUTC.ToUniversalTime().ToString('o') }
+    if ($compiledInfo.version -ne $Version -or $compiledInfo.revision -ne $sourceRevision -or
+        $compiledInfo.source_snapshot_sha256 -ne $treeHash -or $compiledBuildUTC -ne $buildTimestampUTC -or
+        $compiledInfo.runtime -ne 'windows/amd64' -or !$compiledInfo.go_version -or !$compiledInfo.observed_at_utc) {
+        throw 'Compiled build identity does not match the package snapshot.'
     }
     foreach ($name in @('Start.ps1', 'start.sh', 'Dockerfile', 'compose.yml', 'preview.env.example', 'TESTING.md')) {
         Copy-Item -LiteralPath (Join-Path $repoRoot "release/$name") -Destination $releasePath
@@ -90,9 +106,11 @@ try {
         $notesPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $currentManifest.notes))
         $notesRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'docs/releases')) + [IO.Path]::DirectorySeparatorChar
         if (!$notesPath.StartsWith($notesRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Version notes must stay under docs/releases.' }
-        Copy-Item -LiteralPath $notesPath -Destination (Join-Path $releasePath 'VERSION-NOTES.zh-CN.md')
+        $sourceNotes = [IO.File]::ReadAllText($notesPath)
+        $packageNotes = New-PackageVersionNotes -Version $Version -Revision $sourceRevision -SourceSnapshot $treeHash -BuiltAtUTC $buildTimestampUTC -SourceNotes $sourceNotes
+        [IO.File]::WriteAllText((Join-Path $releasePath 'VERSION-NOTES.zh-CN.md'), $packageNotes, [Text.UTF8Encoding]::new($false))
     }
-    $buildInfo = "Version: $Version`nRevision: $sourceRevision`nBase revision: $baseRevision`nDirty snapshot: $($status.Count -gt 0)`nToolchain: $(go version)`nBuilt at UTC: $([DateTime]::UtcNow.ToString('o'))`n"
+    $buildInfo = "Version: $Version`nRevision: $sourceRevision`nBase revision: $baseRevision`nDirty snapshot: $($status.Count -gt 0)`nToolchain: $(go version)`nBuilt at UTC: $buildTimestampUTC`n"
     [IO.File]::WriteAllText((Join-Path $releasePath 'BUILD-INFO.txt'), $buildInfo, [Text.UTF8Encoding]::new($false))
     $checksums = Get-ChildItem -LiteralPath $releasePath -File -Recurse | Sort-Object FullName | ForEach-Object {
         $relative = $_.FullName.Substring($releasePath.Length + 1).Replace('\', '/')
@@ -180,8 +198,15 @@ try {
     Get-FileHash -LiteralPath $finalArchivePath -Algorithm SHA256 | Format-List
     Write-Output "Release directory: $finalReleasePath"
     if ($replaceExisting -and $artifactExists) { Write-Output 'Updated current version in place; runtime and user data were preserved.' }
+} catch {
+    Write-Output ("Package failed before cleanup: " + $_.Exception.Message)
+    throw
 } finally {
     $env:GOOS = $savedGoos; $env:GOARCH = $savedGoarch; $env:CGO_ENABLED = $savedCgo
     Set-Location $originalLocation
-    if (!$preserveStaging -and (Test-Path -LiteralPath $stagingRoot)) { Remove-Item -LiteralPath $stagingRoot -Recurse -Force }
+    # A transient executable lock must not mask the original packaging failure.
+    if (!$preserveStaging -and (Test-Path -LiteralPath $stagingRoot)) {
+        try { Remove-Item -LiteralPath $stagingRoot -Recurse -Force }
+        catch { Write-Warning ("Staging cleanup failed; retained at '$stagingRoot': " + $_.Exception.Message) }
+    }
 }

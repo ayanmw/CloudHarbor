@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	_ "modernc.org/sqlite"
 	"os"
@@ -26,36 +25,49 @@ type Input struct {
 	Size string `json:"size"`
 }
 type Item struct {
-	ID         string `json:"id"`
-	Path       string `json:"path"`
-	Size       string `json:"size"`
-	State      string `json:"state"`
-	Sent       string `json:"sent"`
-	Updated    string `json:"updated_at_utc"`
-	Error      string `json:"error"`
-	ActualPath string `json:"actual_path"`
+	PauseRequested bool   `json:"pause_requested,omitempty"`
+	ID             string `json:"id"`
+	Path           string `json:"path"`
+	Size           string `json:"size"`
+	State          string `json:"state"`
+	Sent           string `json:"sent"`
+	Updated        string `json:"updated_at_utc"`
+	Error          string `json:"error"`
+	ActualPath     string `json:"actual_path"`
 }
 type Batch struct {
-	ID        string `json:"id"`
-	Target    string `json:"target"`
-	Created   string `json:"created_at_utc"`
-	Items     []Item `json:"items"`
-	Total     int    `json:"total"`
-	Completed int    `json:"completed"`
-	Failed    int    `json:"failed"`
-	Unknown   int    `json:"unknown"`
+	DirectorySummary *DirectorySummary `json:"directory_summary,omitempty"`
+	Directories      []Directory       `json:"directories,omitempty"`
+	ID               string            `json:"id"`
+	Target           string            `json:"target"`
+	Created          string            `json:"created_at_utc"`
+	Items            []Item            `json:"items"`
+	Total            int               `json:"total"`
+	Completed        int               `json:"completed"`
+	Failed           int               `json:"failed"`
+	Unknown          int               `json:"unknown"`
 }
-type Runner func(context.Context, string, string, func(string, int64) error) (baiduapi.UploadReceipt, error)
+type Runner func(context.Context, string, string, func(string, int64) error, func(baiduapi.UploadTransferSample) error) (baiduapi.UploadReceipt, error)
 type Manager struct {
-	db        *sql.DB
-	dir       string
-	run       Runner
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	mu        sync.Mutex
-	receiving map[string]bool
-	ready     func() bool
+	admissionError     string
+	directoryExecuting bool
+	concurrency        int
+	concurrencyUpdated string
+	runDirectory       DirectoryRunner
+	verifyReceipt      ReceiptVerifier
+	verifyingReceipts  map[string]bool
+	pauseMu            sync.RWMutex
+	pauseRequests      map[string]bool
+	activeAttempts     map[string]uploadAttemptSnapshot
+	db                 *sql.DB
+	dir                string
+	run                Runner
+	ctx                context.Context
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
+	mu                 sync.Mutex
+	receiving          map[string]bool
+	ready              func() bool
 }
 
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
@@ -91,7 +103,16 @@ func Open(dir string, run Runner, readiness ...func() bool) (*Manager, error) {
  CREATE INDEX IF NOT EXISTS upload_items_batch ON items(batch,id);
  CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,item TEXT NOT NULL,state TEXT NOT NULL,sent INTEGER NOT NULL,recorded TEXT NOT NULL,error TEXT NOT NULL);`)
 	if err == nil {
-		_, err = db.Exec(`UPDATE items SET state='unknown',error='服务重启时远端提交尚未确认，请核对远端；未自动重发',updated=? WHERE state IN ('submitting','finalizing'); UPDATE items SET state='queued',updated=? WHERE state IN ('hashing','uploading')`, now(), now())
+		err = m.initConcurrency()
+	}
+	if err == nil {
+		err = m.initDirectoryStore()
+	}
+	if err == nil {
+		err = recoverInterruptedUploads(db)
+	}
+	if err == nil {
+		err = m.loadPauseRequests()
 	}
 	if err != nil {
 		db.Close()
@@ -143,15 +164,32 @@ func Open(dir string, run Runner, readiness ...func() bool) (*Manager, error) {
 		return nil, err
 	}
 	if run != nil {
-		m.wg.Add(1)
+		m.wg.Add(2)
+		go m.worker()
 		go m.worker()
 	}
 	return m, nil
 }
-func (m *Manager) Close() error { m.cancel(); m.wg.Wait(); return m.db.Close() }
+func (m *Manager) Close() error {
+	// Serialize shutdown with receipt checks joining the lifetime wait group.
+	m.mu.Lock()
+	m.cancel()
+	m.mu.Unlock()
+	m.wg.Wait()
+	return m.db.Close()
+}
 func (m *Manager) Create(target string, inputs []Input) (Batch, error) {
+	return m.createManifest(target, inputs, nil)
+}
+
+// Directory manifests remain internal until namespace execution and recovery are wired.
+func (m *Manager) createManifest(target string, inputs []Input, directories []string) (Batch, error) {
 	var b Batch
-	if !validPath(target) || len(inputs) == 0 || len(inputs) > 10000 {
+	normalizedDirectories, validationErr := manifestDirectories(inputs, directories)
+	if validationErr != nil {
+		return b, validationErr
+	}
+	if !validPath(target) {
 		return b, errors.New("目标目录或上传清单无效（每批1至10000文件）")
 	}
 	seen := map[string]bool{}
@@ -200,6 +238,20 @@ func (m *Manager) Create(target string, inputs []Input) (Batch, error) {
 		}
 		b.Items = append(b.Items, Item{ID: itemID, Path: f.Path, Size: f.Size, State: "receiving", Sent: "0", Updated: b.Created})
 	}
+	for _, relative := range normalizedDirectories {
+		directoryID, e := id()
+		if e != nil {
+			return b, e
+		}
+		if _, err = tx.Exec(`INSERT INTO upload_directories(id,batch,relative_path,state,updated) VALUES(?,?,?,'queued',?)`, directoryID, b.ID, relative, b.Created); err != nil {
+			return b, err
+		}
+		if _, err = tx.Exec(`INSERT INTO upload_directory_events(directory,state,recorded) VALUES(?,'queued',?)`, directoryID, b.Created); err != nil {
+			return b, err
+		}
+		b.Directories = append(b.Directories, Directory{ID: directoryID, Path: relative, State: "queued", Updated: b.Created})
+	}
+	b.DirectorySummary = summarizeDirectories(b.Directories)
 	return b, tx.Commit()
 }
 func (m *Manager) Get(batch string) (Batch, error) {
@@ -221,9 +273,18 @@ func (m *Manager) Get(batch string) (Batch, error) {
 		if err = rows.Scan(&item.ID, &item.Path, &item.Size, &item.State, &item.Sent, &item.Updated, &item.Error, &item.ActualPath); err != nil {
 			return b, err
 		}
+		item.PauseRequested = pauseApplicable(item.State) && m.isPauseRequested(item.ID)
 		b.Items = append(b.Items, item)
 	}
-	return b, rows.Err()
+	if err = rows.Err(); err != nil {
+		return b, err
+	}
+	if err = rows.Close(); err != nil {
+		return b, err
+	}
+	b.Directories, err = m.directories(batch)
+	b.DirectorySummary = summarizeDirectories(b.Directories)
+	return b, err
 }
 func (m *Manager) List() ([]Batch, error) {
 	rows, err := m.db.Query(`SELECT b.id,b.target,b.created,COUNT(i.id),COALESCE(SUM(i.state='confirmed'),0),COALESCE(SUM(i.state='failed'),0),COALESCE(SUM(i.state='unknown'),0) FROM batches b LEFT JOIN items i ON i.batch=b.id GROUP BY b.id ORDER BY b.created DESC,b.id DESC LIMIT 50`)
@@ -239,7 +300,19 @@ func (m *Manager) List() ([]Batch, error) {
 		}
 		out = append(out, b)
 	}
-	return out, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range out {
+		out[index].DirectorySummary, err = m.directorySummary(out[index].ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 func (m *Manager) update(item, state string, sent int64, message string) error {
 	tx, err := m.db.Begin()
@@ -317,7 +390,7 @@ func (m *Manager) Cancel(batch string) error {
 			return errors.New("仍在接收文件，请先停止浏览器传输")
 		}
 	}
-	_, err := m.db.Exec(`UPDATE items SET state='cancelled',updated=? WHERE batch=? AND state IN ('receiving','queued')`, now(), batch)
+	err := m.cancelPendingBatch(batch)
 	if err != nil {
 		return err
 	}
@@ -327,82 +400,13 @@ func (m *Manager) Cancel(batch string) error {
 	}
 	for _, item := range b.Items {
 		if item.State == "cancelled" {
+			m.setPauseRequested(item.ID, false)
 			if e := os.Remove(filepath.Join(m.dir, item.ID+".data")); e != nil && !os.IsNotExist(e) {
 				return errors.New("文件已停止，但暂存清理失败；请稍后再次停止以重试清理")
 			}
 		}
 	}
 	return nil
-}
-func (m *Manager) worker() {
-	defer m.wg.Done()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		// Credential restoration verifies the bound account asynchronously. Waiting
-		// here keeps restored files queued instead of failing them during that window.
-		if m.ready != nil && !m.ready() {
-			continue
-		}
-		var item, batch, relative, target string
-		err := m.db.QueryRow(`SELECT i.id,i.batch,i.relative_path,b.target FROM items i JOIN batches b ON b.id=i.batch WHERE i.state='queued' AND NOT EXISTS(SELECT 1 FROM items u WHERE u.batch=i.batch AND u.state='unknown') ORDER BY b.created,i.id LIMIT 1`).Scan(&item, &batch, &relative, &target)
-		if err != nil {
-			continue
-		}
-		// Claim atomically so cancellation cannot be overwritten by a stale queued read.
-		claim, e := m.db.Exec(`UPDATE items SET state='hashing',updated=? WHERE id=? AND state='queued'`, now(), item)
-		if e != nil {
-			continue
-		}
-		changed, e := claim.RowsAffected()
-		if e != nil || changed != 1 {
-			continue
-		}
-		lastState := "hashing"
-		var sent int64
-		receipt, runErr := m.run(m.ctx, filepath.Join(m.dir, item+".data"), path.Join(target, relative), func(state string, bytes int64) error {
-			if e := m.update(item, state, bytes, ""); e != nil {
-				return e
-			}
-			lastState = state
-			sent = bytes
-			return nil
-		})
-		if runErr != nil {
-			state := "failed"
-			if lastState == "submitting" || lastState == "finalizing" || errors.Is(runErr, baiduapi.ErrUploadUnconfirmed) {
-				state = "unknown"
-			}
-			if m.ctx.Err() != nil && lastState == "hashing" {
-				state = "queued"
-			}
-			if err = m.update(item, state, sent, runErr.Error()); err != nil {
-				return
-			}
-			continue
-		}
-		tx, e := m.db.Begin()
-		if e != nil {
-			return
-		}
-		_, e = tx.Exec(`UPDATE items SET state='confirmed',sent=size,updated=?,error='',actual_path=? WHERE id=?`, now(), receipt.Path, item)
-		if e == nil {
-			_, e = tx.Exec(`INSERT INTO events(item,state,sent,recorded,error) SELECT id,'confirmed',size,?,? FROM items WHERE id=?`, now(), fmt.Sprintf("fs_id=%s", receipt.FsID), item)
-		}
-		if e != nil {
-			tx.Rollback()
-			return
-		}
-		if tx.Commit() != nil {
-			return
-		}
-		os.Remove(filepath.Join(m.dir, item+".data"))
-	}
 }
 
 // Retry only definite failures with retained local data; unknown commits remain isolated.
@@ -411,15 +415,16 @@ func (m *Manager) Retry(batch string) error {
 	if err != nil {
 		return err
 	}
+	if err = m.retryFailedDirectories(batch); err != nil {
+		return err
+	}
 	for _, item := range b.Items {
 		if item.State != "failed" {
 			continue
 		}
-		stat, e := os.Stat(filepath.Join(m.dir, item.ID+".data"))
-		if e != nil || strconv.FormatInt(stat.Size(), 10) != item.Size {
-			return errors.New("本机暂存文件缺失，请重新选择")
-		}
-		if e = m.update(item.ID, "queued", 0, ""); e != nil {
+		// Explicit retry starts a fresh attempt and atomically retires any pause
+		// intent from the failed attempt, so restart behavior matches live behavior.
+		if e := m.queueRetainedUpload(batch, item.ID, "failed"); e != nil {
 			return e
 		}
 	}

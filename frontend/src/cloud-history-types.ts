@@ -1,7 +1,7 @@
 export type HistorySource='scan'|'refresh'|'hash';
 export const historySources:Record<HistorySource,string>={scan:'全盘缓存扫描',refresh:'指定目录刷新',hash:'内容哈希扫描'};
 export const historyStatuses:Record<string,string>={running:'运行中记录',paused:'已暂停',failed:'失败',complete:'完成'};
-export const historyPhases:Record<string,string>={idle:'未开始',listing:'读取目录',hashing:'校验内容',backoff:'等待重试',paused:'暂停',request_budget_reached:'达到工具上限',failed:'失败',complete:'完成'};
+export const historyPhases:Record<string,string>={idle:'未开始',listing:'读取目录',restart_required:'检查点已作废，需重新扫描',hashing:'校验内容',backoff:'等待重试',paused:'暂停',request_budget_reached:'达到工具上限',failed:'失败',complete:'完成'};
 export const reasonLabels={scanning_directories:'扫描中目录',stale_directories:'已失效目录',unknown_directories:'未知目录',failed_directories:'失败目录',missing_directory_status:'缺少目录状态',orphan_directory_status:'孤立目录状态',parent_not_complete:'父目录未完整',path_mismatch:'路径不一致',missing_root:'缺少根目录'};
 export type HistoryReasons=Record<keyof typeof reasonLabels,string>;
 export type HistoryComparison={status:string;reason_status:string;previous_run_id:string;previous_sequence:string;previous_observed_at_utc:string|null;previous_coverage_status:string|null;previous_incomplete_directories:string|null;previous_reasons:HistoryReasons|null;incomplete_directories_delta:string|null;reason_deltas:HistoryReasons|null};

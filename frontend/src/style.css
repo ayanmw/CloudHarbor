@@ -536,8 +536,8 @@ tr:hover .row-arrow {
 }
 .cell-sub {
   display: block;
-  font-size: 10px;
-  color: #9aa4b5;
+  font-size: 12px;
+  color: var(--muted);
   margin-top: 5px;
 }
 .row-actions {
@@ -782,8 +782,8 @@ tr:hover .row-arrow {
   overflow-wrap: anywhere;
 }
 .detail-drawer dt {
-  font-size: 11px;
-  color: #94a0b3;
+  font-size: 12px;
+  color: var(--muted);
   margin: 22px 0 6px;
 }
 .detail-drawer dd {
@@ -875,7 +875,8 @@ tr:hover .row-arrow {
 .danger-button {
   background: #fff3f0;
   border-color: #f0d5ce;
-  color: #bd6659;
+  /* Confirmation review: darken the action text for legibility on its pale background. */
+  color: #9c3424;
 }
 .timeline {
   padding: 0;
@@ -1192,3 +1193,64 @@ tr:hover .row-arrow {
 .cloud-tools-nav{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.cloud-tools-nav .button{border:1px solid #cbd5e5;background:#fff;color:#405572;min-height:34px;padding:6px 11px;box-shadow:0 1px 2px #22345106}.cloud-tools-nav .button:hover{border-color:#91a9d1;background:#f0f5ff;color:#2957bb}.cloud-tools-nav .button.current{background:var(--accent-soft);border-color:#aac0ee;color:var(--accent);font-weight:650}.cloud-local-tools{display:flex;gap:8px;margin:0 0 12px}
 @media(max-width:1100px){.app-service-status{display:none}.app-header{gap:12px;padding:0 16px}.app-module-nav a{padding:7px 11px}}
 @media(max-width:760px){:root{--app-header-height:60px;--app-sidebar-width:60px}.app-header{grid-template-columns:34px 1fr auto;padding:0 10px;gap:10px}.app-header .brand>span:last-child{display:none}.app-header .brand-icon{width:32px;height:32px}.app-module-nav{gap:3px;justify-content:center}.app-module-nav a{padding:6px;min-height:34px;gap:4px;font-size:12px}.app-module-nav a svg{display:none}.app-header-actions{gap:5px}.header-icon-button{padding:6px}.header-icon-button span{display:none}.workspace>.sidebar{padding:14px 7px}.sidebar nav a{font-size:0;padding:11px;gap:0;justify-content:center}.sidebar nav a span,.sidebar .nav-label,.sidebar-footer{display:none}.sidebar nav{margin:0}.event-workspace .main{padding:18px 14px}.content{padding:22px 14px}.cloud-tools-nav{gap:6px}.cloud-tools-nav .button{font-size:11px;padding:6px 8px}}
+
+/* Visible intake review found the narrow audit drawer hid the linked task.
+   Give this multi-column detail its own width and stack labelled cells on phones. */
+.intake-detail-drawer { width: min(1120px, 94vw); }
+.intake-detail-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 24px; margin: 22px 0; }
+.intake-detail-summary dt { margin: 0 0 6px; }
+.intake-detail-table table { white-space: normal; table-layout: fixed; min-width: 800px; }
+.intake-detail-table td { vertical-align: top; overflow-wrap: anywhere; }
+.intake-detail-table .button { margin: 0 0 6px; }
+.intake-detail-table .cell-sub { line-height: 1.6; margin-top: 6px; }
+@media (max-width: 760px) {
+  .intake-detail-drawer { width: 100%; padding: 20px; }
+  .intake-detail-summary { grid-template-columns: 1fr; gap: 14px; }
+  .intake-detail-table table { min-width: 0; }
+  .intake-detail-table thead { display: none; }
+  .intake-detail-table table,.intake-detail-table tbody,.intake-detail-table tr,.intake-detail-table td { display: block; width: 100%; }
+  .intake-detail-table td { padding: 12px 0; }
+  .intake-detail-table td::before { content: attr(data-label); display: block; font-size: 11px; color: var(--muted); margin-bottom: 7px; }
+  .intake-detail-table tr + tr { margin-top: 24px; border-top: 2px solid var(--line); }
+}
+.intake-detail-table th { width: 25%; }
+.intake-evidence-notes { margin: 12px 0 18px; color: var(--muted); font-size: 12px; }
+.intake-evidence-notes summary { cursor: pointer; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #f7f9fc; }
+@media (max-width: 760px) {
+  .intake-detail-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 12px; }
+}
+
+.upload-batch-summary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 18px 0; }
+.upload-batch-summary > div { border: 1px solid var(--line); border-radius: 9px; padding: 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.upload-batch-summary span,.upload-batch-summary small { color: var(--muted); font-size: 12px; }
+.upload-batch-summary strong { font-size: 18px; overflow-wrap: anywhere; }
+.upload-stage { min-width: 210px; white-space: normal; }
+.upload-stage progress { width: 100px; height: 8px; margin-right: 8px; accent-color: var(--primary); }
+@media (max-width: 1000px) { .upload-batch-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+/* Mobile acceptance found single-column summaries hid queue details below the fold. */
+@media (max-width: 480px) {
+ .upload-batch-summary { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+ .upload-batch-summary > div { padding: 10px; }
+ .upload-batch-summary strong { font-size: 15px; }
+ .upload-batch-summary small { font-size: 11px; }
+}
+.upload-recovery-history { margin: 18px 0; padding: 16px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.upload-recovery-history td { white-space: normal; overflow-wrap: anywhere; }
+
+.upload-recovery-history details summary { cursor: pointer; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; background: #f7f9fc; width: fit-content; max-width: 100%; }
+
+.workspace-bootstrap { max-width: 720px; margin: 48px auto; padding: 24px; color: var(--text, #172b4d); }
+
+/* Real overview review: protect all seven columns and scroll locally instead
+   of squeezing the duration/average columns into vertical character stacks. */
+.download-task-table th { width: auto; }
+.download-task-table.download-overview-table { min-width: 1100px; }
+.download-task-table.download-files-table { min-width: 900px; }
+.download-task-table th,.download-task-table td { padding-left: 12px; padding-right: 12px; }
+.download-overview-table td:nth-child(4),.download-overview-table td:nth-child(5),.download-overview-table td:nth-child(6) { white-space: nowrap; }
+.table-scroll[role="region"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Real 390px cloud review found long paths in ordinary paragraphs escaping
+   otherwise bounded cards. Keep evidence intact and wrap within the card. */
+.cloud-files-workspace p,.cache-workspace p,.cleanup-workspace p,
+.cleanup-workspace code { overflow-wrap: anywhere; min-width: 0; }

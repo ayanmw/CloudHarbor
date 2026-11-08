@@ -23,3 +23,29 @@ await import('./format-bytes.test.mjs');
 await import('./ui-uploads.test.mjs');
 
 await import('./ui-layout.test.mjs');
+
+await import('./ui-cloud-selection.test.mjs');
+
+await import("./upload-progress.test.mjs");
+
+await import("./cloud-files-navigation.test.mjs");
+
+await import("./upload-directory-selection.test.mjs");
+
+await import('./ui-background-tasks.test.mjs');
+
+await import('./ui-refresh-changes.test.mjs');
+
+await import('./ui-build-info.test.mjs');
+
+await import('./ui-lazy-loading.test.mjs');
+
+await import('./modal-keyboard.test.mjs');
+
+await import('./ui-batch-preview.test.mjs');
+
+await import('./ui-cloud-display-size.test.mjs');
+await import('./ui-folder-sync.test.mjs');
+await import('./ui-directory-analysis.test.mjs');
+
+import './ui-sync-checks.test.mjs';

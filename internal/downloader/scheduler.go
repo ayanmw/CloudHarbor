@@ -20,26 +20,34 @@ import (
 	"web_browser_baidu_onekey_upload/internal/taskstore"
 )
 
+type QueueMonitorObservation struct {
+	RunID         string `json:"run_id"`
+	Path          string `json:"path"`
+	ObservedAtUTC string `json:"observed_at_utc"`
+}
+
 type queueJob struct {
-	Destination       *RootDestination      `json:"destination,omitempty"`
-	TransferStats     *TransferStatistics   `json:"transfer_statistics,omitempty"`
-	Version           int                   `json:"version"`
-	Info              baiduapi.FileInfo     `json:"file"`
-	Mode              DownloadMode          `json:"mode"`
-	Status            string                `json:"status"`
-	SourceState       string                `json:"source_state,omitempty"`
-	SourceOperationID string                `json:"source_operation_id,omitempty"`
-	SourceAttemptID   string                `json:"source_attempt_id,omitempty"`
-	Attempts          int                   `json:"attempts"`
-	AttemptID         string                `json:"attempt_id,omitempty"`
-	Failures          int                   `json:"failures"`
-	NextAttempt       time.Time             `json:"next_attempt,omitempty"`
-	Error             string                `json:"error,omitempty"`
-	LocalStorage      *LocalStorageEvidence `json:"local_storage,omitempty"`
-	PausedFromStatus  string                `json:"paused_from_status,omitempty"`
-	Created           time.Time             `json:"created"`
-	Updated           time.Time             `json:"updated"`
-	candidate         *candidateEntry
+	MonitorObservation *QueueMonitorObservation `json:"monitor_observation,omitempty"`
+	IntakeID           string                   `json:"intake_id,omitempty"`
+	Destination        *RootDestination         `json:"destination,omitempty"`
+	TransferStats      *TransferStatistics      `json:"transfer_statistics,omitempty"`
+	Version            int                      `json:"version"`
+	Info               baiduapi.FileInfo        `json:"file"`
+	Mode               DownloadMode             `json:"mode"`
+	Status             string                   `json:"status"`
+	SourceState        string                   `json:"source_state,omitempty"`
+	SourceOperationID  string                   `json:"source_operation_id,omitempty"`
+	SourceAttemptID    string                   `json:"source_attempt_id,omitempty"`
+	Attempts           int                      `json:"attempts"`
+	AttemptID          string                   `json:"attempt_id,omitempty"`
+	Failures           int                      `json:"failures"`
+	NextAttempt        time.Time                `json:"next_attempt,omitempty"`
+	Error              string                   `json:"error,omitempty"`
+	LocalStorage       *LocalStorageEvidence    `json:"local_storage,omitempty"`
+	PausedFromStatus   string                   `json:"paused_from_status,omitempty"`
+	Created            time.Time                `json:"created"`
+	Updated            time.Time                `json:"updated"`
+	candidate          *candidateEntry
 }
 
 const (
@@ -59,28 +67,31 @@ type scheduler struct {
 	delayed candidateHeap
 	// eligible points into jobs when scan metadata matches, and owns a separate
 	// snapshot only while a changed identity conflicts with an active/unknown job.
-	eligible           map[int64]*baiduapi.FileInfo
-	blockedIntakes     map[string]bool
-	blockedSources     map[string]bool
-	blockedRemoteIDs   map[int64]bool
-	blockedRemotePaths map[string]bool
-	active             map[int64]context.CancelFunc
-	wake               chan struct{}
-	done               chan struct{}
-	wg                 sync.WaitGroup
-	started            bool
-	maintenance        bool
-	userPaused         bool
-	pauseUpdatedAtUTC  time.Time
-	activeChanged      chan struct{}
-	stopping           bool
-	err                error
-	closeErr           error
-	shutdownOnce       sync.Once
-	statsCache         taskStatsCache
-	nameIndex          taskOrderIndex
-	sizeIndex          taskOrderIndex
-	progressIndex      progressTaskIndex
+	eligible             map[int64]*baiduapi.FileInfo
+	blockedIntakeSources map[string]bool
+	blockedIntakeIDs     map[int64]bool
+	blockedIntakes       map[string]bool
+	blockedSources       map[string]bool
+	blockedRemoteIDs     map[int64]bool
+	blockedRemotePaths   map[string]bool
+	active               map[int64]context.CancelFunc
+	wake                 chan struct{}
+	done                 chan struct{}
+	wg                   sync.WaitGroup
+	started              bool
+	maintenance          bool
+	uploadMaintenance    bool
+	userPaused           bool
+	pauseUpdatedAtUTC    time.Time
+	activeChanged        chan struct{}
+	stopping             bool
+	err                  error
+	closeErr             error
+	shutdownOnce         sync.Once
+	statsCache           taskStatsCache
+	nameIndex            taskOrderIndex
+	sizeIndex            taskOrderIndex
+	progressIndex        progressTaskIndex
 }
 
 type taskStatsCache struct {
@@ -158,7 +169,10 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 		return nil, err
 	}
 	for _, operation := range remoteOperations {
-		if operation.Status == "unknown" && client != nil && operation.AccountFingerprint == client.Fingerprint() {
+		// Restore uncertainty before authentication is loaded. This state directory
+		// belongs to one bound account; credential renewal must not release an
+		// unresolved operation or rewrite its historical credential evidence.
+		if operation.Status == "unknown" {
 			if operation.ObjectID > 0 {
 				d.queue.blockedRemoteIDs[operation.ObjectID] = true
 			}
@@ -201,6 +215,7 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 				return nil, fmt.Errorf("invalid persisted cloud monitor path")
 			}
 			d.queueDir = saved.QueueDir
+			d.queuePathSaved = true
 		}
 		if saved.LocalDownDir != "" && !cfg.LocalDownDirExplicit {
 			local, pathErr := filepath.Abs(saved.LocalDownDir)
@@ -210,6 +225,7 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 				return nil, fmt.Errorf("invalid persisted local download path")
 			}
 			d.localDownDir = local
+			d.localPathSaved = true
 		}
 	}
 	if cfg.StateDir != "" {
@@ -245,17 +261,24 @@ func OpenDownloader(cfg *config.Config, client *baiduapi.Client) (*Downloader, e
 			job.Error = ErrSourceOperationUnknown.Error()
 		}
 		if job.Status == "downloading" {
+			// A real interrupted Range download retained more content than the last
+			// measured checkpoint. Preserve those counts, but do not present them
+			// as complete: the lost process may have uncommitted meter increments.
+			if job.TransferStats != nil {
+				job.TransferStats.Partial = true
+			}
 			job.Status = "pending"
 			job.Error = "服务重启，等待扫描确认后恢复"
 		}
 		d.queue.jobs[id] = &job
 		if oldStatus != job.Status || oldSourceState != job.SourceState {
 			evidence, _ := json.Marshal(struct {
-				PreviousStatus      string `json:"previous_status"`
-				RecoveredStatus     string `json:"recovered_status"`
-				PreviousSourceState string `json:"previous_source_state,omitempty"`
-				RecoveredSource     string `json:"recovered_source_state,omitempty"`
-			}{oldStatus, job.Status, oldSourceState, job.SourceState})
+				PreviousStatus       string `json:"previous_status"`
+				RecoveredStatus      string `json:"recovered_status"`
+				PreviousSourceState  string `json:"previous_source_state,omitempty"`
+				RecoveredSource      string `json:"recovered_source_state,omitempty"`
+				IncompleteStatistics bool   `json:"transfer_statistics_may_be_incomplete,omitempty"`
+			}{oldStatus, job.Status, oldSourceState, job.SourceState, oldStatus == "downloading" && job.TransferStats != nil})
 			recoveredJobs = append(recoveredJobs, &job)
 			recoveryEvents = append(recoveryEvents, taskstore.Event{Kind: "startup_recovery", AttemptID: job.AttemptID, OperationID: job.SourceOperationID, EvidenceType: "local_restart_recovery", Evidence: evidence})
 		}
@@ -588,6 +611,10 @@ func (q *scheduler) reconcile(files []baiduapi.FileInfo, epoch uint64) error {
 }
 
 func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, cloudObservedAt time.Time) error {
+	return q.reconcileMonitorObserved(files, epoch, cloudObservedAt, "")
+}
+
+func (q *scheduler) reconcileMonitorObserved(files []baiduapi.FileInfo, epoch uint64, cloudObservedAt time.Time, runID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.stopping || q.owner.ctx.Err() != nil {
@@ -673,6 +700,25 @@ func (q *scheduler) reconcileObserved(files []baiduapi.FileInfo, epoch uint64, c
 	// queue. The sources remain in the cloud queue until later post-processing.
 	if err := q.persistNewJobs(newJobs, cloudObservedAt); err != nil {
 		return err
+	}
+	// An individual observation remains meaningful even if a later step fails.
+	// It is not a claim that the entire scan succeeded or downloading started.
+	if runID != "" {
+		for id, info := range eligible {
+			job := q.jobs[id]
+			if job == nil || job.IntakeID == "" || job.MonitorObservation != nil || job.Info != *info {
+				continue
+			}
+			previousUpdated := job.Updated
+			job.MonitorObservation = &QueueMonitorObservation{RunID: runID, Path: info.Path, ObservedAtUTC: cloudObservedAt.UTC().Format(time.RFC3339Nano)}
+			evidence, _ := json.Marshal(job.MonitorObservation)
+			observedAt := cloudObservedAt.UTC()
+			if err := q.persistWithEvent(job, taskstore.Event{Kind: "intake_root_observed", EvidenceType: "queue_monitor_file_list", CloudObservedAtUTC: &observedAt, Evidence: evidence}); err != nil {
+				job.MonitorObservation = nil
+				job.Updated = previousUpdated
+				return err
+			}
+		}
 	}
 	q.eligible = eligible
 	q.clearCandidates()
@@ -1018,8 +1064,20 @@ func (q *scheduler) complete(executed *queueJob, err error) {
 // BeginMaintenance stops new claims and waits for active tasks to finish.
 // The caller must call EndMaintenance after its external operation.
 func (d *Downloader) BeginMaintenance(ctx context.Context) error {
+	return d.beginMaintenance(ctx, false)
+}
+
+func (d *Downloader) beginUploadMaintenance(ctx context.Context) error {
+	return d.beginMaintenance(ctx, true)
+}
+
+func (d *Downloader) beginMaintenance(ctx context.Context, upload bool) error {
 	q := d.queue
 	q.mu.Lock()
+	if upload && !d.validUploadLease(ctx) {
+		q.mu.Unlock()
+		return fmt.Errorf("上传租约已失效")
+	}
 	if q.stopping || q.err != nil {
 		q.mu.Unlock()
 		return fmt.Errorf("download queue is unavailable")
@@ -1029,6 +1087,7 @@ func (d *Downloader) BeginMaintenance(ctx context.Context) error {
 		return fmt.Errorf("download queue is already under maintenance")
 	}
 	q.maintenance = true
+	q.uploadMaintenance = upload
 	q.signal()
 	q.mu.Unlock()
 	for {
@@ -1052,6 +1111,7 @@ func (d *Downloader) EndMaintenance() {
 	q := d.queue
 	q.mu.Lock()
 	q.maintenance = false
+	q.uploadMaintenance = false
 	q.signal()
 	q.mu.Unlock()
 }

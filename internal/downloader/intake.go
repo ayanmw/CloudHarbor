@@ -84,6 +84,12 @@ func (d *Downloader) startPathSensitiveOperation(ctx context.Context) (context.C
 	}
 	d.queue.mu.Lock()
 	maintenance := d.queue.maintenance
+	// Group members may retain path reads during another upload's short
+	// namespace phase. Their writes still queue behind the upload phase gate;
+	// ordinary callers and external maintenance retain the original rejection.
+	if maintenance && d.queue.uploadMaintenance && d.validUploadLease(scoped) {
+		maintenance = false
+	}
 	d.queue.mu.Unlock()
 	if maintenance {
 		done()
@@ -232,7 +238,7 @@ func (d *Downloader) registerIntakeItem(r intakeRecord, item IntakeItem, destina
 		}
 		return nil
 	}
-	job := &queueJob{Version: 1, Info: destination, Mode: r.Mode, Status: "pending", Created: r.Created}
+	job := &queueJob{IntakeID: r.ID, Version: 1, Info: destination, Mode: r.Mode, Status: "pending", Created: r.Created}
 	if err := q.persist(job); err != nil {
 		return err
 	}
@@ -342,6 +348,9 @@ func (d *Downloader) CommitIntake(ctx context.Context, id string) (Intake, error
 		var async *baiduapi.AsyncMoveError
 		if moveErr == nil {
 			item.SyncConfirmed = true
+			if item.SyncConfirmedAtUTC == "" {
+				item.SyncConfirmedAtUTC = time.Now().UTC().Format(time.RFC3339Nano)
+			}
 		}
 		if errors.As(moveErr, &async) {
 			item.Error = "async_move_unconfirmed"
@@ -383,6 +392,9 @@ func (d *Downloader) CommitIntake(ctx context.Context, id string) (Intake, error
 			if err = d.registerIntakeItem(r, *item, destination); err != nil {
 				item.Error = "queue_registration_failed"
 			} else {
+				if item.QueueRegisteredAtUTC == "" {
+					item.QueueRegisteredAtUTC = time.Now().UTC().Format(time.RFC3339Nano)
+				}
 				item.State = "moved"
 				item.Error = ""
 			}
@@ -447,6 +459,9 @@ func (d *Downloader) RecheckIntake(ctx context.Context, id string) (Intake, erro
 		if moved {
 			if err = d.registerIntakeItem(r, *item, destination); err != nil {
 				return r.Intake, err
+			}
+			if item.QueueRegisteredAtUTC == "" {
+				item.QueueRegisteredAtUTC = time.Now().UTC().Format(time.RFC3339Nano)
 			}
 			item.State = "moved"
 			item.Error = ""

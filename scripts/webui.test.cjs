@@ -1999,6 +1999,8 @@ test('duplicate batch deletion walks changing first pages and preserves hash ver
  assert.equal(mutations.length,3,p.get('duplicate-progress').textContent);
  assert.deepEqual(mutations.map(call=>JSON.parse(call.options.body).expected.path),['/g0/keep.bin','/g1/delete.bin','/g2/delete.bin']);
  assert.deepEqual(mutations.map(call=>JSON.parse(call.options.body).expected_content_sha256),['1'.repeat(64),'2'.repeat(64),'3'.repeat(64)]);
+ assert.deepEqual(mutations.map(call=>JSON.parse(call.options.body).expected_retained?.fs_id),[92,93,95]);
+ assert.ok(mutations.every(call=>JSON.parse(call.options.body).expected_retained?.isdir===0));
  assert.ok(calls.filter(call=>call.url.startsWith('/api/cloud-cleanup/duplicates?')).every(call=>call.url.includes('offset=0&limit=25')),'batch traversal should re-read from page zero after groups shrink');
  assert.ok(previewCount>=5,'batch should refresh the first page after processing each group');
 });
@@ -2640,4 +2642,27 @@ test('automatic monitor history loads read-only records and escapes remote paths
 test('automatic monitor history events are fetched only when requested',async()=>{
  const calls=[];const p=page('index_monitor_history.html',[],{},async url=>{calls.push(String(url));return{ok:true,json:async()=>String(url).includes('/events')?{events:[{kind:'cloud_listed',recorded_at_utc:'2026-11-02T01:00:01Z',cloud_observed_at_utc:'2026-11-02T01:00:01Z'}],has_more:false}:{runs:[{run_id:'b'.repeat(32),status:'interrupted',monitor_path:'/queue',started_at_utc:'2026-11-02T01:00:00Z'}],has_more:false}};});await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,1);
  const handler=p.listeners.get('scan-list:click');await handler({target:{closest:selector=>selector==='[data-more-events]'?null:({dataset:{events:'b'.repeat(32)}})}});await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,2);assert.ok(calls[1].includes('/api/monitor-scans/events?run_id='));assert.match(p.get(`events-${'b'.repeat(32)}`).innerHTML,/cloud_listed/);
+});
+
+test('legacy capacity and speed formatting keep readable IEC units beyond GiB',()=>{
+ const c=page('index_poll.html').context;
+ for(const [value,expected] of [['1024','1 KiB'],['2405652891274','2.19 TiB'],['9223372036854775807','8 EiB'],['0','0 B'],['invalid','—']])assert.equal(vm.runInContext(`formatBytes(${JSON.stringify(value)})`,c),expected);
+ assert.equal(vm.runInContext('formatSpeed(1024)',c),'1 KiB/s');
+ assert.equal(vm.runInContext('formatSpeed(-1)',c),'—');
+ assert.equal(vm.runInContext('localStorageByteText(1024)',c),'1 KiB（1024 字节）');
+});
+
+test('legacy duplicate cleanup rejects a missing or identical retained copy before sending',async()=>{
+ const p=page('index_cloud.html',[],{'directory':'/','browse-source':'live'});await new Promise(r=>setImmediate(r));let writes=0;p.context.fetch=async(url,init={})=>{if(init.method==='POST')writes++;return {ok:true,json:async()=>({status:'confirmed'})}};
+ for(const keep of [null,{fs_id:2,path:'/other.bin',name:'other.bin',size:7,provider_mtime:2},{fs_id:3,path:'/delete.bin',name:'delete.bin',size:7,provider_mtime:2}]){p.context.testGroup={sha256:'a'.repeat(64),keep};p.context.testDelete={fs_id:2,path:'/delete.bin',name:'delete.bin',size:7,provider_mtime:2};await assert.rejects(vm.runInContext('deleteVerifiedDuplicate(testGroup,testDelete)',p.context),/保留副本/);}
+ assert.equal(writes,0);
+});
+
+test('legacy cleanup labels page-owned execution and links the backend batch workspace',()=>{
+ const html=fs.readFileSync(path.join(root,'index_cloud.html'),'utf8');assert.match(html,/旧版清理依赖当前页面/);assert.match(html,/<a href="\/cloud\/cleanup">进入新版后台清理<\/a>/);assert.match(html,/读取并校验待删与保留副本/);
+});
+
+test('legacy duplicate delete refuses unsafe numeric identities instead of rounding them',async()=>{
+ const p=page('index_cloud.html',[],{'directory':'/','browse-source':'live'});await new Promise(r=>setImmediate(r));let writes=0;p.context.fetch=async(url,init={})=>{if(init.method==='POST')writes++;return {ok:true,json:async()=>({status:'confirmed'})}};
+ p.context.testGroup={sha256:'a'.repeat(64),keep:{fs_id:9007199254740992,path:'/keep.bin',name:'keep.bin',size:7,provider_mtime:2}};p.context.testDelete={fs_id:2,path:'/delete.bin',name:'delete.bin',size:7,provider_mtime:2};await assert.rejects(vm.runInContext('deleteVerifiedDuplicate(testGroup,testDelete)',p.context),/新版后台清理/);assert.equal(writes,0);
 });

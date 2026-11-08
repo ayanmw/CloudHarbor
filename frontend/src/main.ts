@@ -1,16 +1,71 @@
-import { createApp } from "vue";
-import App from "./App.vue";
-import EventWorkspace from "./EventWorkspace.vue";
-import MonitorWorkspace from "./MonitorWorkspace.vue";
-import OperationWorkspace from "./OperationWorkspace.vue";
-import IntakeWorkspace from "./IntakeWorkspace.vue";
-import OAuthWorkspace from "./OAuthWorkspace.vue";
-import PathSettingsWorkspace from "./PathSettingsWorkspace.vue";
-import MigrationWorkspace from "./MigrationWorkspace.vue";
-import CloudFilesWorkspace from "./CloudFilesWorkspace.vue";
-import CloudCacheWorkspace from "./CloudCacheWorkspace.vue";
-import CloudCleanupWorkspace from "./CloudCleanupWorkspace.vue";
-import UploadWorkspace from './UploadWorkspace.vue';
-import CloudHistoryWorkspace from "./CloudHistoryWorkspace.vue";
+import { createApp, type Component } from "vue";
 import "./style.css";
-createApp(location.pathname === "/uploads" ? UploadWorkspace : location.pathname === "/cloud/history" ? CloudHistoryWorkspace : location.pathname === "/cloud/cleanup" ? CloudCleanupWorkspace : location.pathname === "/cloud/cache" ? CloudCacheWorkspace : location.pathname === "/cloud/files" ? CloudFilesWorkspace : location.pathname === "/settings/migrations" ? MigrationWorkspace : location.pathname === "/settings/paths" ? PathSettingsWorkspace : location.pathname === "/oauth" ? OAuthWorkspace : (location.pathname === "/intake" || location.pathname === "/intake-history") ? IntakeWorkspace : location.pathname === "/task-events" ? EventWorkspace : location.pathname === "/monitor-history" ? MonitorWorkspace : location.pathname === "/operations" ? OperationWorkspace : App).mount("#app");
+
+const workspaces: Record<string, () => Promise<{default: Component}>> = {
+  "/directory-analysis": () => import("./DirectoryAnalysisWorkspace.vue"),
+  "/sync": () => import("./FolderSyncWorkspace.vue"),
+  "/settings/about": () => import("./BuildInfoWorkspace.vue"),
+  "/uploads": () => import("./UploadWorkspace.vue"),
+  "/cloud/history": () => import("./CloudHistoryWorkspace.vue"),
+  "/cloud/cleanup": () => import("./CloudCleanupWorkspace.vue"),
+  "/cloud/cache": () => import("./CloudCacheWorkspace.vue"),
+  "/cloud/files": () => import("./CloudFilesWorkspace.vue"),
+  "/settings/migrations": () => import("./MigrationWorkspace.vue"),
+  "/settings/paths": () => import("./PathSettingsWorkspace.vue"),
+  "/oauth": () => import("./OAuthWorkspace.vue"),
+  "/intake": () => import("./IntakeWorkspace.vue"),
+  "/intake-history": () => import("./IntakeWorkspace.vue"),
+  "/task-events": () => import("./EventWorkspace.vue"),
+  "/monitor-history": () => import("./MonitorWorkspace.vue"),
+  "/operations": () => import("./OperationWorkspace.vue"),
+};
+const loadWorkspace = workspaces[location.pathname] ?? (() => import("./App.vue"));
+const host = document.querySelector<HTMLElement>("#app")!;
+let loading = false, mounted = false, active = true, generation = 0;
+function showLoading() {
+  const status = document.createElement("p");
+  status.className = "workspace-bootstrap";
+  status.setAttribute("role", "status");
+  status.textContent = "正在加载页面…";
+  host.replaceChildren(status);
+}
+function showFailure() {
+  const panel = document.createElement("section");
+  panel.className = "workspace-bootstrap";
+  const message = document.createElement("p");
+  message.setAttribute("role", "alert");
+  message.textContent = "页面加载失败。请检查连接后重试；如果程序刚更新，请刷新页面。";
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "button secondary";
+  retry.dataset.testid = "workspace-load-retry";
+  retry.textContent = "重试加载";
+  retry.addEventListener("click", () => { void mountWorkspace(); });
+  panel.append(message, retry);
+  host.replaceChildren(panel);
+}
+async function mountWorkspace() {
+  if (!active || loading || mounted) return;
+  const request = ++generation;
+  loading = true;
+  showLoading();
+  try {
+    const workspace = await loadWorkspace();
+    if (!active || request !== generation) return;
+    createApp(workspace.default).mount(host);
+    mounted = true;
+    window.removeEventListener("pagehide", hideBeforeMount);
+    window.removeEventListener("pageshow", restoreBeforeMount);
+  } catch {
+    if (active && request === generation) showFailure();
+  } finally {
+    if (request === generation) loading = false;
+  }
+}
+function hideBeforeMount() { active = false; generation++; loading = false; }
+function restoreBeforeMount(event: PageTransitionEvent) {
+  if (event.persisted && !mounted) { active = true; void mountWorkspace(); }
+}
+window.addEventListener("pagehide", hideBeforeMount);
+window.addEventListener("pageshow", restoreBeforeMount);
+await mountWorkspace();

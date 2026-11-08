@@ -1328,6 +1328,19 @@ func cloudInventoryDirectoryDelta(tx *sql.Tx, account, directory string, entries
 	for id, item := range current {
 		old, exists := previous[id]
 		if !exists {
+			// If the destination is refreshed before the source, the global
+			// fs_id upsert relocates its row. Capture that historical path now;
+			// otherwise the later source page can no longer record the move.
+			global, e := loadCloudRefreshGlobalItem(tx, account, id)
+			if e != nil {
+				return unknown, false, e
+			}
+			if global != nil && path.Dir(global.Path) != directory {
+				modified++
+				newCopy := item
+				changes = append(changes, CloudInventoryRefreshChangeSnapshot{Kind: "metadata_changed", Old: global, New: &newCopy})
+				continue
+			}
 			added++
 			addedItems = append(addedItems, item)
 			continue
@@ -2485,7 +2498,7 @@ type cloudMutationQueryer interface {
 
 func cloudMutationScanConflict(queryer cloudMutationQueryer, account string, paths []string) (bool, error) {
 	var duplicateScan int
-	if err := queryer.QueryRow(`SELECT EXISTS(SELECT 1 FROM cloud_duplicate_scan_state WHERE account_fingerprint=? AND status IN ('running','paused','failed'))`, account).Scan(&duplicateScan); err != nil {
+	if err := queryer.QueryRow(`SELECT EXISTS(SELECT 1 FROM cloud_duplicate_scan_state WHERE account_fingerprint=? AND status IN ('running','paused','failed') AND phase<>'restart_required')`, account).Scan(&duplicateScan); err != nil {
 		return false, err
 	}
 	if duplicateScan != 0 {
@@ -2913,11 +2926,11 @@ func reconcileConfirmedCloudMutation(tx *sql.Tx, account string, mutation CloudI
 	if err := bumpCloudInventoryGeneration(tx, account, mutation.ResponseObservedAtUTC); err != nil {
 		return fail(err)
 	}
-	evidence, err := json.Marshal(map[string]any{"event": "cache_refresh_reconciled", "operation": mutation.Operation, "fs_id": mutation.Before.FsID, "cached_path_before": cachedPath, "cached_entry_found": hadCached, "provider_after": mutation.After, "recorded_at_utc": time.Now().UTC()})
+	evidence, err := json.Marshal(map[string]any{"event": "cache_refresh_reconciled", "operation": mutation.Operation, "fs_id": mutation.Before.FsID, "cached_path_before": cachedPath, "cached_entry_found": hadCached, "provider_after": mutation.After, "recorded_at_utc": time.Now().UTC(), "response_observed_at_utc": mutation.ResponseObservedAtUTC.UTC()})
 	if err != nil {
 		return fail(err)
 	}
-	if _, err = tx.Exec(`INSERT INTO remote_operation_events(operation_id,status,recorded_at_utc,response_observed_at_utc,evidence_json) VALUES(?,'confirmed',?,?,?)`, mutation.OperationID, time.Now().UTC().UnixNano(), mutation.ResponseObservedAtUTC.UTC().UnixMicro(), evidence); err != nil {
+	if _, err = tx.Exec(`INSERT INTO remote_operation_events(operation_id,status,recorded_at_utc,response_observed_at_utc,evidence_json) VALUES(?,'confirmed',?,?,?)`, mutation.OperationID, time.Now().UTC().UnixNano(), mutation.ResponseObservedAtUTC.UTC().UnixNano(), evidence); err != nil {
 		return fail(err)
 	}
 	if err = tx.Commit(); err != nil {
@@ -4031,10 +4044,35 @@ func (s *Store) SearchCloudInventory(account, query string, offset, limit int) (
 }
 
 func (s *Store) SearchCloudInventoryAtGeneration(account, query string, offset, limit int, expected *int64) ([]CloudInventoryEntry, int, CloudInventorySearchCoverage, error) {
+	return s.searchCloudInventory(account, query, offset, limit, expected, false, CloudInventorySearchFilter{Scope: "/", Kind: "all"})
+}
+
+// SearchCloudDirectoriesAtGeneration filters before SQL counting and paging.
+func (s *Store) SearchCloudDirectoriesAtGeneration(account, query string, offset, limit int, expected *int64) ([]CloudInventoryEntry, int, CloudInventorySearchCoverage, error) {
+	return s.searchCloudInventory(account, query, offset, limit, expected, true, CloudInventorySearchFilter{Scope: "/", Kind: "directory"})
+}
+
+type CloudInventorySearchFilter struct {
+	Scope          string `json:"scope"`
+	Kind           string `json:"kind"`
+	Extensions     string `json:"extensions"`
+	ModifiedFrom   int64  `json:"modified_from"`
+	ModifiedBefore int64  `json:"modified_before"`
+}
+
+func (f CloudInventorySearchFilter) Valid() bool {
+	return validInventoryPath(f.Scope) && len(f.Scope) <= 2048 && utf8.ValidString(f.Scope) && strings.IndexFunc(f.Scope, func(r rune) bool { return r < 32 || r == 127 }) < 0 && (f.Kind == "all" || f.Kind == "file" || f.Kind == "directory") && f.validExtraFilters()
+}
+
+func (s *Store) SearchCloudInventoryFilteredAtGeneration(account, query string, offset, limit int, expected *int64, filter CloudInventorySearchFilter) ([]CloudInventoryEntry, int, CloudInventorySearchCoverage, error) {
+	return s.searchCloudInventory(account, query, offset, limit, expected, false, filter)
+}
+
+func (s *Store) searchCloudInventory(account, query string, offset, limit int, expected *int64, directoriesOnly bool, searchFilter CloudInventorySearchFilter) ([]CloudInventoryEntry, int, CloudInventorySearchCoverage, error) {
 	items := []CloudInventoryEntry{}
 	coverage := CloudInventorySearchCoverage{Status: "unknown"}
 	query = strings.TrimSpace(query)
-	if account == "" || len(account) > 128 || query == "" || utf8.RuneCountInString(query) > 128 || offset < 0 || offset > 1000000 || limit < 1 || limit > 100 {
+	if !searchFilter.Valid() || account == "" || len(account) > 128 || query == "" || utf8.RuneCountInString(query) > 128 || offset < 0 || offset > 1000000 || limit < 1 || limit > 100 {
 		return nil, 0, coverage, fmt.Errorf("invalid cloud inventory search")
 	}
 	s.mu.Lock()
@@ -4070,12 +4108,45 @@ func (s *Store) SearchCloudInventoryAtGeneration(account, query string, offset, 
 		return nil, 0, coverage, err
 	}
 
+	filter := ""
+	if searchFilter.Kind == "directory" {
+		filter = " AND is_dir=1"
+	} else if searchFilter.Kind == "file" {
+		filter = " AND is_dir=0"
+	}
+	args := []any{account}
+	if searchFilter.Scope != "/" {
+		lower, upper := cloudDirectoryPathRange(searchFilter.Scope)
+		filter += " AND path>=? AND path<?"
+		args = append(args, lower, upper)
+	}
+	if searchFilter.Extensions != "" {
+		matches := []string{}
+		for _, extension := range strings.Split(searchFilter.Extensions, ",") {
+			matches = append(matches, "lower(name) LIKE ?")
+			args = append(args, "%."+extension)
+		}
+		filter += " AND is_dir=0 AND (" + strings.Join(matches, " OR ") + ")"
+	}
+	if searchFilter.ModifiedFrom != 0 || searchFilter.ModifiedBefore != 0 {
+		// Zero is an unknown provider timestamp, never an old modification date.
+		filter += " AND provider_mtime>0"
+		if searchFilter.ModifiedFrom != 0 {
+			filter += " AND provider_mtime>=?"
+			args = append(args, searchFilter.ModifiedFrom)
+		}
+		if searchFilter.ModifiedBefore != 0 {
+			filter += " AND provider_mtime<?"
+			args = append(args, searchFilter.ModifiedBefore)
+		}
+	}
+	args = append(args, query, query)
 	const match = `instr(lower(name),lower(?))>0 OR instr(lower(path),lower(?))>0`
 	var total int
-	if err = tx.QueryRow(`SELECT count(*) FROM cloud_inventory WHERE account_fingerprint=? AND (`+match+`)`, account, query, query).Scan(&total); err != nil {
+	if err = tx.QueryRow(`SELECT count(*) FROM cloud_inventory WHERE account_fingerprint=?`+filter+` AND (`+match+`)`, args...).Scan(&total); err != nil {
 		return nil, 0, coverage, err
 	}
-	rows, err := tx.Query(`SELECT fs_id,path,name,is_dir,size_bytes,provider_mtime,content_md5 FROM cloud_inventory WHERE account_fingerprint=? AND (`+match+`) ORDER BY path,fs_id LIMIT ? OFFSET ?`, account, query, query, limit, offset)
+	rows, err := tx.Query(`SELECT fs_id,path,name,is_dir,size_bytes,provider_mtime,content_md5 FROM cloud_inventory WHERE account_fingerprint=?`+filter+` AND (`+match+`) ORDER BY path,fs_id LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, coverage, err
 	}
@@ -4097,7 +4168,8 @@ func (s *Store) SearchCloudInventoryAtGeneration(account, query string, offset, 
 		return nil, 0, coverage, err
 	}
 	for i := range items {
-		if !items[i].Directory {
+		// Target discovery needs paths, not recursive size statistics.
+		if directoriesOnly || !items[i].Directory {
 			continue
 		}
 		size, sizeErr := cloudDirectorySizeInTx(tx, account, items[i].Path, time.Now().UTC())

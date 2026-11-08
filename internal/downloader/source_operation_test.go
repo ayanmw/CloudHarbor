@@ -442,18 +442,28 @@ func TestSourceReceiptSaveFailureKeepsSendingRecordOnDisk(t *testing.T) {
 	p.lists["/queue"] = []baiduapi.FileInfo{file(1, "a.txt", 3)}
 	base := http.DefaultTransport
 	var requests atomic.Int32
+	receiptObserved := make(chan struct{})
 	http.DefaultTransport = transportFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Query().Get("method") == "filemanager" {
 			requests.Add(1)
 			if err := d.queue.store.Close(); err != nil {
 				t.Error(err)
 			}
+			close(receiptObserved)
 			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"errno":0,"info":[{"errno":0}]}`)), Request: r}, nil
 		}
 		return base.RoundTrip(r)
 	})
 	if err = d.ScanAndDownload(); err != nil {
 		t.Fatal(err)
+	}
+	// Full-suite disk/limiter contention can consume the old three-second
+	// deadline before the source request even starts. Synchronize on the
+	// injected store failure first, then independently require it to surface.
+	select {
+	case <-receiptObserved:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("source receipt was not observed: requests=%d", requests.Load())
 	}
 	// Drain after the response closed the store. It is not enough to observe
 	// the transient source_unknown state while the HTTP request is in flight.

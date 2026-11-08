@@ -66,6 +66,8 @@ type workspaceTask struct {
 	CanPause        bool                             `json:"can_pause"`
 	CanResume       bool                             `json:"can_resume"`
 	CanCancel       bool                             `json:"can_cancel"`
+	CanClear        bool                             `json:"can_clear"`
+	ClearToken      string                           `json:"clear_token,omitempty"`
 	CanRetry        bool                             `json:"can_retry"`
 	Prepared        bool                             `json:"prepared"`
 
@@ -73,7 +75,7 @@ type workspaceTask struct {
 }
 
 func workspaceRow(t *downloader.Task) workspaceTask {
-	return workspaceTask{FileEvidence: t.FileEvidence, DownloadHistory: t.DownloadHistory, Destination: t.Destination, TransferStats: t.TransferStats, ID: strconv.FormatInt(t.FileInfo.FsID, 10), Name: t.FileInfo.ServerFilename, Path: t.FileInfo.Path, Status: t.Status, LocalPath: t.LocalPath, Error: t.Error, Size: t.FileInfo.Size, Progress: t.Progress, Speed: t.Speed, Mode: string(t.DownloadMode), CanPause: t.CanPause, CanResume: t.CanResume, CanCancel: t.CanCancel, CanRetry: t.CanRetry, Prepared: t.DirectoryPrepared || t.FileInfo.IsDir == 0}
+	return workspaceTask{FileEvidence: t.FileEvidence, DownloadHistory: t.DownloadHistory, Destination: t.Destination, TransferStats: t.TransferStats, ID: strconv.FormatInt(t.FileInfo.FsID, 10), Name: t.FileInfo.ServerFilename, Path: t.FileInfo.Path, Status: t.Status, LocalPath: t.LocalPath, Error: t.Error, Size: t.FileInfo.Size, Progress: t.Progress, Speed: t.Speed, Mode: string(t.DownloadMode), CanPause: t.CanPause, CanResume: t.CanResume, CanCancel: t.CanCancel, CanRetry: t.CanRetry, CanClear: t.CanClear, ClearToken: t.ClearToken, Prepared: t.DirectoryPrepared || t.FileInfo.IsDir == 0}
 }
 
 func workspacePriority(status string) int {

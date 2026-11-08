@@ -1,13 +1,14 @@
+import {mountBuiltWorkspace} from './built-workspace.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {JSDOM,VirtualConsole} from 'jsdom';
-const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8'),asset=html.match(/src="\/app\/(assets\/[^\"]+\.js)"/)[1],bundle=await readFile(new URL('../../internal/webui/app/'+asset,import.meta.url),'utf8');
+const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function render(respond,url='http://localhost/operations',beforeMount,virtualConsole){
  const requests=[],dom=new JSDOM(html,{url,runScripts:'outside-only',pretendToBeVisual:true,...(virtualConsole?{virtualConsole}:{})});
  dom.window.fetch=async(raw,init={})=>{requests.push({url:String(raw),method:init.method||'GET'});return respond?respond(String(raw)):{ok:true,json:async()=>({operations:[{operation_id:'a'.repeat(32),kind:'move',status:'unknown',object_id:'9007199254740993',source_path:'/原目录',destination_path:'/目标目录',created_at_utc:'2026-11-03T03:00:00.123456Z'}],total:1,next_cursor:null})};};
- beforeMount?.(dom.window);dom.window.eval(bundle);await tick();await tick();return {dom,requests};
+ beforeMount?.(dom.window);await mountBuiltWorkspace(dom);await tick();await tick();return {dom,requests};
 }
 test('operation history mounts a compact read-only table and keeps unknown operations quarantined',async()=>{
  const {dom,requests}=await render();try{
@@ -139,4 +140,21 @@ test('closing or changing operation event filters cancels a late evidence downlo
 });
 test('operation summary export starts a named download on success',async()=>{
  const downloads=[];const {dom}=await render(async raw=>raw.includes('/export')?{ok:true,headers:{get:()=> 'attachment; filename="remote-operations-test.json"'},blob:async()=>({mock:true})}:exportList(),undefined,captureDownloads(downloads));try{const doc=dom.window.document;doc.querySelector('[data-testid=operation-summary-export]').click();await tick();await tick();assert.deepEqual(downloads,['remote-operations-test.json']);assert.match(doc.body.textContent,/导出时的实时记录/);}finally{dom.window.close();}
+});
+
+
+test('legacy cache observation is explicitly unverified',async()=>{
+ const old='1970-01-21T18:19:51.158141465Z',now='2026-11-06T18:52:38.141465789Z';
+ const evidence='{"event":"cache_refresh_reconciled"}';
+ const {dom,requests}=await render(async url=>({ok:true,json:async()=>url.includes('/events?')?{events:[{sequence:'1',status:'confirmed',recorded_at_utc:now,response_observed_at_utc:old,evidence_json:evidence}],next_before_sequence:null}:{operations:[{operation_id:'a'.repeat(32),kind:'move',status:'confirmed',source_path:'/test/a',destination_path:'/test/b',created_at_utc:now}],total:1,next_cursor:null}}));
+ try{const doc=dom.window.document;doc.querySelector('[data-testid=operation-details]').click();await tick();await tick();const row=doc.querySelector('.timeline li');assert.match(row.textContent,/历史时间单位未经核实/);assert.doesNotMatch(row.textContent,/响应观察 UTC：/);assert.ok(row.textContent.includes(old));assert.equal(row.querySelector('pre').textContent,evidence);assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close();}
+});
+
+
+test('new cache observations and other historical events keep their recorded UTC',async()=>{
+ for(const [event,time] of [['cache_refresh_reconciled','2026-11-06T18:52:38.141465789Z'],['provider_confirmed','1970-01-21T18:19:51.158141465Z']]){
+ const evidence=JSON.stringify({event,...(event==='cache_refresh_reconciled'?{response_observed_at_utc:time}:{})});
+ const {dom}=await render(async url=>({ok:true,json:async()=>url.includes('/events?')?{events:[{sequence:'1',status:'confirmed',recorded_at_utc:'2026-11-06T18:52:38Z',response_observed_at_utc:time,evidence_json:evidence}],next_before_sequence:null}:{operations:[{operation_id:'a'.repeat(32),kind:'move',status:'confirmed',source_path:'/test/a',destination_path:'/test/b',created_at_utc:'2026-11-06T18:52:38Z'}],total:1,next_cursor:null}}));
+ try{const doc=dom.window.document;doc.querySelector('[data-testid=operation-details]').click();await tick();await tick();const row=doc.querySelector('.timeline li');assert.ok(row.textContent.includes('响应观察 UTC：'+time));assert.doesNotMatch(row.textContent,/单位未经核实/);assert.equal(row.querySelector('pre').textContent,evidence);}finally{dom.window.close();}
+ }
 });

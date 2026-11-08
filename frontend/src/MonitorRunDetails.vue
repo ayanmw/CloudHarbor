@@ -7,6 +7,9 @@ type Run={run_id:string;status:string;monitor_path:string;started_at_utc:string;
 type MonitorEvent={sequence:string;run_id:string;kind:string;recorded_at_utc:string;cloud_observed_at_utc?:string;error_code?:string};
 const props=defineProps<{runID:string;run:Run|null}>(),emit=defineEmits<{close:[]}>();
 const labels:Record<string,string>={running:'正在运行',success:'成功',failed:'失败',interrupted:'进程中断（未判定成功）'};
+// Read-only UI review found raw storage codes in the timeline. Translate the
+// known producer codes, retaining exact codes in evidence and unknown values.
+const eventLabels:Record<string,string>={started:'开始巡检',cloud_listed:'已读取网盘目录',completed:'本轮巡检完成',failed:'本轮巡检失败',interrupted:'进程中断（未判定成功）'};
 const events=ref<MonitorEvent[]>([]),loading=ref(false),error=ref(''),next=ref<string|null>(null),pageIndex=ref(0),cursors=ref(['']);
 const exporting=ref(false),exportError=ref(''),exportMessage=ref('');
 const authenticationRequired=ref(false);
@@ -55,7 +58,7 @@ onUnmounted(()=>{generation++;controller?.abort();cancelExport();});
   <button class="button secondary" data-testid="monitor-export" :disabled="exporting||authenticationRequired" @click="exportRun">{{exporting?'正在导出…':'导出本轮 JSON'}}</button><p role="status" aria-live="polite">{{exportMessage}}</p><p v-if="exportError" role="alert" class="notice danger">{{exportError}}</p>
   <h4>本轮事件</h4><p v-if="error" class="notice danger" role="alert">{{error}} · 保留上次成功读取的事件</p><p v-if="loading" class="muted">正在读取事件…</p>
   <p v-if="!loading&&!error&&!events.length" class="muted">没有已记录事件</p>
-  <ol class="timeline"><li v-for="event in events" :key="runID+':'+event.sequence"><strong>{{event.kind}}</strong><time>本机记录 UTC：{{event.recorded_at_utc||'未记录'}}</time><time v-if="event.cloud_observed_at_utc">云端响应观察 UTC：{{event.cloud_observed_at_utc}}</time><details class="event-evidence"><summary>查看事件证据</summary><dl class="event-detail-fields"><dt>事件序列</dt><dd>{{event.sequence}}</dd><dt>错误分类</dt><dd>{{event.error_code||'未记录'}}</dd></dl></details></li></ol>
+  <ol class="timeline"><li v-for="event in events" :key="runID+':'+event.sequence"><strong>{{Object.hasOwn(eventLabels,event.kind)?eventLabels[event.kind]:event.kind}}</strong><time>本机记录 UTC：{{event.recorded_at_utc||'未记录'}}</time><time v-if="event.cloud_observed_at_utc">云端响应观察 UTC：{{event.cloud_observed_at_utc}}</time><details class="event-evidence"><summary>查看事件证据</summary><dl class="event-detail-fields"><dt>事件代码</dt><dd>{{event.kind}}</dd><dt>事件序列</dt><dd>{{event.sequence}}</dd><dt>错误分类</dt><dd>{{event.error_code||'未记录'}}</dd></dl></details></li></ol>
   <div class="drawer-actions"><button class="button secondary" :disabled="loading||authenticationRequired||pageIndex===0" @click="navigate(-1)">较新事件</button><span>第 {{pageIndex+1}} 页</span><button class="button secondary" data-testid="monitor-event-next" :disabled="loading||authenticationRequired||!next" @click="navigate(1)">更早事件</button></div>
  </section></div>
 </template>

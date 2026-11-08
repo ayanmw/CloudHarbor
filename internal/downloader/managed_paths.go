@@ -24,6 +24,28 @@ type ManagedPaths struct {
 	LocalDownDir string `json:"local_download_dir"`
 }
 
+// ManagedPathSnapshot reports the effective configuration, not historical edit provenance.
+type ManagedPathSnapshot struct {
+	ManagedPaths
+	QueueSource         string `json:"queue_source"`
+	LocalDownloadSource string `json:"local_download_source"`
+}
+
+func (d *Downloader) GetManagedPathSnapshot() ManagedPathSnapshot {
+	d.pathMu.RLock()
+	defer d.pathMu.RUnlock()
+	source := func(explicit, saved bool) string {
+		if explicit {
+			return "environment"
+		}
+		if saved {
+			return "saved"
+		}
+		return "startup"
+	}
+	return ManagedPathSnapshot{ManagedPaths: ManagedPaths{QueueDir: d.queueDir, LocalDownDir: d.localDownDir}, QueueSource: source(d.cfg.QueueDirExplicit, d.queuePathSaved), LocalDownloadSource: source(d.cfg.LocalDownDirExplicit, d.localPathSaved)}
+}
+
 var ErrManagedPathsChanged = errors.New("当前路径配置已变化，请刷新后重新预览并确认")
 
 type ManagedPathImpactTask struct {
@@ -261,6 +283,7 @@ func (d *Downloader) SetManagedPathsConfirmed(ctx context.Context, paths Managed
 	}
 	d.pathMu.Lock()
 	d.queueDir, d.localDownDir = paths.QueueDir, local
+	d.queuePathSaved, d.localPathSaved = true, true
 	d.pathMu.Unlock()
 	if current.QueueDir != paths.QueueDir {
 		d.invalidateQueueEligibility()

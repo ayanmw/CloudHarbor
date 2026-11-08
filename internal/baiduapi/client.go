@@ -48,12 +48,28 @@ func requestError(err error) error {
 
 // Client 百度网盘 API 客户端
 type Client struct {
-	AccessToken   string
-	AppKey        string
-	ctx           context.Context
-	idleTimeout   time.Duration
-	requestPacer  RequestPacer
-	downloadTrace downloadTrace
+	AccessToken         string
+	AppKey              string
+	ctx                 context.Context
+	idleTimeout         time.Duration
+	requestPacer        RequestPacer
+	cloudCacheNamespace string
+	downloadTrace       downloadTrace
+}
+
+// WithCloudCacheNamespace affects only local inventory lookup, never request
+// authentication, upload scope or the identity attached to provider errors.
+func (c *Client) WithCloudCacheNamespace(namespace string) *Client {
+	copy := *c
+	copy.cloudCacheNamespace = namespace
+	return &copy
+}
+
+func (c *Client) CloudCacheNamespace() string {
+	if c.cloudCacheNamespace != "" {
+		return c.cloudCacheNamespace
+	}
+	return c.Fingerprint()
 }
 
 // RequestPacer may be shared by clients that use the same provider quota.
@@ -229,19 +245,41 @@ func (c *Client) ListDirPage(dir string, start, limit int) ([]FileInfo, bool, er
 // determine whether another page exists. Callers can persist that identity as
 // evidence for the next offset without issuing an additional provider request.
 func (c *Client) ListDirPageWithBoundary(dir string, start, limit int) ([]FileInfo, bool, *FileInfo, error) {
+	return c.ListDirPageOrdered(dir, start, limit, DirectoryOrder{Field: "name"})
+}
+
+// DirectoryOrder is applied by the provider before pagination. Size is the
+// provider's file size, not the locally calculated recursive directory size.
+type DirectoryOrder struct {
+	Field      string `json:"field"`
+	Descending bool   `json:"descending"`
+}
+
+func (o DirectoryOrder) Valid() bool {
+	return o.Field == "name" || o.Field == "size" || o.Field == "time"
+}
+
+func (c *Client) ListDirPageOrdered(dir string, start, limit int, order DirectoryOrder) ([]FileInfo, bool, *FileInfo, error) {
+	if !order.Valid() {
+		return nil, false, nil, fmt.Errorf("invalid directory order")
+	}
 	if start < 0 || start > 1000000 || limit < 1 || limit >= 1000 {
 		return nil, false, nil, fmt.Errorf("invalid directory page")
 	}
-	return c.listDirPageWithBoundary(dir, start, limit)
+	return c.listDirPageWithOrder(dir, start, limit, order)
 }
 
 // listDirPageWithBoundary is also used by a full directory read, whose
 // internal offset must not inherit the interactive page API's UI bound.
 func (c *Client) listDirPageWithBoundary(dir string, start, limit int) ([]FileInfo, bool, *FileInfo, error) {
+	return c.listDirPageWithOrder(dir, start, limit, DirectoryOrder{Field: "name"})
+}
+
+func (c *Client) listDirPageWithOrder(dir string, start, limit int, order DirectoryOrder) ([]FileInfo, bool, *FileInfo, error) {
 	if start < 0 || limit < 1 || limit >= 1000 {
 		return nil, false, nil, fmt.Errorf("invalid directory page")
 	}
-	page, err := c.listDirPage(dir, start, limit+1)
+	page, err := c.listDirPage(dir, start, limit+1, order)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -262,14 +300,17 @@ func (c *Client) listDirPageWithBoundary(dir string, start, limit int) ([]FileIn
 	return page, hasMore, boundary, nil
 }
 
-func (c *Client) listDirPage(dir string, start, limit int) ([]FileInfo, error) {
+func (c *Client) listDirPage(dir string, start, limit int, order DirectoryOrder) ([]FileInfo, error) {
 	const responseLimit = 16 * 1024 * 1024
 	params := url.Values{}
 	params.Set("method", "list")
 	params.Set("access_token", c.AccessToken)
 	params.Set("dir", dir)
-	params.Set("order", "name")
+	params.Set("order", order.Field)
 	params.Set("desc", "0")
+	if order.Descending {
+		params.Set("desc", "1")
+	}
 	params.Set("start", fmt.Sprint(start))
 	params.Set("limit", fmt.Sprint(limit))
 	resp, err := c.get("https://pan.baidu.com/rest/2.0/xpan/file?" + params.Encode())

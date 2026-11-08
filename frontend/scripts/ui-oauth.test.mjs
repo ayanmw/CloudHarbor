@@ -1,9 +1,9 @@
+import {mountBuiltWorkspace} from './built-workspace.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {JSDOM,VirtualConsole} from 'jsdom';
 const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8');
-const asset=html.match(/src="\/app\/(assets\/[^\"]+\.js)"/)[1],bundle=await readFile(new URL('../../internal/webui/app/'+asset,import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const status=(extra={})=>({state:'ready',ready:true,has_refresh_token:true,can_refresh:true,account_bound:true,updated_at:'2026-11-03T03:00:00.123456789Z',expires_at:'2026-11-04T03:00:00.987654321Z',next_attempt:'2026-11-03T04:00:00.123456789Z',last_error:'',...extra});
 const configured=()=>({configured:true,editable:false,source:'env',app_id_mask:'12***78',app_key_mask:'ab***yz',secret_key_mask:'cd***wx',sign_key_mask:'ef***uv'});
@@ -11,7 +11,7 @@ async function render(respond=async()=>({ok:true,json:async()=>status()}),config
  const requests=[],intervals=new Map(),dom=new JSDOM(html,{url:'http://localhost/oauth',runScripts:'outside-only',pretendToBeVisual:true,virtualConsole:new VirtualConsole()});let nextTimer=0;
  dom.window.setInterval=(fn,delay)=>{intervals.set(++nextTimer,{fn,delay});return nextTimer;};dom.window.clearInterval=id=>intervals.delete(id);
  dom.window.fetch=async(raw,init={})=>{requests.push({url:String(raw),method:init.method||'GET',signal:init.signal,body:init.body});return raw==='/api/app-config'?configRespond(String(raw),init):respond(String(raw),init);};
- dom.window.eval(bundle);await tick();await tick();return {dom,requests,intervals};
+ await mountBuiltWorkspace(dom);await tick();await tick();return {dom,requests,intervals};
 }
 test('oauth mounts the shared workspace and separates account expiry renewal and raw observation times',async()=>{
  const {dom,requests}=await render();try{const doc=dom.window.document;assert.match(doc.querySelector('h1').textContent,/账号与授权/);assert.ok(doc.querySelector('.workspace.event-workspace > main.main'));assert.match(doc.querySelector('[data-testid=oauth-status]').textContent,/账号可用/);assert.match(doc.querySelector('[data-testid=oauth-expiry]').textContent,/2026-11-04T03:00:00.987654321Z/);assert.match(doc.querySelector('[data-testid=oauth-renewal]').textContent,/2026-11-03T04:00:00.123456789Z/);assert.match(doc.querySelector('[data-testid=oauth-updated]').textContent,/2026-11-03T03:00:00.123456789Z/);assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close();}

@@ -2,6 +2,7 @@ package uploads
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +69,7 @@ func TestUploadRejectsTraversalAndShortBody(t *testing.T) {
 func TestWorkerConfirmsAndReclaimsOnlyItsStagingFile(t *testing.T) {
 	dir := t.TempDir()
 	calls := 0
-	m, err := Open(dir, func(ctx context.Context, local, remote string, report func(string, int64) error) (baiduapi.UploadReceipt, error) {
+	m, err := Open(dir, func(ctx context.Context, local, remote string, report func(string, int64) error, observe func(baiduapi.UploadTransferSample) error) (baiduapi.UploadReceipt, error) {
 		calls++
 		if remote != "/target/folder/a.txt" {
 			t.Errorf("target=%s", remote)
@@ -198,7 +199,7 @@ func TestCancellationAndStartupReclaimOnlyOwnedPayloads(t *testing.T) {
 
 func TestRestoredUploadWaitsForAccountVerification(t *testing.T) {
 	var ready atomic.Bool
-	m, err := Open(t.TempDir(), func(ctx context.Context, local, remote string, report func(string, int64) error) (baiduapi.UploadReceipt, error) {
+	m, err := Open(t.TempDir(), func(ctx context.Context, local, remote string, report func(string, int64) error, observe func(baiduapi.UploadTransferSample) error) (baiduapi.UploadReceipt, error) {
 		return baiduapi.UploadReceipt{Path: remote, FsID: "1", Size: "1"}, nil
 	}, ready.Load)
 	if err != nil {
@@ -227,4 +228,128 @@ func TestRestoredUploadWaitsForAccountVerification(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("verified upload did not resume")
+}
+
+func TestRestartRecoveryRecordsPriorStageAndTimeExactlyOnce(t *testing.T) {
+	dir := t.TempDir()
+	m, err := Open(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if m != nil {
+			_ = m.Close()
+		}
+	})
+	b, err := m.Create("/target", []Input{{Path: "a", Size: "3"}, {Path: "b", Size: "3"}, {Path: "c", Size: "3"}, {Path: "d", Size: "3"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stages := []string{"hashing", "uploading", "submitting", "finalizing"}
+	old := map[string]string{}
+	for index, item := range b.Items {
+		if err = m.update(item.ID, stages[index], int64(index%3), ""); err != nil {
+			t.Fatal(err)
+		}
+		var at string
+		if err = m.db.QueryRow(`SELECT updated FROM items WHERE id=?`, item.ID).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		old[item.ID] = at
+	}
+	if err = m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC()
+	m, err = Open(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, item := range b.Items {
+		var state, at, message string
+		var sent int64
+		err = m.db.QueryRow(`SELECT state,sent,recorded,error FROM events WHERE item=? AND error LIKE 'restart_recovery:%'`, item.ID).Scan(&state, &sent, &at, &message)
+		if err != nil {
+			t.Fatalf("missing recovery event for %s: %v", stages[index], err)
+		}
+		expected := "queued"
+		if index > 1 {
+			expected = "unknown"
+		}
+		parsed, parseErr := time.Parse(time.RFC3339Nano, at)
+		if state != expected || sent != int64(index%3) || !strings.Contains(message, stages[index]) || !strings.Contains(message, old[item.ID]) || parseErr != nil || parsed.Before(before) || !strings.HasSuffix(at, "Z") {
+			t.Fatalf("bad recovery: %s %d %s %s", state, sent, at, message)
+		}
+		var updated string
+		if err = m.db.QueryRow(`SELECT updated FROM items WHERE id=?`, item.ID).Scan(&updated); err != nil || updated != at {
+			t.Fatalf("event/state timestamps differ: %s %s %v", at, updated, err)
+		}
+	}
+	if err = m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m, err = Open(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	var count int
+	if err = m.db.QueryRow(`SELECT count(*) FROM events WHERE error LIKE 'restart_recovery:%'`).Scan(&count); err != nil || count != 4 {
+		t.Fatalf("duplicate restart evidence: %d %v", count, err)
+	}
+}
+
+func TestRestartRecoveryFailureRollsBackStateAndEvents(t *testing.T) {
+	for _, testCase := range []struct{ name, trigger string }{
+		{"event_write", `CREATE TRIGGER reject_recovery BEFORE INSERT ON events WHEN NEW.error LIKE 'restart_recovery:%' BEGIN SELECT RAISE(ABORT,'test recovery failure'); END;`},
+		{"state_write", `CREATE TRIGGER reject_recovery BEFORE UPDATE ON items WHEN NEW.state='queued' BEGIN SELECT RAISE(ABORT,'test state failure'); END;`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			m, err := Open(dir, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = m.Close() })
+			b, err := m.Create("/target", []Input{{Path: "a", Size: "3"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = m.update(b.Items[0].ID, "uploading", 2, ""); err != nil {
+				t.Fatal(err)
+			}
+			var original string
+			if err = m.db.QueryRow(`SELECT updated FROM items WHERE id=?`, b.Items[0].ID).Scan(&original); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = m.db.Exec(testCase.trigger); err != nil {
+				t.Fatal(err)
+			}
+			if err = m.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := Open(dir, nil)
+			if err == nil {
+				reopened.Close()
+				t.Fatal("startup accepted a failed evidence write")
+			}
+			db, err := sql.Open("sqlite", filepath.Join(dir, "uploads.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			var state, updated string
+			var sent int64
+			if err = db.QueryRow(`SELECT state,sent,updated FROM items WHERE id=?`, b.Items[0].ID).Scan(&state, &sent, &updated); err != nil {
+				t.Fatal(err)
+			}
+			if state != "uploading" || sent != 2 || updated != original {
+				t.Fatalf("failed transaction changed prior evidence: %s %d %s", state, sent, updated)
+			}
+			var count int
+			if err = db.QueryRow(`SELECT count(*) FROM events WHERE error LIKE 'restart_recovery:%'`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("partial recovery event: %d %v", count, err)
+			}
+		})
+	}
 }

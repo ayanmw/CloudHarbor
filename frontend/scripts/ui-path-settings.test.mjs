@@ -1,8 +1,9 @@
+import {mountBuiltWorkspace} from './built-workspace.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {JSDOM,VirtualConsole} from 'jsdom';
-const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8'),asset=html.match(/src="\/app\/(assets\/[^\"]+\.js)"/)[1],bundle=await readFile(new URL('../../internal/webui/app/'+asset,import.meta.url),'utf8');
+const html=await readFile(new URL('../../internal/webui/app/index.html',import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 test('local path save requires explicit confirmation and cancellation never writes',async()=>{
  const writes=[];const {dom}=await render(async(raw,init)=>{if(init.method==='POST')writes.push(JSON.parse(init.body));return {ok:true,json:async()=>paths()};});try{
@@ -83,7 +84,7 @@ for(const status of [200,202,409])test(`path save distinguishes HTTP ${status} a
 });
 async function render(respond=async()=>({ok:true,json:async()=>paths()}),virtualConsole=new VirtualConsole(),withMigration=false,setup=()=>{}){
  const requests=[],dom=new JSDOM(html,{url:'http://localhost/settings/paths',runScripts:'outside-only',pretendToBeVisual:true,virtualConsole});
- setup(dom.window);dom.window.fetch=async(raw,init={})=>{if(String(raw).startsWith('/api/settings/local-migration?'))return withMigration?respond('/api/settings/local-migration',init):{ok:true,json:async()=>({status:'none'})};requests.push({url:String(raw),method:init.method||'GET',signal:init.signal});return respond(String(raw),init);};dom.window.eval(bundle);await tick();await tick();return {dom,requests};
+ setup(dom.window);dom.window.fetch=async(raw,init={})=>{if(String(raw).startsWith('/api/settings/local-migration?'))return withMigration?respond('/api/settings/local-migration',init):{ok:true,json:async()=>({status:'none'})};requests.push({url:String(raw),method:init.method||'GET',signal:init.signal});return respond(String(raw),init);};await mountBuiltWorkspace(dom);await tick();await tick();return {dom,requests};
 }
 test('path settings has its own protected-workspace layout and distinguishes cloud from local current paths',async()=>{
  const {dom,requests}=await render();try{const doc=dom.window.document;assert.match(doc.querySelector('h1').textContent,/路径与存储/);assert.ok(doc.querySelector('.workspace.event-workspace > main.main'));assert.equal(doc.querySelector('[data-testid=path-current-queue]').textContent,'/NAS_Download_Queue_preview');assert.equal(doc.querySelector('[data-testid=path-current-local]').textContent,'D:\\downloads');assert.equal(doc.querySelector('.sidebar a[aria-current=page]').getAttribute('href'),'/settings/paths');assert.ok(requests.every(r=>r.url==='/api/settings/paths'&&r.method==='GET'));}finally{dom.window.close();}
@@ -136,4 +137,24 @@ test('observed active downloads lock the path draft and show the server queue re
 });
 test('a fresh impact response observing active downloads cannot yield a usable confirmation',async()=>{
  const {dom}=await render(async raw=>({ok:true,json:async()=>paths(new URL(raw,'http://localhost').searchParams.has('queue_dir')?{queue_busy:true,queue_busy_reason:'有下载任务正在运行，暂不能修改路径',queue_change_impact:impact()}:{})}));try{await preview(dom);assert.match(dom.window.document.querySelector('[data-testid=path-impact-error]').textContent,/下载任务正在运行/);assert.equal(dom.window.document.querySelector('[data-testid=path-impact-table]'),null);}finally{dom.window.close();}
+});
+
+test('invalid successful path receipts stay unknown and never allow a second save',async()=>{
+ for(const receipt of [{queue_dir:'',local_download_dir:'D:\\next'},{queue_dir:'/../queue',local_download_dir:'D:\\next'},{queue_dir:'/queue',local_download_dir:'   '},{queue_dir:'/queue',local_download_dir:'D:\\bad\u0000path'}]){
+ let writes=0;const {dom}=await render(async(raw,init)=>init.method==='POST'?(writes++,{ok:true,status:200,json:async()=>receipt}):{ok:true,json:async()=>paths()});try{const d=dom.window.document,input=d.querySelector('[data-testid=path-target-local]');input.value='D:\\next';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));await tick();d.querySelector('[data-testid=path-save-review]').click();await tick();const ack=d.querySelector('[data-testid=path-save-ack]');ack.checked=true;ack.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await tick();d.querySelector('[data-testid=path-save-submit]').click();await tick();await tick();assert.match(d.querySelector('[data-testid=path-save-result]').textContent,/结果未知/);assert.equal(d.querySelector('[data-testid=path-save-review]').disabled,true);assert.equal(writes,1)}finally{dom.window.close()}
+ }
+});
+
+test('valid path receipt accepts server normalization rather than comparing local path spelling',async()=>{
+ let writes=0;const {dom}=await render(async(raw,init)=>init.method==='POST'?(writes++,{ok:true,status:200,json:async()=>({queue_dir:'/NAS_Download_Queue_preview',local_download_dir:'D:\\next'})}):{ok:true,json:async()=>paths()});try{const d=dom.window.document,input=d.querySelector('[data-testid=path-target-local]');input.value='D:\\next\\.';input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));await tick();d.querySelector('[data-testid=path-save-review]').click();await tick();const ack=d.querySelector('[data-testid=path-save-ack]');ack.checked=true;ack.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await tick();d.querySelector('[data-testid=path-save-submit]').click();await tick();await tick();assert.match(d.querySelector('[data-testid=path-save-result]').textContent,/已确认保存/);assert.equal(d.querySelector('[data-testid=path-reconcile]'),null);assert.equal(writes,1)}finally{dom.window.close()}
+});
+
+test('path overview distinguishes saved startup and environment sources without guessing legacy values',async()=>{
+ for(const [extra,queueLabel,localLabel] of [[{queue_source:'saved',local_download_source:'startup'},'已保存设置','启动默认值'],[{queue_source:'environment',queue_editable:false,local_download_source:'saved'},'环境配置','已保存设置'],[{},'未提供来源','未提供来源']]){
+ const {dom}=await render(async()=>({ok:true,json:async()=>paths(extra)}));try{const d=dom.window.document;assert.match(d.querySelector('[data-testid=path-queue-source]').textContent,new RegExp(queueLabel));assert.match(d.querySelector('[data-testid=path-local-source]').textContent,new RegExp(localLabel))}finally{dom.window.close()}
+ }
+});
+
+test('inconsistent or unknown path sources cannot become editable settings',async()=>{
+ for(const extra of [{queue_source:'environment'},{local_download_source:'saved',local_download_editable:false},{queue_source:'other'}]){const {dom}=await render(async()=>({ok:true,json:async()=>paths(extra)}));try{const d=dom.window.document;assert.ok(d.querySelector('[data-testid=path-read-error]'));assert.equal(d.querySelector('[data-testid=path-save-review]'),null)}finally{dom.window.close()}}
 });

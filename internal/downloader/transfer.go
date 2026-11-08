@@ -369,6 +369,9 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	}
 	d.queue.mu.Unlock()
 	started := time.Now()
+	// Count only writes performed by this invocation, excluding resumed bytes
+	// and verified local files reused without another download.
+	var writtenThisAttempt int64
 	trace := func(event, format string, args ...any) {
 		fields := []any{time.Now().UTC().Format(time.RFC3339Nano), transferID, batchID, info.FsID, info.Path, local, event}
 		log.Printf("[Download] at_utc=%s transfer_id=%q batch_id=%q fsid=%d path=%q local_path=%q event=%s "+format, append(fields, args...)...)
@@ -376,7 +379,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 	trace("transfer_started", "expected_bytes=%d", info.Size)
 	defer func() {
 		if resultErr == nil {
-			trace("transfer_finished", "outcome=success expected_bytes=%d elapsed_ms=%d", info.Size, time.Since(started).Milliseconds())
+			trace("transfer_finished", "outcome=success written_bytes_this_attempt=%d expected_bytes=%d elapsed_ms=%d", writtenThisAttempt, info.Size, time.Since(started).Milliseconds())
 			return
 		}
 		status, code := 0, 0
@@ -391,7 +394,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 		if errors.Is(resultErr, context.Canceled) {
 			outcome = "cancelled"
 		}
-		trace("transfer_finished", "outcome=%s elapsed_ms=%d http_status=%d provider_code=%d retryable=%t error_type=%T", outcome, time.Since(started).Milliseconds(), status, code, baiduapi.IsRetryable(resultErr), resultErr)
+		trace("transfer_finished", "outcome=%s written_bytes_this_attempt=%d elapsed_ms=%d http_status=%d provider_code=%d retryable=%t error_type=%T", outcome, writtenThisAttempt, time.Since(started).Milliseconds(), status, code, baiduapi.IsRetryable(resultErr), resultErr)
 	}()
 	if err := ctx.Err(); err != nil {
 		return err
@@ -593,6 +596,7 @@ func (d *Downloader) transfer(ctx context.Context, info baiduapi.FileInfo, relat
 				}
 				var count int
 				count, err = writePartialChunk(out, buf[:n])
+				writtenThisAttempt += int64(count)
 				written += int64(count)
 				d.updateProgress(info.FsID, written)
 				if time.Since(lastLog) >= 30*time.Second {

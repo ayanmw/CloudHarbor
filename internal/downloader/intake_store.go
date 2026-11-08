@@ -7,18 +7,31 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strconv"
 	"time"
 	"web_browser_baidu_onekey_upload/internal/baiduapi"
 )
 
+type IntakeDownloadTask struct {
+	WaitReason         string                   `json:"wait_reason,omitempty"`
+	MonitorObservation *QueueMonitorObservation `json:"monitor_observation,omitempty"`
+	TaskID             string                   `json:"task_id"`
+	Status             string                   `json:"status"`
+	ObservedAtUTC      string                   `json:"observed_at_utc"`
+}
+
 type IntakeItem struct {
-	Source        baiduapi.FileInfo `json:"source"`
-	SourceID      string            `json:"source_id"`
-	Target        string            `json:"target"`
-	State         string            `json:"state"`
-	Error         string            `json:"error,omitempty"`
-	AsyncTaskID   string            `json:"async_task_id,omitempty"`
-	SyncConfirmed bool              `json:"sync_confirmed,omitempty"`
+	DownloadTask *IntakeDownloadTask `json:"download_task,omitempty"`
+	// These are local observation times, not provider timestamps or download-start evidence.
+	SyncConfirmedAtUTC   string            `json:"sync_confirmed_at_utc,omitempty"`
+	QueueRegisteredAtUTC string            `json:"queue_registered_at_utc,omitempty"`
+	Source               baiduapi.FileInfo `json:"source"`
+	SourceID             string            `json:"source_id"`
+	Target               string            `json:"target"`
+	State                string            `json:"state"`
+	Error                string            `json:"error,omitempty"`
+	AsyncTaskID          string            `json:"async_task_id,omitempty"`
+	SyncConfirmed        bool              `json:"sync_confirmed,omitempty"`
 }
 
 type intakeJournal interface {
@@ -71,7 +84,6 @@ func (d *Downloader) GetIntakes() []Intake {
 	now := time.Now()
 
 	d.intakeMutex.RLock()
-	defer d.intakeMutex.RUnlock()
 	result := make([]Intake, 0, len(d.intakes))
 	for _, r := range d.intakes {
 		copy := cloneIntake(r)
@@ -80,6 +92,24 @@ func (d *Downloader) GetIntakes() []Intake {
 		}
 		result = append(result, copy.Intake)
 	}
+	d.intakeMutex.RUnlock()
+	// Never infer origin from a reused path or a matching file ID alone.
+	d.queue.mu.Lock()
+	for i := range result {
+		for j := range result[i].Items {
+			item := &result[i].Items[j]
+			item.DownloadTask = nil
+			job := d.queue.jobs[item.Source.FsID]
+			if item.State == "moved" && job != nil && job.IntakeID == result[i].ID && item.SourceID == strconv.FormatInt(job.Info.FsID, 10) {
+				item.DownloadTask = &IntakeDownloadTask{TaskID: item.SourceID, Status: job.Status, WaitReason: d.queue.intakeWaitReason(job), ObservedAtUTC: time.Now().UTC().Format(time.RFC3339Nano)}
+				if job.MonitorObservation != nil {
+					observation := *job.MonitorObservation
+					item.DownloadTask.MonitorObservation = &observation
+				}
+			}
+		}
+	}
+	d.queue.mu.Unlock()
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Created.Equal(result[j].Created) {
 			return result[i].ID > result[j].ID
@@ -90,11 +120,19 @@ func (d *Downloader) GetIntakes() []Intake {
 }
 func (d *Downloader) refreshIntakeBlocks() {
 	blocked := make(map[string]bool)
+	sources := make(map[string]bool)
+	ids := make(map[int64]bool)
 	d.intakeMutex.RLock()
 	for _, r := range d.intakes {
 		for _, item := range r.Items {
 			if item.State == "sending" || item.State == "unknown" {
 				blocked[item.Target] = true
+				if item.Source.Path != "" {
+					sources[item.Source.Path] = true
+				}
+				if item.Source.FsID > 0 {
+					ids[item.Source.FsID] = true
+				}
 			}
 		}
 	}
@@ -111,6 +149,8 @@ func (d *Downloader) refreshIntakeBlocks() {
 		}
 	}
 	q.blockedIntakes = blocked
+	q.blockedIntakeSources = sources
+	q.blockedIntakeIDs = ids
 	if changed {
 		// Candidate entries cache intake-block eligibility; refresh them when a
 		// durable intake moves into or out of quarantine.
@@ -196,4 +236,34 @@ func (d *Downloader) loadIntakes() error {
 	}
 	d.refreshIntakeBlocks()
 	return nil
+}
+
+// intakeWaitReason reads current scheduler conditions with q.mu held. It is
+// display evidence only and never changes eligibility or resumes a task.
+func (q *scheduler) intakeWaitReason(job *queueJob) string {
+	if job.Status != "pending" {
+		return ""
+	}
+	switch {
+	case q.err != nil:
+		return "storage_error"
+	case q.stopping || q.owner.ctx.Err() != nil:
+		return "stopped"
+	case q.maintenance:
+		return "maintenance"
+	case q.userPaused:
+		return "queue_paused"
+	case !q.owner.AuthenticationReady():
+		return "authorization_wait"
+	case q.isRemoteBlocked(job.Info.FsID, job.Info.Path) || q.blockedIntakes[job.Info.Path] || q.blockedSources[job.Info.Path]:
+		return "source_isolated"
+	}
+	observed := q.eligible[job.Info.FsID]
+	if observed == nil {
+		return "awaiting_scan"
+	}
+	if *observed != job.Info {
+		return "source_changed"
+	}
+	return "waiting_schedule"
 }

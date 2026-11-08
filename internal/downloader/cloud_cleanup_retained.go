@@ -15,21 +15,21 @@ func verifyCleanupRetainedCopy(ctx context.Context, client *baiduapi.Client, exp
 		return err
 	}
 	if !sameCloudIdentity(expected, current) {
-		return ErrIntakeStale
+		return cleanupStale(errCleanupRetainedChanged)
 	}
 	actual, err := hashCloudFile(ctx, client, taskstore.CloudInventoryEntry{FsID: current.FsID, Path: current.Path, Name: current.ServerFilename, Size: current.Size, ProviderMtime: current.Mtime})
 	if err != nil {
 		return err
 	}
 	if actual != digest {
-		return ErrIntakeStale
+		return cleanupStale(errCleanupContentChanged)
 	}
 	current, err = client.GetFileInfo(expected.FsID)
 	if err != nil {
 		return err
 	}
 	if !sameCloudIdentity(expected, current) {
-		return ErrIntakeStale
+		return cleanupStale(errCleanupRetainedChanged)
 	}
 	return nil
 }

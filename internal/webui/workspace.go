@@ -30,7 +30,7 @@ func writeWorkspacePage(w http.ResponseWriter, content []byte) {
 var workspaceFiles embed.FS
 
 func (s *Server) HandleWorkspace(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" && r.URL.Path != "/settings/paths" && r.URL.Path != "/settings/migrations" && r.URL.Path != "/cloud/files" && r.URL.Path != "/cloud/cache" && r.URL.Path != "/cloud/cleanup" && r.URL.Path != "/cloud/history" && r.URL.Path != "/intake-history" && r.URL.Path != "/uploads" {
+	if r.URL.Path != "/" && r.URL.Path != "/sync" && r.URL.Path != "/directory-analysis" && r.URL.Path != "/settings/paths" && r.URL.Path != "/settings/about" && r.URL.Path != "/settings/migrations" && r.URL.Path != "/cloud/files" && r.URL.Path != "/cloud/cache" && r.URL.Path != "/cloud/cleanup" && r.URL.Path != "/cloud/history" && r.URL.Path != "/intake-history" && r.URL.Path != "/uploads" {
 		http.NotFound(w, r)
 		return
 	}

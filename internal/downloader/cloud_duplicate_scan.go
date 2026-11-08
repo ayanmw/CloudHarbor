@@ -57,11 +57,11 @@ func (d *Downloader) StartCloudDuplicateScan(ctx context.Context) (taskstore.Clo
 	if stateInventory.Status != "complete" {
 		return taskstore.CloudDuplicateScanState{}, ErrCloudInventoryIncomplete
 	}
-	inventoryClient, _, err := d.authorizedClient(d.ctx)
+	inventoryClient, _, err := d.authorizedCloudClient(d.ctx)
 	if err != nil {
 		return taskstore.CloudDuplicateScanState{}, err
 	}
-	coverage, err := d.queue.store.CloudDirectorySize(inventoryClient.Fingerprint(), "/")
+	coverage, err := d.queue.store.CloudDirectorySize(inventoryClient.CloudCacheNamespace(), "/")
 	if err != nil {
 		return taskstore.CloudDuplicateScanState{}, err
 	}
@@ -74,12 +74,12 @@ func (d *Downloader) StartCloudDuplicateScan(ctx context.Context) (taskstore.Clo
 	if err != nil {
 		return taskstore.CloudDuplicateScanState{}, err
 	}
-	client, _, err := d.authorizedClient(scoped)
+	client, _, err := d.authorizedCloudClient(scoped)
 	if err != nil {
 		done()
 		return taskstore.CloudDuplicateScanState{}, err
 	}
-	account := client.Fingerprint()
+	account := client.CloudCacheNamespace()
 	refreshState, refreshErr := d.queue.store.LoadCloudInventoryRefreshState(account)
 	if refreshErr == nil && (refreshState.Status == "running" || refreshState.Status == "paused") && refreshState.PendingCount > 0 {
 		done()
@@ -101,7 +101,7 @@ func (d *Downloader) StartCloudDuplicateScan(ctx context.Context) (taskstore.Clo
 		done()
 		return state, err
 	}
-	if fresh || state.Status == "complete" {
+	if fresh || state.Status == "complete" || state.Phase == "restart_required" {
 		id, e := newSourceOperationID()
 		if e != nil {
 			done()
@@ -169,70 +169,70 @@ func (d *Downloader) CloudDuplicateScanWorkerActive() bool {
 }
 
 func (d *Downloader) CloudDuplicateScanStatus() (taskstore.CloudDuplicateScanState, error) {
-	client, _, err := d.authorizedClient(d.ctx)
+	client, _, err := d.authorizedCloudClient(d.ctx)
 	if err != nil {
 		return taskstore.CloudDuplicateScanState{}, err
 	}
-	state, err := d.queue.store.LoadCloudDuplicateScanState(client.Fingerprint())
+	state, err := d.queue.store.LoadCloudDuplicateScanState(client.CloudCacheNamespace())
 	if errors.Is(err, sql.ErrNoRows) {
-		return taskstore.CloudDuplicateScanState{AccountFingerprint: client.Fingerprint(), Status: "idle", Phase: "idle"}, nil
+		return taskstore.CloudDuplicateScanState{AccountFingerprint: client.CloudCacheNamespace(), Status: "idle", Phase: "idle"}, nil
 	}
 	return state, err
 }
 
 func (d *Downloader) CloudDuplicateScanEventPage(ctx context.Context, before int64, limit int) ([]taskstore.CloudDuplicateScanEvent, int64, bool, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, 0, false, err
 	}
-	return d.queue.store.CloudDuplicateScanEventPage(client.Fingerprint(), before, limit)
+	return d.queue.store.CloudDuplicateScanEventPage(client.CloudCacheNamespace(), before, limit)
 }
 
 func (d *Downloader) CloudDuplicateScanRuns(ctx context.Context, before int64, filter taskstore.CloudDuplicateScanRunFilter, limit int) ([]taskstore.CloudDuplicateScanRun, int64, bool, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, 0, false, err
 	}
-	return d.queue.store.CloudDuplicateScanRunPage(client.Fingerprint(), before, filter, limit)
+	return d.queue.store.CloudDuplicateScanRunPage(client.CloudCacheNamespace(), before, filter, limit)
 }
 
 func (d *Downloader) CloudDuplicateScanRunsExport(ctx context.Context, filter taskstore.CloudDuplicateScanRunFilter) ([]taskstore.CloudDuplicateScanRun, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return d.queue.store.ExportCloudDuplicateScanRuns(ctx, client.Fingerprint(), filter)
+	return d.queue.store.ExportCloudDuplicateScanRuns(ctx, client.CloudCacheNamespace(), filter)
 }
 
 func (d *Downloader) CloudDuplicateScanRunEventPage(ctx context.Context, runID string, before int64, limit int) ([]taskstore.CloudDuplicateScanEvent, int64, bool, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, 0, false, err
 	}
-	return d.queue.store.CloudDuplicateScanRunEvents(client.Fingerprint(), runID, before, limit)
+	return d.queue.store.CloudDuplicateScanRunEvents(client.CloudCacheNamespace(), runID, before, limit)
 }
 
 func (d *Downloader) CloudDuplicateScanEvidenceExport(ctx context.Context, runID string) (taskstore.CloudDuplicateScanEvidenceBundle, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return taskstore.CloudDuplicateScanEvidenceBundle{}, err
 	}
-	return d.queue.store.CloudDuplicateScanEvidenceExport(ctx, client.Fingerprint(), runID)
+	return d.queue.store.CloudDuplicateScanEvidenceExport(ctx, client.CloudCacheNamespace(), runID)
 }
 
 func (d *Downloader) CloudDuplicateScanEstimate() (taskstore.CloudDuplicateHashCandidateEstimate, error) {
-	client, _, err := d.authorizedClient(d.ctx)
+	client, _, err := d.authorizedCloudClient(d.ctx)
 	if err != nil {
 		return taskstore.CloudDuplicateHashCandidateEstimate{}, err
 	}
-	state, err := d.queue.store.LoadCloudScanState(client.Fingerprint())
+	state, err := d.queue.store.LoadCloudScanState(client.CloudCacheNamespace())
 	if err != nil {
 		return taskstore.CloudDuplicateHashCandidateEstimate{}, err
 	}
 	if state.Status != "complete" {
 		return taskstore.CloudDuplicateHashCandidateEstimate{}, ErrCloudInventoryIncomplete
 	}
-	coverage, err := d.queue.store.CloudDirectorySize(client.Fingerprint(), "/")
+	coverage, err := d.queue.store.CloudDirectorySize(client.CloudCacheNamespace(), "/")
 	if err != nil {
 		return taskstore.CloudDuplicateHashCandidateEstimate{}, err
 	}
@@ -240,21 +240,36 @@ func (d *Downloader) CloudDuplicateScanEstimate() (taskstore.CloudDuplicateHashC
 		return taskstore.CloudDuplicateHashCandidateEstimate{}, ErrCloudInventoryIncomplete
 	}
 	afterFsID := int64(0)
-	duplicateState, stateErr := d.queue.store.LoadCloudDuplicateScanState(client.Fingerprint())
+	duplicateState, stateErr := d.queue.store.LoadCloudDuplicateScanState(client.CloudCacheNamespace())
 	if stateErr != nil && !errors.Is(stateErr, sql.ErrNoRows) {
 		return taskstore.CloudDuplicateHashCandidateEstimate{}, stateErr
 	}
 	if stateErr == nil && duplicateState.Status != "complete" {
 		afterFsID = duplicateState.NextFsID
 	}
-	return d.queue.store.EstimateCloudDuplicateHashCandidates(client.Fingerprint(), afterFsID)
+	return d.queue.store.EstimateCloudDuplicateHashCandidates(client.CloudCacheNamespace(), afterFsID)
 }
 func (d *Downloader) CloudDuplicatePreview(_ context.Context, offset, limit int) ([]taskstore.CloudDuplicateGroup, int, int, error) {
-	client, _, err := d.authorizedClient(d.ctx)
+	client, _, err := d.authorizedCloudClient(d.ctx)
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	return d.queue.store.ListVerifiedCloudDuplicateGroupsPage(client.Fingerprint(), offset, limit)
+	return d.queue.store.ListVerifiedCloudDuplicateGroupsPage(client.CloudCacheNamespace(), offset, limit)
+}
+
+func (d *Downloader) CloudDuplicatePreviewInDirectory(ctx context.Context, directory string, offset, limit int) ([]taskstore.CloudDuplicateGroup, int, int, error) {
+	client, epoch, err := d.authorizedCloudClient(ctx)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	var groups []taskstore.CloudDuplicateGroup
+	var total, deleted int
+	err = d.commitCloudCacheObservation(ctx, epoch, func() error {
+		var readErr error
+		groups, total, deleted, readErr = d.queue.store.ListVerifiedCloudDuplicateGroupsInDirectory(client.CloudCacheNamespace(), directory, offset, limit)
+		return readErr
+	})
+	return groups, total, deleted, err
 }
 
 func (d *Downloader) runCloudDuplicateScan(ctx context.Context, state taskstore.CloudDuplicateScanState, done func()) {
@@ -333,15 +348,15 @@ func (d *Downloader) runCloudDuplicateScan(ctx context.Context, state taskstore.
 			}
 		}
 		d.cloudMutex.RLock()
-		client, _, err := d.authorizedClient(ctx)
-		if err == nil && client.Fingerprint() != state.AccountFingerprint {
+		client, epoch, err := d.authorizedCloudClient(ctx)
+		if err == nil && client.CloudCacheNamespace() != state.AccountFingerprint {
 			err = ErrAuthenticationWaiting
 		}
 		if err == nil {
 			var digest string
 			digest, err = hashCloudFileResumable(ctx, client, item, &state, func() error {
 				state.UpdatedAtUTC = time.Now().UTC()
-				return d.queue.store.SaveCloudDuplicateScanState(state, false)
+				return d.commitCloudCacheObservation(ctx, epoch, func() error { return d.queue.store.SaveCloudDuplicateScanState(state, false) })
 			})
 			if err == nil {
 				current, e := client.GetFileInfo(item.FsID)
@@ -354,7 +369,9 @@ func (d *Downloader) runCloudDuplicateScan(ctx context.Context, state taskstore.
 				} else {
 					err = cloudInventoryIdentityError(item, current)
 					if err == nil {
-						err = d.queue.store.CompleteCloudDuplicateCandidate(state.AccountFingerprint, state, item, digest, time.Now().UTC())
+						err = d.commitCloudCacheObservation(ctx, epoch, func() error {
+							return d.queue.store.CompleteCloudDuplicateCandidate(state.AccountFingerprint, state, item, digest, time.Now().UTC())
+						})
 					}
 				}
 			}
@@ -370,7 +387,9 @@ func (d *Downloader) runCloudDuplicateScan(ctx context.Context, state taskstore.
 				observed = &entry
 				providerObservedAt = changed.observedAt
 			}
-			err = d.queue.store.ReconcileCloudDuplicateCandidateChange(state.AccountFingerprint, state, item, observed, providerObservedAt, time.Now().UTC())
+			err = d.commitCloudCacheObservation(ctx, epoch, func() error {
+				return d.queue.store.ReconcileCloudDuplicateCandidateChange(state.AccountFingerprint, state, item, observed, providerObservedAt, time.Now().UTC())
+			})
 			reconciled = err == nil
 		}
 		d.cloudMutex.RUnlock()

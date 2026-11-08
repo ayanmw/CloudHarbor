@@ -510,12 +510,28 @@ func TestCloudMutationRejectsActiveDuplicateScanBeforeProviderWrite(t *testing.T
 	}, true); err != nil {
 		t.Fatal(err)
 	}
+	// A persisted running row can survive restart without a worker. This test
+	// protects an actual live worker, which must still reject namespace writes.
+	d.inventoryScanMutex.Lock()
+	d.inventoryScanKind = "duplicate"
+	d.inventoryScanCancel = func() {}
+	d.inventoryScanMutex.Unlock()
+	defer func() {
+		d.inventoryScanMutex.Lock()
+		d.inventoryScanCancel = nil
+		d.inventoryScanKind = ""
+		d.inventoryScanMutex.Unlock()
+	}()
 	_, err = d.MutateCloud(context.Background(), CloudMutationRequest{Operation: "rename", Expected: info, NewName: "new.txt"})
-	if !errors.Is(err, ErrIntakeConflict) {
+	if err == nil || !strings.Contains(err.Error(), "网盘扫描已经在运行") {
 		t.Fatalf("mutation overlapped duplicate hash scan without conflict: %v", err)
 	}
 	if len(p.actions) != 0 {
 		t.Fatalf("provider write ran while duplicate scan was active: %v", p.actions)
+	}
+	checkpoint, err := store.LoadCloudDuplicateScanState(d.getClient().Fingerprint())
+	if err != nil || checkpoint.Phase != "hashing" {
+		t.Fatalf("active worker checkpoint was invalidated: %+v %v", checkpoint, err)
 	}
 	operations, err := store.LoadRemoteOperations()
 	if err != nil || len(operations) != 0 {

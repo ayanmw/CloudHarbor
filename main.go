@@ -32,6 +32,7 @@ import (
 	"web_browser_baidu_onekey_upload/internal/config"
 	"web_browser_baidu_onekey_upload/internal/credentials"
 	"web_browser_baidu_onekey_upload/internal/downloader"
+	"web_browser_baidu_onekey_upload/internal/foldersync"
 	"web_browser_baidu_onekey_upload/internal/intakeapi"
 	"web_browser_baidu_onekey_upload/internal/management"
 	"web_browser_baidu_onekey_upload/internal/taskstore"
@@ -115,6 +116,8 @@ type taskStatusDTO struct {
 	CanCancel      bool                             `json:"can_cancel"`
 	CanPause       bool                             `json:"can_pause"`
 	CanResume      bool                             `json:"can_resume"`
+	CanClear       bool                             `json:"can_clear"`
+	ClearToken     string                           `json:"clear_token,omitempty"`
 	CanRetry       bool                             `json:"can_retry"`
 	Path           string                           `json:"path"`
 	ServerFilename string                           `json:"server_filename"`
@@ -135,7 +138,7 @@ type taskStatusDTO struct {
 
 func toTaskStatus(t *downloader.Task) taskStatusDTO {
 	status := taskStatusDTO{
-		FsID: t.FileInfo.FsID, TaskID: t.TaskID, CanCancel: t.CanCancel, CanPause: t.CanPause, CanResume: t.CanResume, CanRetry: t.CanRetry,
+		FsID: t.FileInfo.FsID, TaskID: t.TaskID, CanCancel: t.CanCancel, CanPause: t.CanPause, CanResume: t.CanResume, CanRetry: t.CanRetry, CanClear: t.CanClear, ClearToken: t.ClearToken,
 		Path: t.FileInfo.Path, ServerFilename: t.FileInfo.ServerFilename, Size: t.FileInfo.Size,
 		Status: t.Status, LocalPath: t.LocalPath, Error: t.Error, Progress: t.Progress,
 		Speed: t.Speed, Attempts: t.Attempts, Root: t.Root, DownloadMode: string(t.DownloadMode), LocalStorage: t.LocalStorage,
@@ -163,10 +166,15 @@ func loadMainConfig(dotenvPath string) error {
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
+	showBuildInfo := flag.Bool("build-info", false, "print compiled build metadata and exit without loading account state")
 	revokeAdminSessions := flag.Bool("revoke-admin-sessions", false, "revoke all persistent browser admin sessions and exit")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("baidu-nas-downloader " + version + " (" + revision + ")")
+		return
+	}
+	if *showBuildInfo {
+		_ = json.NewEncoder(os.Stdout).Encode(currentBuildInformation())
 		return
 	}
 	log.Println("baidu-nas-downloader service starting...")
@@ -277,11 +285,33 @@ func main() {
 	if cfg.AdminPassword == "" {
 		log.Printf("Administrator username: admin; password stored in %s", filepath.Join(cfg.StateDir, "queue", "admin-key.json"))
 	}
-	uploadManager, err = uploads.Open(filepath.Join(cfg.StateDir, "uploads"), dl.UploadStagedFile, dl.AuthenticationReady)
+	var uploadIsolationReady atomic.Bool
+	uploadManager, err = uploads.Open(filepath.Join(cfg.StateDir, "uploads"), dl.UploadStagedFile, func() bool { return uploadIsolationReady.Load() && dl.AuthenticationReady() })
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer uploadManager.Close()
+	folderSyncManager, err = foldersync.Open(filepath.Join(cfg.StateDir, "sync"), downloader.FolderSyncRemote{Downloader: dl}, []string{cfg.StateDir, managedPaths.LocalDownDir}, func() []string { return []string{cfg.StateDir, dl.GetManagedPaths().LocalDownDir} })
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer folderSyncManager.Close()
+	if err = uploadManager.RestoreDirectoryIsolation(dl.QuarantineUploadDirectory); err != nil {
+		log.Fatal(err)
+	}
+	uploadIsolationReady.Store(true)
+	uploadManager.SetReceiptVerifier(dl.VerifyUploadReceipt)
+	uploadManager.SetDirectoryRunner(func(ctx context.Context, remote string) (uploads.DirectoryReceipt, error) {
+		result, observed, err := dl.EnsureUploadDirectory(ctx, remote)
+		receipt := uploads.DirectoryReceipt{Status: result.Status, Path: result.DestinationPath, OperationID: result.OperationID}
+		if result.ObjectID > 0 {
+			receipt.RemoteID = strconv.FormatInt(result.ObjectID, 10)
+		}
+		if !observed.IsZero() {
+			receipt.ObservedAtUTC = observed.UTC().Format(time.RFC3339Nano)
+		}
+		return receipt, err
+	})
 
 	authorizationHTTP = authorization.New(dl.Context(), cfg.BaiduAppKey, cfg.BaiduSecretKey, auth, nil)
 
@@ -303,6 +333,9 @@ func main() {
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- server.Serve(listener) }()
 	scanDone := make(chan struct{})
+	if cleanupErr := dl.ResumeCloudCleanup(); cleanupErr != nil {
+		log.Printf("Cleanup worker initialization failed: %v", cleanupErr)
+	}
 	dl.StartBackground(auth.Run)
 	dl.StartBackground(func(scanCtx context.Context) { defer close(scanDone); runScanner(scanCtx) })
 	log.Printf("HTTP server listening on %s\n", address)
@@ -450,10 +483,11 @@ func handleManagedPaths(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "路径影响身份格式无效", http.StatusBadRequest)
 			return
 		}
-		paths := dl.GetManagedPaths()
+		paths := dl.GetManagedPathSnapshot()
 		queueBlockReason := dl.ManagedPathQueueBlockReason()
 		response := map[string]any{
 			"queue_dir": paths.QueueDir, "local_download_dir": paths.LocalDownDir,
+			"queue_source": paths.QueueSource, "local_download_source": paths.LocalDownloadSource,
 			"queue_editable": !cfg.QueueDirExplicit, "local_download_editable": !cfg.LocalDownDirExplicit,
 			"queue_busy": queueBlockReason != "", "queue_busy_reason": queueBlockReason,
 		}
@@ -581,6 +615,107 @@ func sameLocalSettingPath(a, b string) bool {
 }
 
 var uploadManager *uploads.Manager
+var folderSyncManager *foldersync.Manager
+
+func handleFolderSync(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	if r.URL.Path == "/api/sync/local-directories" {
+		folderSyncManager.HandleLocalDirectories(w, r)
+		return
+	}
+	folderSyncManager.Handle(w, r)
+}
+
+func handleDirectoryAnalysis(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录分析尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleAnalysis(w, r)
+}
+
+func handleSyncResolution(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleResolution(w, r)
+}
+
+func handleSyncResolutionBatch(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleResolutionBatch(w, r)
+}
+
+func handleSyncResolutionBatchCheck(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleResolutionBatchCheck(w, r)
+}
+
+func handleSyncResolutionBatchExecution(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleResolutionBatchExecution(w, r)
+}
+
+func handleSyncResolutionBatchVerification(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleResolutionBatchVerification(w, r)
+}
+
+func handleSyncResolutionCheck(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleResolutionCheck(w, r)
+}
+
+func handleSyncResolutionExecution(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleResolutionExecution(w, r)
+}
+
+func handleSyncResolutionVerification(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleResolutionVerification(w, r)
+}
+
+func handleSyncResolutionSubtree(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleResolutionSubtree(w, r)
+}
+
+func handleSyncSubtreeSteps(w http.ResponseWriter, r *http.Request) {
+	if folderSyncManager == nil {
+		http.Error(w, "目录同步尚未就绪", 503)
+		return
+	}
+	folderSyncManager.HandleSubtreeSteps(w, r)
+}
 
 func handleUploads(w http.ResponseWriter, r *http.Request) {
 	if uploadManager == nil {
@@ -588,6 +723,62 @@ func handleUploads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uploadManager.Handle(w, r)
+}
+
+func handleUploadStorage(w http.ResponseWriter, r *http.Request) {
+	if uploadManager == nil {
+		http.Error(w, "上传管理器不可用", http.StatusServiceUnavailable)
+		return
+	}
+	uploadManager.HandleStorage(w, r)
+}
+
+func handleUploadConcurrency(w http.ResponseWriter, r *http.Request) {
+	if uploadManager == nil {
+		http.Error(w, "上传服务尚未就绪", 503)
+		return
+	}
+	uploadManager.HandleConcurrency(w, r)
+}
+
+func handleUploadRecovery(w http.ResponseWriter, r *http.Request) {
+	if uploadManager == nil {
+		http.Error(w, "上传服务尚未就绪", 503)
+		return
+	}
+	uploadManager.HandleRecovery(w, r)
+}
+
+func handleUploadSessionDetails(w http.ResponseWriter, r *http.Request) {
+	if uploadManager == nil {
+		http.Error(w, "上传服务尚未就绪", 503)
+		return
+	}
+	uploadManager.HandleSessionDetails(w, r)
+}
+
+func handleUploadReceiptReconciliation(w http.ResponseWriter, r *http.Request) {
+	if uploadManager == nil {
+		http.Error(w, "上传服务尚未就绪", 503)
+		return
+	}
+	uploadManager.HandleReceiptReconciliation(w, r)
+}
+
+func handleUploadTransferStatistics(w http.ResponseWriter, r *http.Request) {
+	if uploadManager == nil {
+		http.Error(w, "上传服务尚未就绪", 503)
+		return
+	}
+	uploadManager.HandleTransferStatistics(w, r)
+}
+
+func handleUploadControl(w http.ResponseWriter, r *http.Request) {
+	if uploadManager == nil {
+		http.Error(w, "上传服务尚未就绪", 503)
+		return
+	}
+	uploadManager.HandleControl(w, r)
 }
 
 func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.Server) http.Handler {
@@ -607,12 +798,15 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/poll", ui.HandlePagePoll)
 	mux.HandleFunc("/oauth", ui.HandlePageOAuth)
 	mux.HandleFunc("/settings/paths", ui.HandleWorkspace)
+	mux.HandleFunc("/settings/about", ui.HandleWorkspace)
 	mux.HandleFunc("/settings/migrations", ui.HandleWorkspace)
 	mux.HandleFunc("/cloud/files", ui.HandleWorkspace)
 	mux.HandleFunc("/cloud/cache", ui.HandleWorkspace)
 	mux.HandleFunc("/cloud/cleanup", ui.HandleWorkspace)
 	mux.HandleFunc("/cloud/history", ui.HandleWorkspace)
 	mux.HandleFunc("/uploads", ui.HandleWorkspace)
+	mux.HandleFunc("/sync", ui.HandleWorkspace)
+	mux.HandleFunc("/directory-analysis", ui.HandleWorkspace)
 	mux.HandleFunc("/intake-history", ui.HandleWorkspace)
 	mux.HandleFunc("/intake", ui.HandlePageIntake)
 	mux.HandleFunc("/cloud", ui.HandlePageCloud)
@@ -627,6 +821,7 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/api/monitor-scans/events", intakeHTTP.HandleQueueMonitorScanEvents)
 	mux.HandleFunc("/api/monitor-scans/{id}/export", intakeHTTP.HandleQueueMonitorScanExport)
 	mux.HandleFunc("/api/status", handleStatus)
+	mux.HandleFunc("/api/build-info", handleBuildInfo)
 	mux.HandleFunc("/api/scan", handleScan)
 	mux.HandleFunc("/api/queue/pause", handleQueuePause)
 	mux.HandleFunc("/api/queue/resume", handleQueueResume)
@@ -637,9 +832,40 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/api/task-events/export", handleTaskEventHistoryExport)
 	mux.HandleFunc("/api/tasks/", handleTaskAction)
 	mux.HandleFunc("/api/uploads", handleUploads)
+	mux.HandleFunc("/api/sync/configs", handleFolderSync)
+	mux.HandleFunc("/api/sync/local-directories", handleFolderSync)
+	mux.HandleFunc("/api/sync/configs/{config}/runs", handleFolderSync)
+	mux.HandleFunc("/api/sync/runs/{run}", handleFolderSync)
+	mux.HandleFunc("/api/sync/runs/{run}/analysis", handleDirectoryAnalysis)
+	mux.HandleFunc("/api/sync/runs/{run}/resolutions", handleSyncResolution)
+	mux.HandleFunc("/api/sync/runs/{run}/resolution-batches", handleSyncResolutionBatch)
+	mux.HandleFunc("/api/sync/resolution-batches/{batch}", handleSyncResolutionBatch)
+	mux.HandleFunc("/api/sync/resolution-batches/{batch}/checks", handleSyncResolutionBatchCheck)
+	mux.HandleFunc("/api/sync/resolution-batches/{batch}/execution", handleSyncResolutionBatchExecution)
+	mux.HandleFunc("/api/sync/resolution-batches/{batch}/verification", handleSyncResolutionBatchVerification)
+	mux.HandleFunc("/api/sync/resolution-batch-checks/{check}", handleSyncResolutionBatchCheck)
+	mux.HandleFunc("/api/sync/resolutions/{decision}", handleSyncResolution)
+	mux.HandleFunc("/api/sync/resolutions/{decision}/checks", handleSyncResolutionCheck)
+	mux.HandleFunc("/api/sync/resolution-checks/{check}", handleSyncResolutionCheck)
+	mux.HandleFunc("/api/sync/resolutions/{decision}/execution", handleSyncResolutionExecution)
+	mux.HandleFunc("/api/sync/resolutions/{decision}/verification", handleSyncResolutionVerification)
+	mux.HandleFunc("/api/sync/resolutions/{decision}/subtree", handleSyncResolutionSubtree)
+	mux.HandleFunc("/api/sync/resolutions/{decision}/subtree-plan", handleSyncSubtreeSteps)
+	mux.HandleFunc("/api/directory-analyses", handleDirectoryAnalysis)
+	mux.HandleFunc("/api/directory-analyses/{report}", handleDirectoryAnalysis)
+	mux.HandleFunc("/api/directory-analyses/{report}/groups/{group}/members", handleDirectoryAnalysis)
+	mux.HandleFunc("/api/uploads/settings/concurrency", handleUploadConcurrency)
+	mux.HandleFunc("/api/uploads/storage", handleUploadStorage)
 	mux.HandleFunc("/api/uploads/{batch}", handleUploads)
+	mux.HandleFunc("/api/uploads/{batch}/recovery", handleUploadRecovery)
+	mux.HandleFunc("/api/uploads/{batch}/items/{item}/session", handleUploadSessionDetails)
+	mux.HandleFunc("/api/uploads/{batch}/items/{item}/verify-receipt", handleUploadReceiptReconciliation)
+	mux.HandleFunc("/api/uploads/{batch}/transfer-statistics", handleUploadTransferStatistics)
 	mux.HandleFunc("/api/uploads/{batch}/{item}/content", handleUploads)
+	mux.HandleFunc("/api/uploads/{batch}/{item}/pause", handleUploadControl)
+	mux.HandleFunc("/api/uploads/{batch}/{item}/resume", handleUploadControl)
 	mux.HandleFunc("/api/cloud", intakeHTTP.HandleCloud)
+	mux.HandleFunc("/api/cloud-display-size", intakeHTTP.HandleCloudDisplaySize)
 	mux.HandleFunc("/api/cloud-inventory", intakeHTTP.HandleInventory)
 	mux.HandleFunc("/api/cloud-inventory/incomplete-directories", intakeHTTP.HandleIncompleteCloudInventoryDirectories)
 	mux.HandleFunc("/api/cloud-inventory/search", intakeHTTP.HandleInventorySearch)
@@ -649,6 +875,7 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/api/cloud-inventory/scan/events", intakeHTTP.HandleCloudScanHistoryEvents)
 	mux.HandleFunc("/api/cloud-inventory/scan/runs/{id}/export", intakeHTTP.HandleCloudScanHistoryExport)
 	mux.HandleFunc("/api/cloud-inventory/refresh", intakeHTTP.HandleInventoryRefresh)
+	mux.HandleFunc("/api/cloud-inventory/refresh/sync-log", intakeHTTP.HandleCacheSyncLog)
 	mux.HandleFunc("/api/cloud-inventory/refresh/events", intakeHTTP.HandleInventoryRefreshEvents)
 	mux.HandleFunc("/api/cloud-inventory/refresh/changes", intakeHTTP.HandleInventoryRefreshChanges)
 	mux.HandleFunc("/api/cloud-inventory/refresh/changes/export", intakeHTTP.HandleInventoryRefreshChangesExport)
@@ -664,6 +891,13 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/api/cloud-cleanup/duplicate-scan/runs/{id}/export", intakeHTTP.HandleDuplicateScanEvidenceExport)
 	mux.HandleFunc("/api/cloud-cleanup/duplicates", intakeHTTP.HandleDuplicatePreview)
 	mux.HandleFunc("/api/cloud/mutations", intakeHTTP.HandleCloudMutation)
+	mux.HandleFunc("/api/cloud/mutations/preview", intakeHTTP.HandleCloudBatchPreview)
+	mux.HandleFunc("/api/cloud/cleanup-revision", intakeHTTP.HandleCloudCleanupRevision)
+	mux.HandleFunc("/api/cloud/cleanup-batches", intakeHTTP.HandleCloudCleanupBatches)
+	mux.HandleFunc("/api/cloud/cleanup-batches/{id}", intakeHTTP.HandleCloudCleanupBatch)
+	mux.HandleFunc("/api/cloud/cleanup-batches/{id}/items", intakeHTTP.HandleCloudCleanupItems)
+	mux.HandleFunc("/api/cloud/cleanup-batches/{id}/events", intakeHTTP.HandleCloudCleanupEvents)
+	mux.HandleFunc("/api/cloud/cleanup-batches/{id}/stop", intakeHTTP.HandleCloudCleanupStop)
 	mux.HandleFunc("/api/cloud/operations/export", intakeHTTP.HandleCloudOperationExport)
 	mux.HandleFunc("/api/cloud/operations", intakeHTTP.HandleCloudOperations)
 	mux.HandleFunc("/api/cloud/operations/{id}/events", intakeHTTP.HandleCloudOperationEvents)
@@ -937,6 +1171,23 @@ func handleTaskAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[1] {
+	case "clear":
+		var body struct {
+			AcknowledgeReset bool   `json:"acknowledge_reset"`
+			ClearToken       string `json:"clear_token"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&body) != nil || !body.AcknowledgeReset || len(body.ClearToken) != 64 {
+			http.Error(w, "清理记录需要有效确认和当前记录令牌。", 400)
+			return
+		}
+		var extra any
+		if decoder.Decode(&extra) != io.EOF {
+			http.Error(w, "清理记录请求无效。", 400)
+			return
+		}
+		err = dl.ClearDownloadRecord(r.Context(), id, body.ClearToken)
 	case "cancel":
 		err = dl.Cancel(id)
 	case "retry":

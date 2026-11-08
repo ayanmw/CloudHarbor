@@ -80,12 +80,12 @@ func (d *Downloader) StartCloudInventoryScanWithLimit(ctx context.Context, reque
 	if err != nil {
 		return taskstore.CloudScanState{}, err
 	}
-	client, _, err := d.authorizedClient(scoped)
+	client, _, err := d.authorizedCloudClient(scoped)
 	if err != nil {
 		done()
 		return taskstore.CloudScanState{}, err
 	}
-	account := client.Fingerprint()
+	account := client.CloudCacheNamespace()
 	duplicateState, duplicateErr := d.queue.store.LoadCloudDuplicateScanState(account)
 	if duplicateErr == nil && (duplicateState.Status == "running" || duplicateState.Status == "paused") {
 		done()
@@ -225,11 +225,11 @@ func (d *Downloader) PauseCloudInventoryRefresh() {
 }
 
 func (d *Downloader) CloudInventoryScanStatus() (taskstore.CloudScanState, error) {
-	client, _, err := d.authorizedClient(d.ctx)
+	client, _, err := d.authorizedCloudClient(d.ctx)
 	if err != nil {
 		return taskstore.CloudScanState{}, err
 	}
-	state, coverage, err := d.queue.store.LoadCloudInventoryScanOverview(client.Fingerprint())
+	state, coverage, err := d.queue.store.LoadCloudInventoryScanOverview(client.CloudCacheNamespace())
 	if err != nil {
 		return state, err
 	}
@@ -241,14 +241,14 @@ func (d *Downloader) CloudInventoryScanStatus() (taskstore.CloudScanState, error
 }
 
 func (d *Downloader) CloudScanHistoryRuns(ctx context.Context, before int64, filter taskstore.CloudScanRunFilter, limit int) ([]taskstore.CloudScanRun, int64, bool, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, 0, false, err
 	}
 	if before < 0 || limit < 1 || limit > 100 {
 		return nil, 0, false, fmt.Errorf("invalid cloud scan history page")
 	}
-	runs, err := d.queue.store.ListCloudScanRunsFiltered(client.Fingerprint(), before, filter, limit+1)
+	runs, err := d.queue.store.ListCloudScanRunsFiltered(client.CloudCacheNamespace(), before, filter, limit+1)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -260,14 +260,14 @@ func (d *Downloader) CloudScanHistoryRuns(ctx context.Context, before int64, fil
 }
 
 func (d *Downloader) CloudScanHistoryEvents(ctx context.Context, runID string, before int64, limit int) ([]taskstore.CloudScanEvent, int64, bool, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, 0, false, err
 	}
 	if before < 0 || limit < 1 || limit > 100 {
 		return nil, 0, false, fmt.Errorf("invalid cloud scan event page")
 	}
-	events, err := d.queue.store.ListCloudScanEvents(client.Fingerprint(), runID, before, limit+1)
+	events, err := d.queue.store.ListCloudScanEvents(client.CloudCacheNamespace(), runID, before, limit+1)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -279,11 +279,11 @@ func (d *Downloader) CloudScanHistoryEvents(ctx context.Context, runID string, b
 }
 
 func (d *Downloader) CloudScanHistoryExport(ctx context.Context, runID string) (taskstore.CloudScanEvidenceBundle, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return taskstore.CloudScanEvidenceBundle{}, err
 	}
-	return d.queue.store.ExportCloudScanEvidence(ctx, client.Fingerprint(), runID)
+	return d.queue.store.ExportCloudScanEvidence(ctx, client.CloudCacheNamespace(), runID)
 }
 
 func (d *Downloader) StartCloudInventoryRefresh(ctx context.Context, directory string, requestBudget int64) (taskstore.CloudInventoryRefreshState, error) {
@@ -312,12 +312,12 @@ func (d *Downloader) StartCloudInventoryRefreshWithLimit(ctx context.Context, di
 	if err != nil {
 		return taskstore.CloudInventoryRefreshState{}, err
 	}
-	client, _, err := d.authorizedClient(scoped)
+	client, _, err := d.authorizedCloudClient(scoped)
 	if err != nil {
 		done()
 		return taskstore.CloudInventoryRefreshState{}, err
 	}
-	account := client.Fingerprint()
+	account := client.CloudCacheNamespace()
 	duplicateState, duplicateErr := d.queue.store.LoadCloudDuplicateScanState(account)
 	if duplicateErr == nil && (duplicateState.Status == "running" || duplicateState.Status == "paused") {
 		done()
@@ -423,13 +423,13 @@ func (d *Downloader) StartCloudInventoryRefreshWithLimit(ctx context.Context, di
 }
 
 func (d *Downloader) CloudInventoryRefreshStatus() (taskstore.CloudInventoryRefreshState, error) {
-	client, _, err := d.authorizedClient(d.ctx)
+	client, _, err := d.authorizedCloudClient(d.ctx)
 	if err != nil {
 		return taskstore.CloudInventoryRefreshState{}, err
 	}
-	state, err := d.queue.store.LoadCloudInventoryRefreshState(client.Fingerprint())
+	state, err := d.queue.store.LoadCloudInventoryRefreshState(client.CloudCacheNamespace())
 	if errors.Is(err, sql.ErrNoRows) {
-		return taskstore.CloudInventoryRefreshState{AccountFingerprint: client.Fingerprint(), Status: "idle", Phase: "idle"}, nil
+		return taskstore.CloudInventoryRefreshState{AccountFingerprint: client.CloudCacheNamespace(), Status: "idle", Phase: "idle"}, nil
 	}
 	if err == nil {
 		d.inventoryScanMutex.Lock()
@@ -440,14 +440,14 @@ func (d *Downloader) CloudInventoryRefreshStatus() (taskstore.CloudInventoryRefr
 }
 
 func (d *Downloader) CloudInventoryRefreshEventPage(ctx context.Context, runID, kind, restartReason string, before int64, limit int) ([]taskstore.CloudInventoryRefreshEvent, int64, bool, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, 0, false, err
 	}
 	if limit < 1 || limit > 100 {
 		return nil, 0, false, fmt.Errorf("invalid cloud inventory refresh event page size")
 	}
-	events, err := d.queue.store.ListCloudInventoryRefreshEventsFiltered(client.Fingerprint(), runID, kind, restartReason, before, limit+1)
+	events, err := d.queue.store.ListCloudInventoryRefreshEventsFiltered(client.CloudCacheNamespace(), runID, kind, restartReason, before, limit+1)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -459,22 +459,22 @@ func (d *Downloader) CloudInventoryRefreshEventPage(ctx context.Context, runID, 
 }
 
 func (d *Downloader) CloudInventoryRefreshChangePage(ctx context.Context, runID string, eventSequence, before int64, limit int, kind, query string) (taskstore.CloudInventoryRefreshChangePage, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return taskstore.CloudInventoryRefreshChangePage{}, err
 	}
 	if eventSequence <= 0 || before < 0 || limit < 1 || limit > 50 {
 		return taskstore.CloudInventoryRefreshChangePage{}, fmt.Errorf("invalid cloud inventory refresh change page")
 	}
-	return d.queue.store.QueryCloudInventoryRefreshChanges(client.Fingerprint(), runID, eventSequence, before, limit, kind, query)
+	return d.queue.store.QueryCloudInventoryRefreshChanges(client.CloudCacheNamespace(), runID, eventSequence, before, limit, kind, query)
 }
 
 func (d *Downloader) CloudInventoryRefreshChangesExport(ctx context.Context, runID string, eventSequence int64, kind, query string) (taskstore.CloudInventoryRefreshChangeExport, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return taskstore.CloudInventoryRefreshChangeExport{}, err
 	}
-	return d.queue.store.CloudInventoryRefreshChangesExport(ctx, client.Fingerprint(), runID, eventSequence, kind, query)
+	return d.queue.store.CloudInventoryRefreshChangesExport(ctx, client.CloudCacheNamespace(), runID, eventSequence, kind, query)
 }
 
 func (d *Downloader) CloudInventoryRefreshRuns(ctx context.Context, before int64, limit int) ([]taskstore.CloudInventoryRefreshRun, int64, bool, error) {
@@ -482,14 +482,14 @@ func (d *Downloader) CloudInventoryRefreshRuns(ctx context.Context, before int64
 }
 
 func (d *Downloader) CloudInventoryRefreshRunsFiltered(ctx context.Context, before int64, filter taskstore.CloudInventoryRefreshRunFilter, limit int) ([]taskstore.CloudInventoryRefreshRun, int64, bool, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, 0, false, err
 	}
 	if before < 0 || limit < 1 || limit > 100 {
 		return nil, 0, false, fmt.Errorf("invalid cloud inventory refresh run page")
 	}
-	runs, err := d.queue.store.ListCloudInventoryRefreshRunsFiltered(client.Fingerprint(), before, filter, limit+1)
+	runs, err := d.queue.store.ListCloudInventoryRefreshRunsFiltered(client.CloudCacheNamespace(), before, filter, limit+1)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -501,51 +501,67 @@ func (d *Downloader) CloudInventoryRefreshRunsFiltered(ctx context.Context, befo
 }
 
 func (d *Downloader) CloudInventoryRefreshEvidenceExport(ctx context.Context, runID string) (taskstore.CloudInventoryRefreshEvidenceBundle, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return taskstore.CloudInventoryRefreshEvidenceBundle{}, err
 	}
-	return d.queue.store.CloudInventoryRefreshEvidenceExport(ctx, client.Fingerprint(), runID)
+	return d.queue.store.CloudInventoryRefreshEvidenceExport(ctx, client.CloudCacheNamespace(), runID)
 }
 
 func (d *Downloader) CloudInventoryRefreshRunSummariesExport(ctx context.Context, filter taskstore.CloudInventoryRefreshRunFilter) ([]taskstore.CloudInventoryRefreshRun, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return d.queue.store.ExportCloudInventoryRefreshRunSummaries(ctx, client.Fingerprint(), filter)
+	return d.queue.store.ExportCloudInventoryRefreshRunSummaries(ctx, client.CloudCacheNamespace(), filter)
 }
 
 func (d *Downloader) ListCachedCloud(ctx context.Context, directory string, offset, limit int, expected *int64) ([]taskstore.CloudInventoryEntry, taskstore.CloudInventoryDirectory, int, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, taskstore.CloudInventoryDirectory{}, 0, err
 	}
-	return d.queue.store.ListCloudInventoryAtGeneration(client.Fingerprint(), directory, offset, limit, expected)
+	return d.queue.store.ListCloudInventoryAtGeneration(client.CloudCacheNamespace(), directory, offset, limit, expected)
 }
 
 func (d *Downloader) ListIncompleteCloudInventoryDirectories(ctx context.Context, beforePath, reason, query string, limit int, expected *int64) (taskstore.CloudInventoryIncompleteDirectoryPage, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return taskstore.CloudInventoryIncompleteDirectoryPage{}, err
 	}
-	return d.queue.store.ListCloudInventoryIncompleteDirectories(client.Fingerprint(), beforePath, reason, query, limit, expected)
+	return d.queue.store.ListCloudInventoryIncompleteDirectories(client.CloudCacheNamespace(), beforePath, reason, query, limit, expected)
 }
 
 func (d *Downloader) SearchCachedCloud(ctx context.Context, query string, offset, limit int, expected *int64) ([]taskstore.CloudInventoryEntry, int, taskstore.CloudInventorySearchCoverage, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, 0, taskstore.CloudInventorySearchCoverage{Status: "unknown"}, err
 	}
-	return d.queue.store.SearchCloudInventoryAtGeneration(client.Fingerprint(), query, offset, limit, expected)
+	return d.queue.store.SearchCloudInventoryAtGeneration(client.CloudCacheNamespace(), query, offset, limit, expected)
+}
+
+func (d *Downloader) SearchCachedCloudDirectories(ctx context.Context, query string, offset, limit int, expected *int64) ([]taskstore.CloudInventoryEntry, int, taskstore.CloudInventorySearchCoverage, error) {
+	client, _, err := d.authorizedCloudClient(ctx)
+	if err != nil {
+		return nil, 0, taskstore.CloudInventorySearchCoverage{Status: "unknown"}, err
+	}
+	return d.queue.store.SearchCloudDirectoriesAtGeneration(client.CloudCacheNamespace(), query, offset, limit, expected)
+}
+
+func (d *Downloader) SearchCachedCloudFiltered(ctx context.Context, query string, offset, limit int, expected *int64, filter taskstore.CloudInventorySearchFilter) ([]taskstore.CloudInventoryEntry, int, taskstore.CloudInventorySearchCoverage, error) {
+	client, _, err := d.authorizedCloudClient(ctx)
+	if err != nil {
+		return nil, 0, taskstore.CloudInventorySearchCoverage{Status: "unknown"}, err
+	}
+	return d.queue.store.SearchCloudInventoryFilteredAtGeneration(client.CloudCacheNamespace(), query, offset, limit, expected, filter)
 }
 
 func (d *Downloader) GetCachedCloudDirectorySize(ctx context.Context, directory string) (taskstore.CloudDirectorySize, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return taskstore.CloudDirectorySize{}, err
 	}
-	return d.queue.store.CloudDirectorySize(client.Fingerprint(), directory)
+	return d.queue.store.CloudDirectorySize(client.CloudCacheNamespace(), directory)
 }
 
 func (d *Downloader) saveCloudScanState(state taskstore.CloudScanState) error {
@@ -604,8 +620,8 @@ func (d *Downloader) runCloudInventoryScan(ctx context.Context, state taskstore.
 			return
 		}
 		d.cloudMutex.RLock()
-		client, _, err := d.authorizedClient(ctx)
-		if err == nil && client.Fingerprint() != state.AccountFingerprint {
+		client, epoch, err := d.authorizedCloudClient(ctx)
+		if err == nil && client.CloudCacheNamespace() != state.AccountFingerprint {
 			err = ErrAuthenticationWaiting
 		}
 		var files []structFileInfo
@@ -651,6 +667,11 @@ func (d *Downloader) runCloudInventoryScan(ctx context.Context, state taskstore.
 				if err == nil && boundary != nil && !validListingFile(directory, *boundary) {
 					err = ErrIntakeConflict
 				}
+			}
+		}
+		if err == nil {
+			if _, checkErr := d.intakeClient(ctx, epoch); checkErr != nil {
+				err = ErrAuthenticationWaiting
 			}
 		}
 		if err != nil {
@@ -743,8 +764,17 @@ func (d *Downloader) runCloudInventoryScan(ctx context.Context, state taskstore.
 		if d.inventoryPageCommitHook != nil {
 			d.inventoryPageCommitHook(directory)
 		}
-		if err = d.queue.store.UpsertCloudInventoryScanPage(&pageState, directory, entries, observed, next, nil); err != nil {
+		if err = d.commitCloudCacheObservation(ctx, epoch, func() error {
+			return d.queue.store.UpsertCloudInventoryScanPage(&pageState, directory, entries, observed, next, nil)
+		}); err != nil {
 			d.cloudMutex.RUnlock()
+			if errors.Is(err, ErrAuthenticationWaiting) {
+				state.Status, state.Phase = "paused", "paused"
+				state.LastError = ErrAuthenticationWaiting.Error()
+				state.UpdatedAtUTC = time.Now().UTC()
+				_ = d.saveCloudScanState(state)
+				return
+			}
 			if state.NextOffset > 0 && errors.Is(err, taskstore.ErrCloudInventoryDuplicateAcrossPages) {
 				restarted, restartErr := d.queue.store.RestartCloudScanBoundary(state, time.Now().UTC())
 				if restartErr == nil {
@@ -830,8 +860,8 @@ func (d *Downloader) runCloudInventoryRefresh(ctx context.Context, state tasksto
 			return
 		}
 		d.cloudMutex.RLock()
-		client, _, err := d.authorizedClient(ctx)
-		if err == nil && client.Fingerprint() != state.AccountFingerprint {
+		client, epoch, err := d.authorizedCloudClient(ctx)
+		if err == nil && client.CloudCacheNamespace() != state.AccountFingerprint {
 			err = ErrAuthenticationWaiting
 		}
 		var files []structFileInfo
@@ -879,6 +909,11 @@ func (d *Downloader) runCloudInventoryRefresh(ctx context.Context, state tasksto
 				if err == nil && boundary != nil && !validListingFile(directory, *boundary) {
 					err = ErrIntakeConflict
 				}
+			}
+		}
+		if err == nil {
+			if _, checkErr := d.intakeClient(ctx, epoch); checkErr != nil {
+				err = ErrAuthenticationWaiting
 			}
 		}
 		if err != nil {
@@ -978,8 +1013,17 @@ func (d *Downloader) runCloudInventoryRefresh(ctx context.Context, state tasksto
 		if d.inventoryPageCommitHook != nil {
 			d.inventoryPageCommitHook(directory)
 		}
-		if err = d.queue.store.UpsertCloudInventoryRefreshPage(&pageState, directory, entries, observed, next, nil); err != nil {
+		if err = d.commitCloudCacheObservation(ctx, epoch, func() error {
+			return d.queue.store.UpsertCloudInventoryRefreshPage(&pageState, directory, entries, observed, next, nil)
+		}); err != nil {
 			d.cloudMutex.RUnlock()
+			if errors.Is(err, ErrAuthenticationWaiting) {
+				state.Status, state.Phase = "paused", "paused"
+				state.LastError = ErrAuthenticationWaiting.Error()
+				state.UpdatedAtUTC = time.Now().UTC()
+				_ = d.queue.store.SaveCloudInventoryRefreshState(state)
+				return
+			}
 			// A repeated ID across staged pages is the store-level equivalent of
 			// a repeated provider page item, so retry this offset sequence from page one.
 			if state.NextOffset > 0 && errors.Is(err, taskstore.ErrCloudInventoryDuplicateAcrossPages) {

@@ -2855,7 +2855,7 @@ func TestApplyConfirmedCloudMutationReconcilesOnlineIdentityOverStaleCache(t *te
 		t.Fatal(err)
 	}
 	defer store.Close()
-	now := time.Date(2026, 10, 30, 6, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 30, 6, 0, 0, 123456789, time.UTC)
 	if err = store.UpsertCloudInventoryPage("acct", "root", "/", []CloudInventoryEntry{{FsID: 71, Path: "/docs", Name: "docs", Directory: true}, {FsID: 72, Path: "/archive", Name: "archive", Directory: true}}, now, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -2896,14 +2896,32 @@ func TestApplyConfirmedCloudMutationReconcilesOnlineIdentityOverStaleCache(t *te
 	if err = store.db.QueryRow(`SELECT count(*) FROM cloud_content_hashes WHERE account_fingerprint='acct' AND fs_id=73`).Scan(&hashes); err != nil {
 		t.Fatal(err)
 	}
+	// Cache reconciliation shares the remote-operation nanosecond schema,
+	// even though the inventory tables store microseconds.
+	var observed int64
+	if err = store.db.QueryRow(`SELECT response_observed_at_utc FROM remote_operation_events WHERE operation_id=? ORDER BY sequence DESC LIMIT 1`, opID).Scan(&observed); err != nil {
+		t.Fatal(err)
+	}
+	if !time.Unix(0, observed).UTC().Equal(now.Add(time.Second)) {
+		t.Fatalf("cache reconciliation observation lost its unit/precision: got %s want %s", time.Unix(0, observed).UTC(), now.Add(time.Second))
+	}
+	bundle, err := store.RemoteOperationEvidenceExport(context.Background(), opID)
+	if err != nil || len(bundle.Events) == 0 {
+		t.Fatalf("read reconciliation evidence: %+v %v", bundle, err)
+	}
+	last := bundle.Events[len(bundle.Events)-1]
+	if last.ResponseObservedAtUTC == nil || !last.ResponseObservedAtUTC.Equal(now.Add(time.Second)) {
+		t.Fatalf("exported reconciliation observation differs: %+v", last)
+	}
 	var eventBody []byte
 	if err = store.db.QueryRow(`SELECT evidence_json FROM remote_operation_events WHERE operation_id=? ORDER BY sequence DESC LIMIT 1`, opID).Scan(&eventBody); err != nil {
 		t.Fatal(err)
 	}
 	var event struct {
-		Kind string `json:"event"`
+		Kind     string    `json:"event"`
+		Observed time.Time `json:"response_observed_at_utc"`
 	}
-	if err = json.Unmarshal(eventBody, &event); err != nil || event.Kind != "cache_refresh_reconciled" || oldRows != 0 || hashes != 0 {
+	if err = json.Unmarshal(eventBody, &event); err != nil || event.Kind != "cache_refresh_reconciled" || !event.Observed.Equal(now.Add(time.Second)) || oldRows != 0 || hashes != 0 {
 		t.Fatalf("stale cache/hash/evidence not reconciled: old=%d hashes=%d event=%s err=%v", oldRows, hashes, eventBody, err)
 	}
 }

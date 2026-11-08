@@ -50,28 +50,72 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 	if request.Operation != "mkdir" && request.Expected.IsDir == 1 && insideCloud(queueDir, request.Expected.Path) {
 		return CloudMutationResult{}, ErrIntakeInvalid
 	}
-	if request.Operation == "move" && request.Expected.IsDir == 1 && insideCloud(request.DestinationDirectory, request.Expected.Path) {
+	if (request.Operation == "move" || request.Operation == "copy") && request.Expected.IsDir == 1 && insideCloud(request.DestinationDirectory, request.Expected.Path) {
 		return CloudMutationResult{}, ErrIntakeInvalid
 	}
-	if err = d.reserveCloudInventoryScan("下载队列正在维护，暂不能执行网盘变更"); err != nil {
-		return CloudMutationResult{}, err
+	var releaseAdmission func()
+	groupedUpload := scoped.Value(uploadLeaseContextKey{}) != nil
+	if groupedUpload {
+		if request.Operation != "mkdir" {
+			return CloudMutationResult{}, ErrIntakeInvalid
+		}
+		releaseAdmission, err = d.acquireUploadNamespace(scoped)
+		if err != nil {
+			return CloudMutationResult{}, err
+		}
+	} else {
+		if err = d.reserveCloudInventoryScan("下载队列正在维护，暂不能执行网盘变更"); err != nil {
+			return CloudMutationResult{}, err
+		}
+		releaseAdmission = func() { d.inventoryScanMutex.Lock(); d.inventoryScanStarting = false; d.inventoryScanMutex.Unlock() }
 	}
-	defer func() {
-		d.inventoryScanMutex.Lock()
-		d.inventoryScanStarting = false
-		d.inventoryScanMutex.Unlock()
-	}()
-	if err = d.BeginMaintenance(scoped); err != nil {
+	defer releaseAdmission()
+	if groupedUpload {
+		err = d.beginUploadMaintenance(scoped)
+	} else {
+		err = d.BeginMaintenance(scoped)
+	}
+	if err != nil {
 		return CloudMutationResult{}, err
 	}
 	defer d.EndMaintenance()
 	d.cloudMutex.Lock()
 	defer d.cloudMutex.Unlock()
-	client, epoch, err := d.authorizedClient(scoped)
+	client, epoch, err := d.authorizedCloudClient(scoped)
 	if err != nil {
 		return CloudMutationResult{}, err
 	}
-	account := client.Fingerprint()
+	account := client.CloudCacheNamespace()
+	// Every mutation must respect unresolved source and destination evidence.
+	// Acting on an ancestor can also move, remove or duplicate an isolated child.
+	d.queue.mu.Lock()
+	blocked := d.queue.isCloudMutationBlocked(request.Expected.FsID, request.Expected.Path)
+	// An unresolved deletion can still be visible online. Such an object cannot
+	// serve as the safety copy for deleting another duplicate.
+	if retained := request.ExpectedRetained; retained != nil {
+		blocked = blocked || d.queue.isCloudMutationBlocked(retained.FsID, retained.Path)
+	}
+	if target != "" {
+		blocked = blocked || d.queue.isCloudMutationBlocked(0, target)
+	}
+	for _, paths := range []map[string]bool{d.queue.blockedRemotePaths, d.queue.blockedSources, d.queue.blockedIntakes, d.queue.blockedIntakeSources} {
+		for uncertainPath := range paths {
+			if uncertainPath == "" {
+				continue
+			}
+			if (request.Expected.IsDir == 1 && request.Expected.Path != "" && insideCloud(uncertainPath, request.Expected.Path)) || (target != "" && insideCloud(uncertainPath, target)) {
+				blocked = true
+				break
+			}
+		}
+	}
+	d.queue.mu.Unlock()
+	if blocked {
+		return CloudMutationResult{}, fmt.Errorf("%w：%w", ErrIntakeConflict, errCloudMutationQuarantined)
+	}
+	if err = d.queue.store.InvalidateIdleDuplicateCheckpoint(account); err != nil {
+		return CloudMutationResult{}, err
+	}
 	scanConflict, err := d.queue.store.CloudMutationScanConflict(account, mutationCachePaths(request, target))
 	if err != nil {
 		return CloudMutationResult{}, err
@@ -85,6 +129,26 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 			return CloudMutationResult{}, err
 		}
 		if err = ensureNameAvailable(client, request.DestinationDirectory, request.NewName); err != nil {
+			// Another group member can create this parent while we await the
+			// namespace gate. Only a unique online directory can satisfy it;
+			// unknown targets were rejected above, never inferred from existence.
+			if groupedUpload && errors.Is(err, ErrIntakeConflict) {
+				entries, readErr := client.ListDir(request.DestinationDirectory)
+				if readErr != nil {
+					return CloudMutationResult{}, readErr
+				}
+				var found baiduapi.FileInfo
+				count := 0
+				for _, entry := range entries {
+					if strings.EqualFold(entry.ServerFilename, request.NewName) {
+						found = entry
+						count++
+					}
+				}
+				if count == 1 && found.IsDir == 1 && found.FsID > 0 && found.Path == target && found.ServerFilename == request.NewName {
+					return CloudMutationResult{Status: "existing", ObjectID: found.FsID, DestinationPath: target}, nil
+				}
+			}
 			return CloudMutationResult{}, err
 		}
 	} else {
@@ -93,7 +157,7 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 			return CloudMutationResult{}, readErr
 		}
 		if !sameCloudIdentity(request.Expected, current) {
-			return CloudMutationResult{}, ErrIntakeStale
+			return CloudMutationResult{}, cleanupStale(errCleanupSourceChanged)
 		}
 		beforeInfo = current
 		if request.ExpectedContentSHA256 != "" {
@@ -108,14 +172,14 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 				return CloudMutationResult{}, hashErr
 			}
 			if digest != request.ExpectedContentSHA256 {
-				return CloudMutationResult{}, ErrIntakeStale
+				return CloudMutationResult{}, cleanupStale(errCleanupContentChanged)
 			}
 			current, readErr = client.GetFileInfo(request.Expected.FsID)
 			if readErr != nil {
 				return CloudMutationResult{}, readErr
 			}
 			if !sameCloudIdentity(request.Expected, current) {
-				return CloudMutationResult{}, ErrIntakeStale
+				return CloudMutationResult{}, cleanupStale(errCleanupSourceChanged)
 			}
 		}
 		if request.RequireEmptyDirectory {
@@ -127,10 +191,10 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 				return CloudMutationResult{}, listErr
 			}
 			if len(children) != 0 {
-				return CloudMutationResult{}, ErrIntakeConflict
+				return CloudMutationResult{}, fmt.Errorf("%w：%w", ErrIntakeConflict, errCleanupDirectoryNotEmpty)
 			}
 		}
-		if request.Operation == "move" {
+		if request.Operation == "move" || request.Operation == "copy" {
 			if err = verifyDirectory(client, request.DestinationDirectory); err != nil {
 				return CloudMutationResult{}, err
 			}
@@ -155,10 +219,10 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 			return CloudMutationResult{}, err
 		}
 		if !sameCloudIdentity(request.Expected, beforeInfo) {
-			return CloudMutationResult{}, ErrIntakeStale
+			return CloudMutationResult{}, cleanupStale(errCleanupSourceChanged)
 		}
 	}
-	client, err = d.intakeClient(scoped, epoch)
+	client, err = d.cloudIntakeClient(scoped, epoch)
 	if err != nil {
 		return CloudMutationResult{}, err
 	}
@@ -168,19 +232,50 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 	}
 	objectID := request.Expected.FsID
 	storeOperation := taskstore.RemoteOperation{ID: operationID, AccountFingerprint: client.Fingerprint(), Kind: request.Operation, ObjectID: objectID, SourcePath: request.Expected.Path, DestinationPath: target, Status: "prepared", CreatedAtUTC: time.Now().UTC()}
-	preparedEvidence := map[string]any{"expected": request.Expected, "destination_directory": request.DestinationDirectory, "new_name": request.NewName, "auth_epoch": epoch}
+	preparedEvidence := map[string]any{"expected": request.Expected, "destination_directory": request.DestinationDirectory, "new_name": request.NewName, "auth_epoch": epoch, "cache_namespace": client.CloudCacheNamespace()}
 	if request.ExpectedContentSHA256 != "" || request.RequireEmptyDirectory {
 		preparedEvidence["cleanup_verification"] = map[string]any{"expected_content_sha256": request.ExpectedContentSHA256, "expected_retained": request.ExpectedRetained, "require_empty_directory": request.RequireEmptyDirectory, "checks_completed_at_utc": time.Now().UTC()}
 	}
 	storeOperation.Evidence, _ = json.Marshal(preparedEvidence)
-	if err = d.queue.store.CreateRemoteOperation(storeOperation); err != nil {
+	// Keep the owning upload batch's admission lock through prepared intent
+	// persistence, then release it before any provider network request.
+	releaseBatchAdmission := func(error) {}
+	if groupedUpload {
+		releaseBatchAdmission, err = baiduapi.AcquireUploadNamespaceAdmission(scoped, target, operationID)
+		if err != nil {
+			return CloudMutationResult{}, err
+		}
+	}
+	if admission, ok := scoped.Value(cleanupAdmissionContextKey{}).(cleanupAdmission); ok {
+		if request.Operation != "delete" {
+			return CloudMutationResult{}, ErrIntakeInvalid
+		}
+		currentScope, scopeErr := d.cleanupScope(scoped)
+		if scopeErr != nil {
+			return CloudMutationResult{}, scopeErr
+		}
+		if currentScope != admission.Scope {
+			return CloudMutationResult{}, ErrIntakeStale
+		}
+		err = d.commitCloudCacheObservation(scoped, epoch, func() error {
+			return d.queue.store.PrepareCleanupOperation(scoped, admission.ID, admission.Ordinal, admission.Scope, storeOperation)
+		})
+	} else {
+		err = d.queue.store.CreateRemoteOperation(storeOperation)
+	}
+	releaseBatchAdmission(err)
+	if err != nil {
 		return CloudMutationResult{}, err
 	}
 	switch request.Operation {
 	case "mkdir":
 		err = client.CreateDirectory(target)
-	case "move":
-		err = client.MoveFile(request.Expected.Path, request.DestinationDirectory, path.Base(target))
+	case "move", "copy":
+		if request.Operation == "copy" {
+			err = client.CopyFile(request.Expected.Path, request.DestinationDirectory, path.Base(target))
+		} else {
+			err = client.MoveFile(request.Expected.Path, request.DestinationDirectory, path.Base(target))
+		}
 	case "rename":
 		err = client.RenameFile(request.Expected.Path, request.NewName)
 	case "delete":
@@ -205,7 +300,7 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 				result.Warning = "远端操作结果未知，SQLite 未能记录 unknown 状态；来源已在当前进程隔离，重启后会恢复"
 				d.quarantineCloudMutationSource(objectID, request.Expected.Path, target)
 				diagnostic := errorSummary(persistErr.Error())
-				if invalidateErr := d.queue.store.InvalidateCloudInventory(client.Fingerprint(), mutationCachePaths(request, target)); invalidateErr != nil {
+				if invalidateErr := d.queue.store.InvalidateCloudInventory(client.CloudCacheNamespace(), mutationCachePaths(request, target)); invalidateErr != nil {
 					result.Warning += "；本地缓存暂未能标为失效"
 					diagnostic += "; cache invalidation failed: " + errorSummary(invalidateErr.Error())
 				} else {
@@ -219,7 +314,7 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 		}
 		result.Status = status
 		if status == "unknown" {
-			invalidateErr := d.queue.store.InvalidateCloudInventory(client.Fingerprint(), mutationCachePaths(request, target))
+			invalidateErr := d.queue.store.InvalidateCloudInventory(client.CloudCacheNamespace(), mutationCachePaths(request, target))
 			if invalidateErr != nil {
 				result.Warning = "远端操作结果未知，且本地目录缓存暂未能标为失效；重启后会重试缓存恢复"
 				if eventErr := d.queue.store.RecordRemoteCacheRefreshFailure(operationID, errorSummary(invalidateErr.Error())); eventErr != nil {
@@ -240,9 +335,23 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 	}
 	evidence, _ := json.Marshal(map[string]any{"provider_response": "synchronous_success", "response_observed_at_utc": responseAt})
 	if err = d.queue.store.UpdateRemoteOperation(operationID, "confirmed", evidence, responseAt); err != nil {
+		if request.Operation == "copy" || request.Operation == "mkdir" {
+			// A successful remote copy without a durable receipt must remain
+			// quarantined now, as its prepared journal will be after restart.
+			// mkdir has the same persistence window before restart recovery.
+			result.Status = "unknown"
+			result.Warning = "复制成功回执未能持久化，源和目标已隔离；请核对操作记录，不要重发"
+			if request.Operation == "mkdir" {
+				result.Warning = "新建目录成功回执未能持久化，目标已隔离；请核对操作记录，不要重发"
+			}
+			d.quarantineCloudMutationSource(objectID, request.Expected.Path, target)
+		}
 		return result, fmt.Errorf("远端操作已成功，但结果无法持久化: %w", err)
 	}
 	result.Status = "confirmed"
+	if request.Operation == "copy" {
+		return d.finishConfirmedCopy(client, request, target, result, epoch)
+	}
 	mutation := taskstore.CloudInventoryMutation{OperationID: operationID, Operation: request.Operation, ResponseObservedAtUTC: responseAt}
 	if request.Operation != "mkdir" {
 		mutation.Before = cloudInventoryEntry(beforeInfo)
@@ -281,7 +390,11 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 	}
 	if observationErr == nil {
 		var applied bool
-		applied, err = d.queue.store.ApplyConfirmedCloudMutation(account, mutation)
+		err = d.commitCloudCacheObservation(scoped, epoch, func() error {
+			var applyErr error
+			applied, applyErr = d.queue.store.ApplyConfirmedCloudMutation(account, mutation)
+			return applyErr
+		})
 		if err != nil {
 			observationErr = err
 		} else if !applied {
@@ -317,7 +430,11 @@ func (d *Downloader) MutateCloud(ctx context.Context, request CloudMutationReque
 	if scanErr != nil {
 		return result, fmt.Errorf("远端操作已确认，下载队列核对失败: %w", scanErr)
 	}
-	if cacheRecoveryDurable {
+	_, cleanupBatch := scoped.Value(cleanupAdmissionContextKey{}).(cleanupAdmission)
+	// A cleanup warning must stop the fixed batch, even if cache invalidation
+	// succeeded. Withhold the continuation proof so restart stays conservative
+	// when saving the warning itself also failed; keep the confirmed receipt.
+	if cacheRecoveryDurable && (!cleanupBatch || result.Warning == "") {
 		if err = d.queue.store.MarkRemoteOperationLocalReconciliationComplete(operationID); err != nil {
 			return result, fmt.Errorf("远端操作已确认，但本地同步完成证据无法持久化: %w", err)
 		}
@@ -347,18 +464,18 @@ func cloudInventoryEntry(info baiduapi.FileInfo) taskstore.CloudInventoryEntry {
 }
 
 func (d *Downloader) PreviewEmptyCloudDirectories(ctx context.Context) ([]taskstore.CloudInventoryEntry, error) {
-	client, _, err := d.authorizedClient(ctx)
+	client, _, err := d.authorizedCloudClient(ctx)
 	if err != nil {
 		return nil, err
 	}
-	state, err := d.queue.store.LoadCloudScanState(client.Fingerprint())
+	state, err := d.queue.store.LoadCloudScanState(client.CloudCacheNamespace())
 	if err != nil {
 		return nil, err
 	}
 	if state.Status != "complete" {
 		return nil, fmt.Errorf("%w：全盘缓存扫描尚未完整，不能安全生成空目录清理候选", ErrIntakeConflict)
 	}
-	items, err := d.queue.store.ListCompleteEmptyCloudDirectories(client.Fingerprint())
+	items, err := d.queue.store.ListCompleteEmptyCloudDirectories(client.CloudCacheNamespace())
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +521,7 @@ func validateCloudMutation(request CloudMutationRequest) (string, error) {
 			return "", ErrIntakeInvalid
 		}
 		return path.Join(request.DestinationDirectory, request.NewName), nil
-	case "move":
+	case "move", "copy":
 		if request.Expected.FsID <= 0 || !validCloudPath(request.Expected.Path) || !validCloudPath(request.DestinationDirectory) || request.Expected.Path == "/" {
 			return "", ErrIntakeInvalid
 		}
