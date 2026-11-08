@@ -1,12 +1,12 @@
 # 版本维护规则（2026-11-04起生效）
 
-用户已结束v0.8.30并明确进入v0.8.31。当前版本由[配置](../../release/current-version.json)指定；[v0.8.31内容说明](../releases/v0.8.31.zh-CN.md)持续维护。
+用户2026-11-08明确要求开始下一个版本，现进入v0.8.32。当前版本由[配置](../../release/current-version.json)指定；[v0.8.32内容说明](../releases/v0.8.32.zh-CN.md)持续维护。
 
 ## 固定版本
 
 1. 当前版本内持续合并功能、修复、UI/UE和验证，同一运行目录与ZIP覆盖更新，不再递增preview号。
 2. 只有用户明确说“开始下一个版本”或明确指定新版本才切版。功能数、验收通过、普通“继续”及打包请求都不构成切版授权。
-3. 切版时归档本地源码，在新版本启动基线建立同名annotated Git tag。此次创建v0.8.31，含义为启动基线；同版后续更新不移动该tag。最终内容用持续版本说明、Git提交与每包SOURCE-SNAPSHOT定位。
+3. 切版时归档本地源码，在新版本启动基线建立同名annotated Git tag。此次创建v0.8.32，含义为启动基线；同版后续更新不移动该tag。最终内容用持续版本说明、Git提交与每包SOURCE-SNAPSHOT定位。
 4. 旧的至少五项门槛和自动规划/发布下一编号机制停止生效；历史包不清理、不改名。[旧规则与交付记录](release-versioning-history.zh-CN.md)仅供回溯。
 
 ## 内容说明与更新证据
@@ -26,10 +26,10 @@
 # 默认当前版本；同版存在时原位更新。
 .\scripts\package.ps1 -AllowDirty
 # 显式指定当前版本。
-.\scripts\package.ps1 -Version v0.8.31 -AllowDirty -UpdateCurrent
+.\scripts\package.ps1 -Version v0.8.32 -AllowDirty -UpdateCurrent
 ```
 
-本地提交不包含push。下次版本名称和切版时点由用户决定；路线图候选不提前创建v0.8.32。
+本地提交不包含push。下次版本名称和切版时点由用户决定；后续候选不提前分配版本号。
 
 ## 包内说明与本地事务检查
 
