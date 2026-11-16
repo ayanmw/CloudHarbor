@@ -89,7 +89,18 @@ func openSQLiteMode(path, scope string, initialize bool) (*sql.DB, error) {
 		}
 	}
 	if initialize {
-		if _, err = db.ExecContext(ctx, `
+		// Windows CI exposed per-DDL full-sync commits exceeding the original
+		// startup deadline. Keep full durability, but publish the schema atomically.
+		tx, beginErr := db.BeginTx(ctx, nil)
+		if beginErr != nil {
+			return fail(beginErr)
+		}
+		defer tx.Rollback()
+		rollbackFail := func(err error) (*sql.DB, error) {
+			tx.Rollback()
+			return fail(err)
+		}
+		if _, err = tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS store_meta (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -416,15 +427,18 @@ CREATE INDEX IF NOT EXISTS job_events_recorded_sequence ON job_events(recorded_a
 CREATE TRIGGER IF NOT EXISTS job_events_no_update BEFORE UPDATE ON job_events BEGIN SELECT RAISE(ABORT, 'job events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS job_events_no_delete BEFORE DELETE ON job_events BEGIN SELECT RAISE(ABORT, 'job events are append-only'); END;
 		`); err != nil {
-			return fail(err)
+			return rollbackFail(err)
 		}
-		if _, err = db.ExecContext(ctx, downloadManifestSchema); err != nil {
-			return fail(err)
+		if _, err = tx.ExecContext(ctx, downloadManifestSchema); err != nil {
+			return rollbackFail(err)
 		}
-		if _, err = db.ExecContext(ctx, cleanupBatchSchema); err != nil {
-			return fail(err)
+		if _, err = tx.ExecContext(ctx, cleanupBatchSchema); err != nil {
+			return rollbackFail(err)
 		}
-		if _, err = db.ExecContext(ctx, `INSERT OR IGNORE INTO store_meta(key, value) VALUES('schema_version', ?), ('scope', ?)`, fmt.Sprint(sqliteSchemaVersion), scope); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO store_meta(key, value) VALUES('schema_version', ?), ('scope', ?)`, fmt.Sprint(sqliteSchemaVersion), scope); err != nil {
+			return rollbackFail(err)
+		}
+		if err = tx.Commit(); err != nil {
 			return fail(err)
 		}
 		if err = validateSQLiteSchemaAndScope(ctx, db, scope); err != nil {
