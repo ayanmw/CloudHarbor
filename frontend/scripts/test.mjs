@@ -1,4 +1,5 @@
 import "./ui-shell.test.mjs";
+import "./ui-local-library.test.mjs";
 import "./ui-workspace.test.mjs";
 import "./ui-events.test.mjs";
 import "./ui-monitor.test.mjs";

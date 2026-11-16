@@ -270,7 +270,8 @@ func rejectSymlinks(root, relative string) error {
 		if err != nil {
 			return err
 		}
-		if stat.Mode()&os.ModeSymlink != 0 {
+		// Current Go versions classify Windows junctions separately from symlinks.
+		if stat.Mode()&os.ModeSymlink != 0 || localPathReparse(stat) {
 			return fmt.Errorf("symbolic link rejected: %s", current)
 		}
 	}

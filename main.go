@@ -34,6 +34,7 @@ import (
 	"github.com/ayanmw/CloudHarbor/internal/downloader"
 	"github.com/ayanmw/CloudHarbor/internal/foldersync"
 	"github.com/ayanmw/CloudHarbor/internal/intakeapi"
+	"github.com/ayanmw/CloudHarbor/internal/library"
 	"github.com/ayanmw/CloudHarbor/internal/management"
 	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 	"github.com/ayanmw/CloudHarbor/internal/uploads"
@@ -296,6 +297,13 @@ func main() {
 		log.Fatal(err)
 	}
 	defer folderSyncManager.Close()
+	libraryManager, err = library.Open(filepath.Join(cfg.StateDir, "library"), func() []string {
+		return []string{cfg.StateDir, filepath.Join(dl.GetManagedPaths().LocalDownDir, ".nas-downloader"), filepath.Join(workDir, ".env")}
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer libraryManager.Close()
 	if err = uploadManager.RestoreDirectoryIsolation(dl.QuarantineUploadDirectory); err != nil {
 		log.Fatal(err)
 	}
@@ -616,6 +624,15 @@ func sameLocalSettingPath(a, b string) bool {
 
 var uploadManager *uploads.Manager
 var folderSyncManager *foldersync.Manager
+var libraryManager *library.Manager
+
+func handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
+	if libraryManager == nil {
+		http.Error(w, "本站文件库暂不可用", http.StatusServiceUnavailable)
+		return
+	}
+	libraryManager.Handle(w, r)
+}
 
 func handleFolderSync(w http.ResponseWriter, r *http.Request) {
 	if folderSyncManager == nil {
@@ -822,6 +839,9 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/api/monitor-scans/{id}/export", intakeHTTP.HandleQueueMonitorScanExport)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/build-info", handleBuildInfo)
+	mux.HandleFunc("/api/library/config", handleLocalLibrary)
+	mux.HandleFunc("/api/library/entries", handleLocalLibrary)
+	mux.HandleFunc("/api/library/content", handleLocalLibrary)
 	mux.HandleFunc("/api/scan", handleScan)
 	mux.HandleFunc("/api/queue/pause", handleQueuePause)
 	mux.HandleFunc("/api/queue/resume", handleQueueResume)

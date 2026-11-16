@@ -26,3 +26,6 @@ jobs:
 
     - name: Test
       run: go test -p 1 ./...
+
+    - name: Local library concurrency checks
+      run: go test -race ./internal/library

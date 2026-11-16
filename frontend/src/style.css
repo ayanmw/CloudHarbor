@@ -1262,3 +1262,6 @@ tr:hover .row-arrow {
 .download-overview-table td:last-child{background:white}
 .download-overview-table td:nth-child(2) .badge{white-space:normal;line-height:1.35}
 .task-transfer-summary{display:block;margin-top:5px;font-size:12px;color:var(--muted,#6f7d91);line-height:1.5;white-space:normal;overflow-wrap:anywhere}
+
+/* v0.8.33 mobile acceptance: five core modules must remain horizontal. */
+@media(max-width:760px){.app-module-nav a{padding:6px 4px;white-space:nowrap}}

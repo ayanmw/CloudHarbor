@@ -102,7 +102,7 @@ func resolveLocalPath(name string) (string, error) {
 	probe := absolute
 	missing := make([]string, 0, 4)
 	for {
-		resolved, resolveErr := filepath.EvalSymlinks(probe)
+		resolved, resolveErr := resolveExistingLocalPath(probe)
 		if resolveErr == nil {
 			for i := len(missing) - 1; i >= 0; i-- {
 				resolved = filepath.Join(resolved, missing[i])

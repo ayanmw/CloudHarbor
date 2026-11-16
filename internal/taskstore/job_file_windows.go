@@ -33,7 +33,7 @@ func openJobFile(name string) (*os.File, error) {
 		f.Close()
 		return nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	if info.Mode()&os.ModeSymlink != 0 || statePathReparse(info) {
 		f.Close()
 		return nil, fmt.Errorf("state path is a symlink: %s", name)
 	}

@@ -1,0 +1,1 @@
+import{c as r}from"./WorkspaceSidebar.vue_vue_type_script_setup_true_lang-BSQ0biTs.js";const a=r("ArrowUpIcon",[["path",{d:"m5 12 7-7 7 7",key:"hav0vg"}],["path",{d:"M12 19V5",key:"x0mq9r"}]]);export{a as A};

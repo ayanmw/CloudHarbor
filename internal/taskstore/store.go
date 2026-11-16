@@ -64,7 +64,9 @@ func safePath(name string) error {
 	if err != nil {
 		return err
 	}
-	if st.Mode()&os.ModeSymlink != 0 {
+	// Go 1.23 no longer marks junctions as ModeSymlink. Retain the existing
+	// private-state boundary by inspecting Windows reparse attributes as well.
+	if st.Mode()&os.ModeSymlink != 0 || statePathReparse(st) {
 		return fmt.Errorf("state path is a symlink: %s", name)
 	}
 	return nil

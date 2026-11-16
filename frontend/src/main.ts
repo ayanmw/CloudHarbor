@@ -2,6 +2,7 @@ import { createApp, type Component } from "vue";
 import "./style.css";
 
 const workspaces: Record<string, () => Promise<{default: Component}>> = {
+  "/library": () => import("./LocalLibraryWorkspace.vue"),
   "/directory-analysis": () => import("./DirectoryAnalysisWorkspace.vue"),
   "/sync": () => import("./FolderSyncWorkspace.vue"),
   "/settings/about": () => import("./BuildInfoWorkspace.vue"),

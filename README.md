@@ -6,13 +6,13 @@
 
 项目最初是 `nas_baidupan_auto_downloader`。CloudHarbor 是新的产品名称，程序及部署示例已统一使用 `cloudharbor`。`.nas-downloader` 数据目录保留，避免影响已有账号、队列和下载记录；旧版用户更新时使用新版启动脚本。
 
-> 当前预览版本：**v0.8.32**。已实现能力、限制与验收范围以[版本内容说明](docs/releases/v0.8.32.zh-CN.md)为准。独立 NAS 网盘服务与多设备 Client 尚在设计阶段，不属于当前版本的可用功能。
+> 当前预览版本：**v0.8.33**。已实现能力、限制与验收范围以[版本内容说明](docs/releases/v0.8.33.zh-CN.md)为准。v0.8.33 新增本站只读文件库，独立于百度授权；[下载本版 Release](https://github.com/ayanmw/CloudHarbor/releases/tag/v0.8.33)。多设备 Client 仍在设计阶段。
 
 ## 当前版本与产品路线
 
-当前活动版本：**v0.8.32**。产品包含网盘文件管理、批量上传、缓存/目录大小、整理、任务与审计；下载继续通过自动监控目录在后台执行。
+当前活动版本：**v0.8.33**。产品包含网盘文件管理、批量上传、缓存/目录大小、整理、任务与审计；下载继续通过自动监控目录在后台执行。
 
-- [本版内容说明](docs/releases/v0.8.32.zh-CN.md)
+- [本版内容说明](docs/releases/v0.8.33.zh-CN.md)
 - [产品功能与UI/UE路线图](docs/ai/netdisk-product-roadmap.zh-CN.md)
 - [固定版本维护规则](docs/ai/release-versioning.zh-CN.md)
 

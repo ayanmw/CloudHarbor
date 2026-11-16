@@ -1,5 +1,5 @@
 # 构建阶段
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/golang:1.22-alpine AS builder
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/golang:1.27.1-alpine AS builder
 # 设置工作目录
 WORKDIR /app
 # 复制 go mod 和 sum 文件
