@@ -214,12 +214,20 @@ func TestFilteredLocalDirectoryMigrationHistoryMatchesLiteralPathsAndStatus(t *t
 	}{
 		{"%needle", "", fixtures[0].id},
 		{"_needle", "", fixtures[2].id},
-		{`\needle`, "", fixtures[3].id},
+		// Linux CI exposed a Windows-only query against filepath.Join fixtures.
+		{string(filepath.Separator) + "needle", "", fixtures[3].id},
 		{"xneedle", "completed", fixtures[1].id},
 	} {
 		items, total, listErr := store.ListFilteredLocalDirectoryMigrations(context.Background(), LocalDirectoryMigrationFilter{Status: tc.status, Query: tc.query}, 0, 10)
 		if listErr != nil || total != 1 || len(items) != 1 || items[0].ID != tc.want {
 			t.Fatalf("filter=%+v items=%+v total=%d err=%v", tc, items, total, listErr)
+		}
+	}
+	if filepath.Separator != '\\' {
+		// A backslash remains literal on Unix; it must not match the slash fixture.
+		items, total, err := store.ListFilteredLocalDirectoryMigrations(context.Background(), LocalDirectoryMigrationFilter{Query: `\needle`}, 0, 10)
+		if err != nil || total != 0 || len(items) != 0 {
+			t.Fatalf("literal backslash items=%+v total=%d err=%v", items, total, err)
 		}
 	}
 	items, total, err := store.ListFilteredLocalDirectoryMigrations(context.Background(), LocalDirectoryMigrationFilter{Status: "completed", Query: "needle"}, 0, 1)
