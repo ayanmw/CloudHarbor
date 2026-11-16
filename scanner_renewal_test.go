@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/config"
-	"web_browser_baidu_onekey_upload/internal/credentials"
-	"web_browser_baidu_onekey_upload/internal/downloader"
-	"web_browser_baidu_onekey_upload/internal/oauth"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/config"
+	"github.com/ayanmw/CloudHarbor/internal/credentials"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/oauth"
 )
 
 type scannerTransport func(*http.Request) (*http.Response, error)

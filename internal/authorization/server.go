@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/credentials"
-	"web_browser_baidu_onekey_upload/internal/oauth"
+	"github.com/ayanmw/CloudHarbor/internal/credentials"
+	"github.com/ayanmw/CloudHarbor/internal/oauth"
 )
 
 type Manager interface {

@@ -3,7 +3,7 @@ package downloader
 import (
 	"fmt"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 // CloudAPIRequestPacer shares Baidu quota pacing with OAuth account checks.

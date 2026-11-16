@@ -14,13 +14,13 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"web_browser_baidu_onekey_upload/internal/authorization"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/config"
-	"web_browser_baidu_onekey_upload/internal/credentials"
-	"web_browser_baidu_onekey_upload/internal/downloader"
-	"web_browser_baidu_onekey_upload/internal/management"
-	"web_browser_baidu_onekey_upload/internal/webui"
+	"github.com/ayanmw/CloudHarbor/internal/authorization"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/config"
+	"github.com/ayanmw/CloudHarbor/internal/credentials"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/management"
+	"github.com/ayanmw/CloudHarbor/internal/webui"
 )
 
 func TestTLSProxyManagementAndWebSocket(t *testing.T) {

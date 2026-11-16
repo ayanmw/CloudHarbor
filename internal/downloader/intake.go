@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 var ErrIntakeConflict = errors.New("入队项目已变化、目标冲突或存在待核对记录")

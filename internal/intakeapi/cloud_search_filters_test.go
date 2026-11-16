@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 type filteredSearchBackend struct {

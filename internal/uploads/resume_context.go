@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 // Empty hash-only attempts may be traversed, but any precreate intent without a

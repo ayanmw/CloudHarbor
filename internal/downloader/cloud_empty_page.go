@@ -2,7 +2,7 @@ package downloader
 
 import (
 	"context"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 func (d *Downloader) PreviewEmptyCloudDirectoriesPage(ctx context.Context, offset int64, limit int, expected *int64) (taskstore.CloudEmptyDirectoryPage, error) {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
-	"web_browser_baidu_onekey_upload/internal/foldersync"
+	"github.com/ayanmw/CloudHarbor/internal/foldersync"
 )
 
 func syncRemoteArchivePath(c foldersync.Config, run, p string) (string, error) {

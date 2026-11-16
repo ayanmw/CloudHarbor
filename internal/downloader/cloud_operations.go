@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 var ErrCloudOperationHistoryUnavailable = errors.New("remote operation history store unavailable")

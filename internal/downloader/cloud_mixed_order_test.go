@@ -2,7 +2,7 @@ package downloader
 
 import (
 	"testing"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 func TestCloudMixedOrderAllFieldsAndDirections(t *testing.T) {

@@ -686,9 +686,9 @@ onUnmounted(() => {
           </div>
           <div class="table-scroll" role="region" :aria-label="rootID ? '任务文件列表' : '下载任务列表'" tabindex="0">
             <table class="download-task-table" :class="rootID ? 'download-files-table' : 'download-overview-table'">
-              <!-- Real browser review found the two new statistics columns squeezed
-                   to zero by the old five-column widths. Allocate every column. -->
-              <colgroup v-if="!rootID"><col style="width:27%"/><col style="width:13%"/><col style="width:23%"/><col style="width:8%"/><col style="width:12%"/><col style="width:10%"/><col style="width:7%"/></colgroup>
+              <!-- UE review: keep measured duration/average beside progress so
+                   the primary actions fit without adding two wide columns. -->
+              <colgroup v-if="!rootID"><col style="width:29%"/><col style="width:15%"/><col style="width:36%"/><col style="width:9%"/><col style="width:11%"/></colgroup>
               <colgroup v-else><col style="width:40%"/><col style="width:13%"/><col style="width:25%"/><col style="width:13%"/><col style="width:9%"/></colgroup>
               <thead>
                 <tr>
@@ -697,7 +697,7 @@ onUnmounted(() => {
                   </th>
                   <th>状态</th>
                   <th>{{ rootID ? "传输进度" : "完成情况" }}</th>
-                  <th>速度</th><th v-if="!rootID" :title="statisticsHint">下载用时</th><th v-if="!rootID" :title="statisticsHint">平均速度</th>
+                  <th>速度</th>
                   <th class="actions-column">操作</th>
                 </tr>
               </thead>
@@ -763,15 +763,13 @@ onUnmounted(() => {
                         class="cell-sub"
                         >{{ t.folders }} 个文件夹<span v-if="t.progress">
                           · {{ bytes(t.progress) }} 已传输</span
-                        ></small
+                        ></small><small class="task-transfer-summary" data-testid="download-transfer-summary" :title="statisticsHint">用时 {{ downloadDuration(t) }} · 平均 {{ averageSpeed(t) }}<span v-if="t.transfer_statistics?.partial"> · 部分记录</span></small
                       ></template
                     >
                   </td>
                   <td class="speed">
                     {{ t.speed > 0 ? bytes(t.speed) + "/s" : "—" }}
                   </td>
-                  <td v-if="!rootID" :title="statisticsHint">{{ downloadDuration(t) }}<small v-if="t.transfer_statistics?.partial" class="cell-sub">部分记录</small></td>
-                  <td v-if="!rootID" class="speed" :title="statisticsHint">{{ averageSpeed(t) }}</td>
                   <td>
                     <div class="row-actions">
                       <button
@@ -857,7 +855,7 @@ onUnmounted(() => {
           </footer>
         </section>
         <p class="page-footnote">
-          {{ health?.version || "NAS Downloader"
+          {{ health?.version || "CloudHarbor"
           }}<span>自动刷新 · 本地安全连接</span>
         </p>
       </div>

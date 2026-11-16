@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/downloader"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 type cleanupBackend interface {

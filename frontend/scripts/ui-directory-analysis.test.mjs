@@ -68,3 +68,29 @@ test('analysis history explains an unavailable local service with a recovery act
  const {dom}=await render('',async()=>{throw new TypeError('Failed to fetch')});
  try{const message=historySection(dom.window.document).querySelector('[role=alert]').textContent;assert.match(message,/无法连接管理服务/);assert.match(message,/确认程序正在运行/);assert.match(message,/网络连接/);assert.match(message,/重试/);assert.doesNotMatch(message,/Failed to fetch/);}finally{dom.window.close()}
 });
+
+test('comparison navigation never creates a report automatically',async()=>{
+ const back='/cloud/files?dir=%2Fdocs&mixed=0',q=new URLSearchParams({left:'/docs/a',right:'/docs/b',return_files:back});
+ const {dom,requests}=await render('?'+q,async()=>({ok:true,json:async()=>({reports:[],has_more:false,next_before:''})}));
+ try{const d=dom.window.document;assert.equal(d.querySelector('[data-testid=analysis-return-files]').getAttribute('href'),back);assert.equal(d.querySelector('[data-testid=analysis-cloud-left]').value,'/docs/a');dom.window.dispatchEvent(new dom.window.PageTransitionEvent('pagehide',{persisted:true}));dom.window.dispatchEvent(new dom.window.PageTransitionEvent('pageshow',{persisted:true}));await tick();await tick();assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close()}
+});
+
+test('report route keeps only validated browsing return through readback',async()=>{
+ const back='/cloud/files?source=cache&q=lesson&scope=%2Fdocs&kind=file&offset=50&generation=7';
+ for(const suffix of ['&return_files='+encodeURIComponent(back),'&return_files=https%3A%2F%2Fevil.test','&return_files='+encodeURIComponent(back)+'&return_files='+encodeURIComponent(back)]){
+ const {dom,requests}=await render('?report='+id+suffix,async()=>({ok:true,json:async()=>page('/api/directory-analyses/'+id)}));try{const link=dom.window.document.querySelector('[data-testid=analysis-return-files]');if(suffix.includes('https')||suffix.split('return_files=').length>2){assert.equal(link,null);assert.equal(new URL(dom.window.location.href).searchParams.has('return_files'),false)}else{assert.equal(link.getAttribute('href'),back);assert.equal(new URL(dom.window.location.href).searchParams.get('return_files'),back)}assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close()}
+ }
+});
+
+test('late report responses cannot replace the active return context',async()=>{
+ const back='/cloud/files?dir=%2Fdocs&order=time&desc=1&mixed=0';let finish;
+ const {dom,requests}=await render('?report='+id+'&return_files='+encodeURIComponent(back),async()=>new Promise(resolve=>finish=()=>resolve({ok:true,json:async()=>page('/api/directory-analyses/'+id)})));
+ try{dom.window.dispatchEvent(new dom.window.PageTransitionEvent('pagehide',{persisted:true}));finish();await tick();await tick();assert.equal(new URL(dom.window.location.href).searchParams.get('return_files'),back);assert.equal(dom.window.document.querySelector('[data-testid=analysis-return-files]').getAttribute('href'),back);assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close()}
+});
+
+test('analysis opens the relevant mode and mode changes never execute a report',async()=>{
+ for(const [query,mode] of [['','cloud'],['?left=%2Fa&right=%2Fb','cloud'],['?run='+run,'sync'],['?report='+id,'history']]){
+ const {dom,requests}=await render(query,async url=>({ok:true,json:async()=>url.includes('/'+id)?page(url):{reports:[],has_more:false,next_before:''}}));
+ try{const d=dom.window.document;assert.equal(d.querySelector('[data-testid=analysis-mode-'+mode+']').getAttribute('aria-pressed'),'true');const sync=d.querySelector('[data-analysis-mode=sync]');if(mode!=='sync')assert.equal(sync.style.display,'none');for(const name of ['history','cloud','sync']){d.querySelector('[data-testid=analysis-mode-'+name+']').click();await tick();assert.equal(d.querySelector('[data-testid=analysis-mode-'+name+']').getAttribute('aria-pressed'),'true')}assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close()}
+ }
+});

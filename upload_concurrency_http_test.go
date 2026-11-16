@@ -5,12 +5,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/config"
-	"web_browser_baidu_onekey_upload/internal/downloader"
-	"web_browser_baidu_onekey_upload/internal/management"
-	"web_browser_baidu_onekey_upload/internal/uploads"
-	"web_browser_baidu_onekey_upload/internal/webui"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/config"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/management"
+	"github.com/ayanmw/CloudHarbor/internal/uploads"
+	"github.com/ayanmw/CloudHarbor/internal/webui"
 )
 
 func TestUploadConcurrencyRouteUsesManagementAuthentication(t *testing.T) {

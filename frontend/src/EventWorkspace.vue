@@ -79,7 +79,7 @@ async function exportEvidence(){
  finally{if(request===exportGeneration)exporting.value=false;}
 }
 function pop(){cancelExport();selected.value=null;const parsed=readEventRoute(location.search,Object.keys(kindLabels));generation++;controller?.abort();loading.value=false;route.value=parsed.route;draft.value={...parsed.route.filters};inputError.value=parsed.error;cursors.value=parsed.route.before?['',parsed.route.before]:[''];writeRoute('replace');load(parsed.route.before?1:0);}
-onMounted(()=>{document.title='任务事件 · NAS Downloader';load();window.addEventListener('popstate',pop);});onUnmounted(()=>{generation++;controller?.abort();cancelExport();window.removeEventListener('popstate',pop);});
+onMounted(()=>{document.title='任务事件 · CloudHarbor';load();window.addEventListener('popstate',pop);});onUnmounted(()=>{generation++;controller?.abort();cancelExport();window.removeEventListener('popstate',pop);});
 </script>
 
 <template>

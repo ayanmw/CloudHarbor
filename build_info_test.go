@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/management"
+	"github.com/ayanmw/CloudHarbor/internal/management"
 )
 
 func TestBuildInfoRouteIsAuthenticatedReadOnlyAndIndependentOfAccount(t *testing.T) {

@@ -1,6 +1,6 @@
 package intakeapi
 
-import "web_browser_baidu_onekey_upload/internal/taskstore"
+import "github.com/ayanmw/CloudHarbor/internal/taskstore"
 
 // Preserve metadata and nullable observation times, while opting browser clients
 // into decimal strings for every integer. Legacy JSON and evidence exports stay unchanged.

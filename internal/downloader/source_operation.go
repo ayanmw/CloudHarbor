@@ -9,8 +9,8 @@ import (
 	"log"
 	"path"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 var ErrSourceOperationUnknown = errors.New("网盘后处理结果未知，保持隔离，禁止重发")

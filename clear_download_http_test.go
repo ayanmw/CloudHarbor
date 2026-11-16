@@ -4,7 +4,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"web_browser_baidu_onekey_upload/internal/management"
+	"github.com/ayanmw/CloudHarbor/internal/management"
 )
 
 func TestClearDownloadRecordHTTPRequiresManagementAndExplicitConfirmation(t *testing.T) {

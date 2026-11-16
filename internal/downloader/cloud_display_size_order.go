@@ -2,7 +2,7 @@ package downloader
 
 import (
 	"sort"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 // Unknown directory sizes remain last in both directions. The tie-break order

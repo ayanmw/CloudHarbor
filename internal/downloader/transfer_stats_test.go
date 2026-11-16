@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 func TestTransferStatisticsCountNetworkBytesButNotLocalReuse(t *testing.T) {

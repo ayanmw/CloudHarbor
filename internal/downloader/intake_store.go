@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 type IntakeDownloadTask struct {

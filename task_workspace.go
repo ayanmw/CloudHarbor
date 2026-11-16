@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"web_browser_baidu_onekey_upload/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
 )
 
 func handleDownloadSettings(w http.ResponseWriter, r *http.Request) {

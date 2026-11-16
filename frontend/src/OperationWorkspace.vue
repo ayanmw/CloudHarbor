@@ -56,7 +56,7 @@ async function exportSummary(){
  finally{if(request===exportGeneration)exporting.value=false;}
 }
 function pop(){cancelExport();generation++;controller?.abort();loading.value=false;const parsed=readOperationRoute(location.search);applied.value=parsed.route.filters;draft.value={...parsed.route.filters};requestedCursor.value=parsed.route.before;selectedOperationID.value=parsed.route.operation;inputError.value=parsed.error;navigationError.value=parsed.error;cursors.value=parsed.route.before?[null,parsed.route.before]:[null];writeRoute('replace');load(parsed.route.before,parsed.route.before?1:0);}
-onMounted(()=>{document.title='操作历史 · NAS Downloader';load();window.addEventListener('popstate',pop);});onUnmounted(()=>{generation++;controller?.abort();cancelExport();window.removeEventListener('popstate',pop);});
+onMounted(()=>{document.title='操作历史 · CloudHarbor';load();window.addEventListener('popstate',pop);});onUnmounted(()=>{generation++;controller?.abort();cancelExport();window.removeEventListener('popstate',pop);});
 </script>
 <template>
  <div class="workspace event-workspace operation-workspace">

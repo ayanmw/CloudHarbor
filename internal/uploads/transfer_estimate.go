@@ -3,7 +3,7 @@ package uploads
 import (
 	"fmt"
 	"math/big"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 type uploadAttemptSnapshot struct {

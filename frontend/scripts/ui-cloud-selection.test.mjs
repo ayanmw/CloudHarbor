@@ -113,3 +113,27 @@ test('stop after current item preserves its confirmed result and leaves the batc
 test('cached selections allow online download preflight but cannot submit remote writes',async()=>{const {dom,requests}=await render(async()=>({ok:true,json:async()=>({directory:'/',entries:items.map(i=>({fs_id:i.fs_id,path:i.path,name:i.name,directory:false,size:i.size,provider_mtime:i.server_mtime})),metadata:{status:'complete'},cache_generation:'1',total:4,offset:0,next_offset:null})}),'?source=cache');try{const d=dom.window.document;d.querySelector('[data-testid=cloud-select-item]').click();await tick();assert.ok(d.querySelector('[data-testid=cloud-selected-download]'));assert.equal(d.querySelector('[data-testid=cloud-selected-delete]').disabled,true);assert.equal(d.querySelector('[data-testid=cloud-selected-move]').disabled,true);assert.ok(requests.every(r=>r.method==='GET'))}finally{dom.window.close()}});
 test('folder picker does not allow selecting results after a failed directory read',async()=>{let reads=0;const {dom}=await render(async()=>++reads===1?{ok:true,json:async()=>(viewFixture({directory:'/',entries:items,offset:0,total:null,observed_at_utc:'2026-11-04T00:00:00Z'}))}:{ok:false,status:503,text:async()=>'目标目录不可读'});try{const d=dom.window.document;d.querySelector('[data-testid=cloud-select-item]').click();await tick();d.querySelector('[data-testid=cloud-selected-move]').click();await tick();d.querySelector('[data-testid=cloud-batch-pick-directory]').click();await tick();await tick();assert.equal(d.querySelector('[data-testid=cloud-picker-use]').disabled,true);assert.match(d.querySelector('[data-testid=cloud-directory-picker]').textContent,/上次结果不可选择/)}finally{dom.window.close()}});
 
+
+const compareDirectories=(paths)=>paths.map((path,i)=>({id:String(i+101),fs_id:String(i+101),path,name:path.split('/').at(-1),directory:true,size:'0',provider_size:'0',server_mtime:'1'}));
+test('two selected directories create a stable readonly comparison link',async()=>{
+ for(const paths of [['/z','/a'],['/a','/z'],['/a','/ab']]){
+ const {dom,requests}=await render(async()=>({ok:true,json:async()=>viewFixture({directory:'/',entries:compareDirectories(paths),offset:0,total:null})}));
+ try{const d=dom.window.document;d.querySelector('[data-testid=cloud-select-page]').click();await tick();const a=d.querySelector('[data-testid=cloud-selected-compare]');assert.ok(a?.getAttribute('href'));const q=new URL(a.href).searchParams;assert.deepEqual([q.get('left'),q.get('right')],[...paths].sort());assert.equal(q.get('return_files'),dom.window.location.pathname+dom.window.location.search);assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close()}
+ }
+});
+test('overlapping or mixed selections explain why comparison is unavailable',async()=>{
+ for(const paths of [['/a'],['/a','/a'],['/a','/a/sub'],['/a','/b','/c']]){
+ const {dom}=await render(async()=>({ok:true,json:async()=>({directory:'/',entries:compareDirectories(paths).map(e=>({fs_id:e.fs_id,path:e.path,name:e.name,directory:true,size:'0',provider_mtime:'1'})),query:'a',coverage:{status:'complete'},metadata:{status:'complete'},cache_generation:'1',total:paths.length,offset:0,next_offset:null})}),'?source=cache&q=a');try{const d=dom.window.document;d.querySelector('[data-testid=cloud-select-page]').click();await tick();assert.equal(d.querySelector('[data-testid=cloud-selected-compare]')?.hasAttribute('href'),false,d.body.textContent);assert.ok(d.querySelector('[data-testid=cloud-compare-reason]')?.textContent.trim());}finally{dom.window.close()}
+ }
+ const {dom}=await render();try{dom.window.document.querySelector('[data-testid=cloud-select-page]').click();await tick();assert.equal(dom.window.document.querySelector('[data-testid=cloud-selected-compare]')?.hasAttribute('href'),false);assert.ok(dom.window.document.querySelector('[data-testid=cloud-compare-reason]'));}finally{dom.window.close()}
+});
+
+test('comparison cannot reuse a prior selection after a pending failed refresh',async()=>{
+ let finish,refresh=false;const {dom,requests}=await render(async()=>refresh?new Promise(resolve=>finish=()=>resolve({ok:false,status:503,text:async()=> 'offline'})):{ok:true,json:async()=>viewFixture({directory:'/',entries:compareDirectories(['/a','/b']),offset:0,total:null})});
+ try{const d=dom.window.document;d.querySelector('[data-testid=cloud-select-page]').click();await tick();assert.ok(d.querySelector('[data-testid=cloud-selected-compare]').getAttribute('href'));refresh=true;d.querySelector('[data-testid=cloud-files-refresh]').click();await tick();assert.equal(d.querySelector('[data-testid=cloud-selected-compare]')?.getAttribute('href')??null,null);finish();await tick();await tick();assert.equal(d.querySelector('[data-testid=cloud-selected-compare]')?.getAttribute('href')??null,null);assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close()}
+});
+
+test('exactly two mixed file and directory items cannot become comparison roots',async()=>{
+ const values=compareDirectories(['/a','/b']);values[1].directory=false;
+ const {dom,requests}=await render(async()=>({ok:true,json:async()=>viewFixture({directory:'/',entries:values,offset:0,total:null})}));try{const d=dom.window.document;d.querySelector('[data-testid=cloud-select-page]').click();await tick();assert.equal(d.querySelector('[data-testid=cloud-selected-compare]').hasAttribute('href'),false);assert.match(d.querySelector('[data-testid=cloud-compare-reason]').textContent,/目录/);assert.ok(requests.every(r=>r.method==='GET'));}finally{dom.window.close()}
+});

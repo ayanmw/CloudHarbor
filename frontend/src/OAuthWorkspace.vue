@@ -39,7 +39,7 @@ async function renew(){
  finally{if(request===renewGeneration){refreshing.value=false;reconcileStatus();}}
 }
 function onPageShow(event:PageTransitionEvent){if(event.persisted)startStatus();}
-onMounted(()=>{document.title='账号与授权 · NAS Downloader';window.addEventListener('pagehide',leave);window.addEventListener('pageshow',onPageShow);startStatus();});
+onMounted(()=>{document.title='账号与授权 · CloudHarbor';window.addEventListener('pagehide',leave);window.addEventListener('pageshow',onPageShow);startStatus();});
 onUnmounted(()=>{leave();window.removeEventListener('pagehide',leave);window.removeEventListener('pageshow',onPageShow);});
 </script>
 <template>

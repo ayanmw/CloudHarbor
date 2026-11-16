@@ -9,8 +9,8 @@ import (
 	"math"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 var ErrQueueMonitorScanSkipped = errors.New("automatic queue scan skipped")

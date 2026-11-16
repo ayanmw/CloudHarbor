@@ -14,10 +14,10 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/config"
-	"web_browser_baidu_onekey_upload/internal/downloader"
-	"web_browser_baidu_onekey_upload/internal/management"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/config"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/management"
 )
 
 type localTransport func(*http.Request) (*http.Response, error)

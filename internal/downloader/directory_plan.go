@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 // Prepare the local tree before transferring files. Reuse the observed lists

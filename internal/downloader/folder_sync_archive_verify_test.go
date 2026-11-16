@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/foldersync"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/foldersync"
 )
 
 func TestRemoteArchiveVerificationReadsEveryDescendant(t *testing.T) {

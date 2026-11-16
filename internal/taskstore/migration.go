@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/durablefs"
+	"github.com/ayanmw/CloudHarbor/internal/durablefs"
 )
 
 // migrateV2 adds durable, revocable administrator sessions. The database

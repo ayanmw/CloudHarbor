@@ -1,4 +1,4 @@
-module web_browser_baidu_onekey_upload
+module github.com/ayanmw/CloudHarbor
 
 go 1.22
 

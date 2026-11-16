@@ -27,17 +27,17 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"web_browser_baidu_onekey_upload/internal/authorization"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/config"
-	"web_browser_baidu_onekey_upload/internal/credentials"
-	"web_browser_baidu_onekey_upload/internal/downloader"
-	"web_browser_baidu_onekey_upload/internal/foldersync"
-	"web_browser_baidu_onekey_upload/internal/intakeapi"
-	"web_browser_baidu_onekey_upload/internal/management"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
-	"web_browser_baidu_onekey_upload/internal/uploads"
-	"web_browser_baidu_onekey_upload/internal/webui"
+	"github.com/ayanmw/CloudHarbor/internal/authorization"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/config"
+	"github.com/ayanmw/CloudHarbor/internal/credentials"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/foldersync"
+	"github.com/ayanmw/CloudHarbor/internal/intakeapi"
+	"github.com/ayanmw/CloudHarbor/internal/management"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/uploads"
+	"github.com/ayanmw/CloudHarbor/internal/webui"
 )
 
 var (
@@ -170,14 +170,14 @@ func main() {
 	revokeAdminSessions := flag.Bool("revoke-admin-sessions", false, "revoke all persistent browser admin sessions and exit")
 	flag.Parse()
 	if *showVersion {
-		fmt.Println("baidu-nas-downloader " + version + " (" + revision + ")")
+		fmt.Println("cloudharbor " + version + " (" + revision + ")")
 		return
 	}
 	if *showBuildInfo {
 		_ = json.NewEncoder(os.Stdout).Encode(currentBuildInformation())
 		return
 	}
-	log.Println("baidu-nas-downloader service starting...")
+	log.Println("cloudharbor service starting...")
 
 	// 加载配置
 	var err error

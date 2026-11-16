@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 // Preview observations never authorize writes; MutateCloud still rechecks each item.

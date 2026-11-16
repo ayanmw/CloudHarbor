@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 var errCloudMutationQuarantined = errors.New("网盘项仍处于未知结果隔离")

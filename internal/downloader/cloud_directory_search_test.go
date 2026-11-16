@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 func TestSearchCachedCloudDirectoriesStaysLocalAndAccountScoped(t *testing.T) {

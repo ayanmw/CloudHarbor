@@ -2,7 +2,7 @@ package downloader
 
 import (
 	"context"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 func (d *Downloader) CloudCleanupBatches(ctx context.Context, offset, limit int) ([]taskstore.CleanupBatchSummary, int, error) {

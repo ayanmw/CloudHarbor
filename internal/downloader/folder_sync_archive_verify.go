@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/foldersync"
+	"github.com/ayanmw/CloudHarbor/internal/foldersync"
 )
 
 // VerifyArchive performs no writes and never trusts cached content hashes.

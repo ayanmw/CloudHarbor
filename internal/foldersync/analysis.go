@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/directoryanalysis"
+	"github.com/ayanmw/CloudHarbor/internal/directoryanalysis"
 )
 
 type Analysis struct {

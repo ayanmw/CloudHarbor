@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"web_browser_baidu_onekey_upload/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
 )
 
 type mutationCaptureBackend struct {

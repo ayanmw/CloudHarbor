@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/config"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/config"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 func validateLocalMigrationPaths(source, target, state string) error {

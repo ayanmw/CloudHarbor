@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/directoryanalysis"
+	"github.com/ayanmw/CloudHarbor/internal/directoryanalysis"
 )
 
 type CloudAnalysisSnapshot struct {

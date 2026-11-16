@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 // This is a local journal classification, never a remote-resume authorization.

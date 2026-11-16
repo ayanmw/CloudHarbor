@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import ts from 'typescript';
 const source=await readFile(new URL('../src/cloud-files-route.ts',import.meta.url),'utf8');
 const js=ts.transpile(source,{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022});
-const {readCloudFilesRoute,cloudFilesRouteURL,cloudSearchUTCSeconds,cloudSearchUTCInput,validCloudSearchExtra}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
+const {readCloudFilesRoute,cloudFilesRouteURL,cloudSearchUTCSeconds,cloudSearchUTCInput,validCloudSearchExtra,validCloudWorkspaceReturn}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
 const origin='/cloud/files?dir=%2Fdocs&source=cache&q=lesson&scope=%2Fdocs&kind=file&offset=50&generation=7';
 const locationQuery=(extra={})=>'?'+new URLSearchParams({dir:'/docs',focus_id:'9007199254740993',focus_path:'/docs/lesson',focus_directory:'0',return_search:origin,...extra});
 test('live location roundtrips only a validated local search return',()=>{const parsed=readCloudFilesRoute(locationQuery());assert.equal(parsed.error,'');assert.equal(parsed.route.location.id,'9007199254740993');assert.equal(parsed.route.location.returnSearch,origin);assert.equal(cloudFilesRouteURL(parsed.route),'/cloud/files'+locationQuery());});
@@ -34,4 +34,10 @@ test('display size snapshot survives first-page and later-page routes only for l
 test('mixed mode and snapshot roundtrip for every live order, never cache search',()=>{
  for(const order of ['name','size','time'])for(const mixed of ['0','1']){const parsed=readCloudFilesRoute('?order='+order+'&mixed='+mixed+'&size_snapshot='+'a'.repeat(32));assert.equal(parsed.error,'');assert.equal(parsed.route.mixed,mixed==='1');assert.equal(readCloudFilesRoute(new URL(cloudFilesRouteURL(parsed.route),'http://localhost').search).route.mixed,mixed==='1')}
  for(const query of ['?mixed=2','?mixed=','?mixed=0&mixed=1','?source=cache&q=x&mixed=1'])assert.ok(readCloudFilesRoute(query).error,query);
+});
+
+test('workspace return accepts canonical internal browsing only',()=>{
+ for(const value of ['/cloud/files','/cloud/files?dir=%2Fdocs&order=size&mixed=0','/cloud/files?source=cache&q=lesson&scope=%2Fdocs&kind=file&offset=50&generation=7'])assert.equal(validCloudWorkspaceReturn(value),cloudFilesRouteURL(readCloudFilesRoute(value.slice('/cloud/files'.length)).route));
+ for(const value of ['https://evil.test/cloud/files','//evil.test/cloud/files','/cloud/files/other','/cloud/files#x','/cloud/files?return_files=x','/cloud/files?dir=%2Fa&dir=%2Fb','/cloud/files?dir=%2F..','/cloud/files?'+ 'x'.repeat(32768)])assert.equal(validCloudWorkspaceReturn(value),'',value.slice(0,90));
+ assert.equal(validCloudWorkspaceReturn('/cloud/files?delete=1'),'/cloud/files');
 });

@@ -14,7 +14,7 @@ var version,revision,builtAtUTC,sourceSnapshot,fixtureBuild string
 func main(){if len(os.Args)!=2||os.Args[1]!="-build-info"{os.Exit(2)};json.NewEncoder(os.Stdout).Encode(map[string]string{"version":version,"revision":revision,"built_at_utc":builtAtUTC,"source_snapshot_sha256":sourceSnapshot,"runtime":runtime.GOOS+"/"+runtime.GOARCH,"go_version":runtime.Version(),"observed_at_utc":time.Now().UTC().Format(time.RFC3339Nano),"fixture_build":fixtureBuild})}
 "@, [Text.UTF8Encoding]::new($false))
 $global:fixtureBuild = 1
-$global:fixtureTarget = Join-Path $fixtureRoot "$version/bin/windows-amd64/baidu-downloader.exe"
+$global:fixtureTarget = Join-Path $fixtureRoot "$version/bin/windows-amd64/cloudharbor.exe"
 $global:fixtureRunning = $false
 $global:fixtureStops = @()
 $global:fixtureFailCopy = $false
@@ -41,7 +41,7 @@ function go {
 function Get-CimInstance {
  param($ClassName,$Filter)
  if ($Filter) { if ($global:fixtureRunning) { [pscustomobject]@{ExecutablePath=$global:fixtureTarget;ProcessId=12345} }; return }
- [pscustomobject]@{ExecutablePath='D:\unrelated\baidu-downloader.exe';ProcessId=54321}
+ [pscustomobject]@{ExecutablePath='D:\unrelated\cloudharbor.exe';ProcessId=54321}
  if ($global:fixtureRunning) { [pscustomobject]@{ExecutablePath=$global:fixtureTarget;ProcessId=12345} }
 }
 function Stop-Process { param($Id,[switch]$Force); if ($Id -ne 12345) { throw 'Attempted to stop an unrelated process' }; $global:fixtureStops += $Id; $global:fixtureRunning = $false }

@@ -1244,7 +1244,7 @@ tr:hover .row-arrow {
 /* Real overview review: protect all seven columns and scroll locally instead
    of squeezing the duration/average columns into vertical character stacks. */
 .download-task-table th { width: auto; }
-.download-task-table.download-overview-table { min-width: 1100px; }
+.download-task-table.download-overview-table { min-width: 740px; }
 .download-task-table.download-files-table { min-width: 900px; }
 .download-task-table th,.download-task-table td { padding-left: 12px; padding-right: 12px; }
 .download-overview-table td:nth-child(4),.download-overview-table td:nth-child(5),.download-overview-table td:nth-child(6) { white-space: nowrap; }
@@ -1254,3 +1254,11 @@ tr:hover .row-arrow {
    otherwise bounded cards. Keep evidence intact and wrap within the card. */
 .cloud-files-workspace p,.cache-workspace p,.cleanup-workspace p,
 .cleanup-workspace code { overflow-wrap: anywhere; min-width: 0; }
+
+/* UE pass: five overview columns and pinned actions keep task management reachable. */
+.download-task-table.download-overview-table{min-width:740px}
+.download-overview-table th:last-child,.download-overview-table td:last-child{position:sticky;right:0;z-index:1;box-shadow:-1px 0 0 var(--border,#e5eaf1)}
+.download-overview-table th:last-child{background:#f8fafc;z-index:2}
+.download-overview-table td:last-child{background:white}
+.download-overview-table td:nth-child(2) .badge{white-space:normal;line-height:1.35}
+.task-transfer-summary{display:block;margin-top:5px;font-size:12px;color:var(--muted,#6f7d91);line-height:1.5;white-space:normal;overflow-wrap:anywhere}

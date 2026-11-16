@@ -1,13 +1,13 @@
 version: '3.8'
 
 services:
-  baidu-nas-downloader:
+  cloudharbor:
     build:
       context: .
       args:
         BUILD_VERSION: ${BUILD_VERSION:-dev}
         BUILD_REVISION: ${BUILD_REVISION:-unknown}
-    container_name: baidu-nas-downloader
+    container_name: cloudharbor
     user: "${RUN_AS:-0:0}"
     ports:
       - "127.0.0.1:${HOST_PORT:-8080}:8080"

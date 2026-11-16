@@ -3,8 +3,8 @@ package downloader
 import (
 	"encoding/json"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 // RootDestination is historical display evidence, not proof that files exist

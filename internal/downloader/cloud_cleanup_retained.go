@@ -2,8 +2,8 @@ package downloader
 
 import (
 	"context"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 // Retention is checked online in the same maintenance window as the deletion.

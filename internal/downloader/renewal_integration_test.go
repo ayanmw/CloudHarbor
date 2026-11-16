@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/credentials"
-	"web_browser_baidu_onekey_upload/internal/oauth"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/credentials"
+	"github.com/ayanmw/CloudHarbor/internal/oauth"
 )
 
 type renewalFixture struct{ refreshes atomic.Int32 }

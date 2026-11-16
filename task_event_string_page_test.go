@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 func TestTaskEventStringPagePreservesInt64Identity(t *testing.T) {

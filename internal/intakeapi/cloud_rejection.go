@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	"web_browser_baidu_onekey_upload/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
 )
 
 // A mutation without a journal ID has not reached the provider write in

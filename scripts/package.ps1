@@ -79,14 +79,14 @@ try {
         $env:GOOS = $parts[0]; $env:GOARCH = $parts[1]
         $targetDir = Join-Path $releasePath "bin/$target"
         New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-        $binaryName = 'baidu-downloader'
+        $binaryName = 'cloudharbor'
         if ($parts[0] -eq 'windows') { $binaryName += '.exe' }
         go build -trimpath -ldflags "-s -w -X main.version=$Version -X main.revision=$sourceRevision -X main.builtAtUTC=$buildTimestampUTC -X main.sourceSnapshot=$treeHash" -o (Join-Path $targetDir $binaryName) .
         if ($LASTEXITCODE -ne 0) { throw "Build failed: $target" }
     }
     # Verify compiled identity before replacing any installed program files.
     # This CLI exits before configuration/state initialization, so it needs no account data.
-    $compiledInfoText = & (Join-Path $releasePath 'bin/windows-amd64/baidu-downloader.exe') -build-info
+    $compiledInfoText = & (Join-Path $releasePath 'bin/windows-amd64/cloudharbor.exe') -build-info
     if ($LASTEXITCODE -ne 0) { throw 'Compiled build identity command failed.' }
     $compiledInfo = $compiledInfoText | ConvertFrom-Json
     # Reproduced on PowerShell 7.5+: ConvertFrom-Json converts UTC strings to DateTime.
@@ -120,17 +120,19 @@ try {
     Compress-Archive -Path (Join-Path $releasePath '*') -DestinationPath $archivePath
     if ($replaceExisting -and $artifactExists) {
         # Build and verify first; stop only the executable installed in this target.
-        $installedExe = [IO.Path]::GetFullPath((Join-Path $finalReleasePath 'bin/windows-amd64/baidu-downloader.exe'))
+        $installedExe = [IO.Path]::GetFullPath((Join-Path $finalReleasePath 'bin/windows-amd64/cloudharbor.exe'))
+        # Branding upgrade: the previous binary may still hold the same state writer lock.
+        $legacyExe = [IO.Path]::GetFullPath((Join-Path $finalReleasePath 'bin/windows-amd64/baidu-downloader.exe'))
         if ($env:OS -eq 'Windows_NT') {
-            $running = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $installedExe, [StringComparison]::OrdinalIgnoreCase) })
+            $running = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ([string]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $installedExe, [StringComparison]::OrdinalIgnoreCase) -or [string]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $legacyExe, [StringComparison]::OrdinalIgnoreCase)) })
             foreach ($process in $running) {
                 $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($process.ProcessId)"
-                if ($current -and [string]::Equals($current.ExecutablePath, $installedExe, [StringComparison]::OrdinalIgnoreCase)) {
+                if ($current -and [string]::Equals($current.ExecutablePath, $process.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
                     Write-Output "Stopping running version $Version, PID $($current.ProcessId), before program replacement; user data is preserved."
                     Stop-Process -Id $current.ProcessId -Force
                     Wait-Process -Id $current.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
                     $remaining = Get-CimInstance Win32_Process -Filter "ProcessId=$($current.ProcessId)"
-                    if ($remaining -and [string]::Equals($remaining.ExecutablePath, $installedExe, [StringComparison]::OrdinalIgnoreCase)) { throw 'Target version is still running; program files were not replaced.' }
+                    if ($remaining -and [string]::Equals($remaining.ExecutablePath, $process.ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) { throw 'Target version is still running; program files were not replaced.' }
                 }
             }
         }

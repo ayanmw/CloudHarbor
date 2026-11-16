@@ -2,7 +2,7 @@ package main
 
 import (
 	"strconv"
-	"web_browser_baidu_onekey_upload/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
 )
 
 type managedPathImpactStringTask struct {

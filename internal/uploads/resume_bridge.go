@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 const resumeBridgePrefix = "upload_resume_bridge_v1:"

@@ -151,3 +151,31 @@ test('failed cleanup item pagination retains the old page and old rows',async()=
  const {dom,state}=await batchFixture((body,state)=>{const original=body.items[0];state.body.items=Array.from({length:26},(_,i)=>({...original,expected:{...original.expected,fs_id:String(i+10),path:'/file'+(i+10),name:'file'+(i+10)}}));state.record={...state.record,item_count:26,pending:26};return {ok:true,status:202,json:async()=>state.record};});
  try{await confirmBatch(dom);await settle();const original=dom.window.fetch;let fail=true;dom.window.fetch=async(raw,init)=>String(raw).includes('/items?offset=25')&&fail?{ok:false,status:503}:original(raw,init);const next=[...dom.window.document.querySelectorAll('button')].find(b=>b.textContent==='下一页');next.click();await settle();assert.match(dom.window.document.querySelector('[data-testid=cleanup-items-page]').textContent,/第 1 页/);assert.ok(dom.window.document.querySelector('[data-cleanup-ordinal="0"]'));fail=false;next.click();await settle();assert.match(dom.window.document.querySelector('[data-testid=cleanup-items-page]').textContent,/第 2 页/);assert.ok(dom.window.document.querySelector('[data-cleanup-ordinal="25"]'));}finally{dom.window.close();}
 });
+
+test('directory cleanup entry preserves explicit scope without writes',async()=>{
+ const calls=[],back='/cloud/files?dir=%2Fdocs&order=size&mixed=0';
+ const dom=new JSDOM(html,{url:'http://localhost/cloud/cleanup?'+new URLSearchParams({directory:'/docs',return_files:back}),runScripts:'outside-only',virtualConsole:new VirtualConsole()});
+ dom.window.fetch=async(url,init={})=>{calls.push([String(url),init.method||'GET']);return {ok:true,json:async()=>({})}};
+ try{await mountBuiltWorkspace(dom);await tick();await tick();const d=dom.window.document;assert.equal(d.querySelector('[data-testid=duplicate-directory]').value,'/docs');assert.equal(d.querySelector('[data-testid=cloud-return-files]').getAttribute('href'),back);assert.ok(calls.every(([,m])=>m==='GET'));assert.ok(!calls.some(([u])=>u.includes('/duplicates?')));}finally{dom.window.close()}
+});
+test('explicit invalid cleanup scope never expands to root',async()=>{
+ for(const query of ['directory=relative','directory=%2Fa&directory=%2Fb','directory=']){
+ const calls=[],dom=new JSDOM(html,{url:'http://localhost/cloud/cleanup?'+query,runScripts:'outside-only',virtualConsole:new VirtualConsole()});dom.window.fetch=async(url)=>{calls.push(String(url));return {ok:true,json:async()=>({})}};
+ try{await mountBuiltWorkspace(dom);await tick();await tick();const d=dom.window.document;assert.equal(d.querySelector('[data-testid=cleanup-preview]').disabled,true);assert.ok(d.querySelector('[data-testid=duplicate-scope-error]'));assert.ok(!calls.some(u=>u.includes('/duplicates?')));}finally{dom.window.close()}
+ }
+});
+
+test('duplicate comparison preserves committed return and BFCache clears write selection',async()=>{
+ const back='/cloud/files?dir=%2Fdocs&mixed=0',calls=[],entry=(fs_id,path)=>({fs_id,path,name:'copy',directory:false,size:'7',provider_mtime:'3',content_verified_at_utc:'2026-11-06T00:00:00Z'});
+ const dom=new JSDOM(html,{url:'http://localhost/cloud/cleanup?'+new URLSearchParams({return_files:back}),runScripts:'outside-only',virtualConsole:new VirtualConsole()});dom.window.fetch=async(url,init={})=>{calls.push(init.method||'GET');return {ok:true,json:async()=>({groups:[{sha256:'a'.repeat(64),size:'7',keep:entry('1','/docs/a/copy'),delete:[entry('2','/docs/b/copy')]}],total:'1',delete_count:'1',offset:'0',limit:10,next_offset:null})}};
+ try{await mountBuiltWorkspace(dom);await tick();const d=dom.window.document;d.querySelector('[data-testid=cleanup-preview]').click();await tick();await tick();assert.equal(new URL(d.querySelector('[data-testid=duplicate-analyze-parents]').href).searchParams.get('return_files'),back);d.querySelector('[data-testid=duplicate-select-visible]').click();await tick();dom.window.dispatchEvent(new dom.window.PageTransitionEvent('pagehide',{persisted:true}));dom.window.dispatchEvent(new dom.window.PageTransitionEvent('pageshow',{persisted:true}));await tick();await tick();assert.match(d.querySelector('[data-testid=cleanup-selected-count]').textContent,/0/);assert.ok(calls.every(m=>m==='GET'));}finally{dom.window.close()}
+});
+
+test('cleanup prioritizes scoped preview before global hash maintenance',async()=>{
+ const dom=new JSDOM(html,{url:'http://localhost/cloud/cleanup?directory=%2Fdocs',runScripts:'outside-only',virtualConsole:new VirtualConsole()});const calls=[];dom.window.fetch=async(url,init={})=>{calls.push(init.method||'GET');return {ok:true,json:async()=>({})}};
+ try{await mountBuiltWorkspace(dom);await tick();const d=dom.window.document,scan=d.querySelector('[data-testid=duplicate-scan-state]').closest('details');assert.ok(scan);assert.equal(scan.open,false);assert.match(scan.querySelector('summary').textContent,/全盘维护/);assert.ok(d.querySelector('[data-testid=cleanup-preview]').compareDocumentPosition(scan)&dom.window.Node.DOCUMENT_POSITION_FOLLOWING);assert.ok(calls.every(x=>x==='GET'));}finally{dom.window.close()}
+});
+
+test('collapsed global hash tools keep running and unreadable states visible',async()=>{
+ for(const fail of [false,true]){const dom=new JSDOM(html,{url:'http://localhost/cloud/cleanup?directory=%2Fdocs',runScripts:'outside-only',virtualConsole:new VirtualConsole()});dom.window.fetch=async url=>String(url).includes('/duplicate-scan?')?{ok:!fail,status:fail?503:200,text:async()=> 'fixture offline',json:async()=>({run_id:'a'.repeat(32),status:'running',phase:'hashing',worker_active:true,total_files:'2',processed_files:'1',total_bytes:'20',processed_bytes:'10',current_size:'10',current_bytes:'0',current_path:'/owned/file',started_at_utc:'2026-11-04T00:00:00Z',updated_at_utc:'2026-11-04T00:01:00Z',last_error:''})}:{ok:true,json:async()=>({})};try{await mountBuiltWorkspace(dom);await tick();await tick();const panel=dom.window.document.querySelector('.cleanup-maintenance');assert.equal(panel.open,false);assert.match(panel.querySelector('summary').textContent,fail?/状态读取失败/:/运行中.*带宽/);}finally{dom.window.close()}}
+});

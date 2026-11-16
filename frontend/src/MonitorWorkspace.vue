@@ -44,7 +44,7 @@ function openRun(run:Run){selectedRunID.value=run.run_id;writeRoute('push');}
 function closeRun(){selectedRunID.value='';writeRoute('push');}
 function navigatePage(delta:number){if(!canPage())return;const index=pageIndex.value+delta,before=delta>0?nextCursor.value:cursors.value[index];if(index<0||before===null||before===undefined)return;requestedCursor.value=before;selectedRunID.value='';writeRoute('push');load(before,index);}
 function pop(){generation++;controller?.abort();loading.value=false;const parsed=readMonitorRoute(location.search);applied.value=parsed.route.filters;draft.value={...parsed.route.filters};requestedCursor.value=parsed.route.before;selectedRunID.value=parsed.route.run;inputError.value=parsed.error;cursors.value=parsed.route.before?['',parsed.route.before]:[''];writeRoute('replace');load(parsed.route.before,parsed.route.before?1:0);}
-onMounted(()=>{document.title='监控历史 · NAS Downloader';load();window.addEventListener('popstate',pop);});onUnmounted(()=>{generation++;controller?.abort();window.removeEventListener('popstate',pop);});
+onMounted(()=>{document.title='监控历史 · CloudHarbor';load();window.addEventListener('popstate',pop);});onUnmounted(()=>{generation++;controller?.abort();window.removeEventListener('popstate',pop);});
 </script>
 <template>
  <div class="workspace event-workspace monitor-workspace">

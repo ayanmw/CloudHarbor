@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"web_browser_baidu_onekey_upload/internal/directoryanalysis"
+	"github.com/ayanmw/CloudHarbor/internal/directoryanalysis"
 )
 
 func analysisOffset(r *http.Request, key string) (int, error) {

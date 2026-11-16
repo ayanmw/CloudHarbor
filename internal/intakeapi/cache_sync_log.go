@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"net/http"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 func (s *Server) HandleCacheSyncLog(w http.ResponseWriter, r *http.Request) {

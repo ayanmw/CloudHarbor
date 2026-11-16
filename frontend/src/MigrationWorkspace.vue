@@ -38,7 +38,7 @@ async function load(recover=true){
  finally{if(request===generation)loading.value=false;}
 }
 function resume(event:PageTransitionEvent){if(event.persisted&&!auth.value){active=true;load();}}
-onMounted(()=>{document.title='迁移历史 · NAS Downloader';window.addEventListener('pagehide',stop);window.addEventListener('pageshow',resume);window.addEventListener('popstate',restore);load();});
+onMounted(()=>{document.title='迁移历史 · CloudHarbor';window.addEventListener('pagehide',stop);window.addEventListener('pageshow',resume);window.addEventListener('popstate',restore);load();});
 onUnmounted(()=>{stop();window.removeEventListener('pagehide',stop);window.removeEventListener('pageshow',resume);window.removeEventListener('popstate',restore);});
 </script>
 <template>

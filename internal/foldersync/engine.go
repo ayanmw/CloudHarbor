@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/durablefs"
+	"github.com/ayanmw/CloudHarbor/internal/durablefs"
 )
 
 func (m *Manager) checkRoots(ctx context.Context, c Config) error {

@@ -58,3 +58,13 @@ export function validCloudSearchReturn(value:string):string{
  const {route,error}=readCloudFilesRoute(search);
  return !error&&route.source==='cache'&&!!route.query?cloudFilesRouteURL(route):'';
 }
+
+// Workspace links carry only canonical committed browsing state, never actions.
+export function validCloudWorkspaceReturn(value:string):string{
+ if(value.length>32768||value.includes('#')||value!=='/cloud/files'&&!value.startsWith('/cloud/files?'))return '';
+ const search=value.slice('/cloud/files'.length),params=new URLSearchParams(search);
+ let duplicate=false;params.forEach((_,key)=>{if(params.getAll(key).length!==1)duplicate=true;});
+ if(params.has('return_files')||duplicate)return '';
+ const parsed=readCloudFilesRoute(search);
+ return parsed.error?'':cloudFilesRouteURL(parsed.route);
+}

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/config"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/config"
 )
 
 // Explicit real-account acceptance only. The original credential file is read

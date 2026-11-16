@@ -11,8 +11,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"web_browser_baidu_onekey_upload/internal/downloader"
-	"web_browser_baidu_onekey_upload/internal/management"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/management"
 )
 
 //go:embed index_ws.html

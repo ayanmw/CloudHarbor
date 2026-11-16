@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 func TestDirectoryFileResultsDistinguishPublishedFromVerifiedReuse(t *testing.T) {

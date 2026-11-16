@@ -133,7 +133,7 @@ function consumeHandoff(){
  }catch{selectionNotice.value='外部选择数据无效，未导入；请在本页直接选择项目。';}
 }
 consumeHandoff();
-onMounted(()=>{document.title=(historyOnly?'入队记录':'下载预检')+' · NAS Downloader';loadAuth();if(confirmationPath)selectedText.value=confirmationPaths.join('\n');else if(!historyOnly)load('/');timer=setInterval(()=>clock.value=Date.now(),500);});
+onMounted(()=>{document.title=(historyOnly?'入队记录':'下载预检')+' · CloudHarbor';loadAuth();if(confirmationPath)selectedText.value=confirmationPaths.join('\n');else if(!historyOnly)load('/');timer=setInterval(()=>clock.value=Date.now(),500);});
 onUnmounted(()=>{generation++;controller?.abort();actionGeneration++;actionController?.abort();authGeneration++;authController?.abort();clearInterval(timer);});
 </script>
 

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/config"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/config"
 )
 
 func TestGetTaskPageSortsAcrossAllTasksAndReturnsGlobalCounts(t *testing.T) {

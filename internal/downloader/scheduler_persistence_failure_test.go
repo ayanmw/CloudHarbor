@@ -11,7 +11,7 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 func loadPersistedJob(t *testing.T, d *Downloader, id int64) *queueJob {

@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/durablefs"
+	"github.com/ayanmw/CloudHarbor/internal/durablefs"
 )
 
 type Store struct {

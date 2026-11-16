@@ -2,11 +2,13 @@
 import {formatBytes} from './format-bytes';
 import {onMounted,onUnmounted,ref,watch} from 'vue';
 import {vModal} from './modal';
-const props=defineProps<{disabled:boolean}>(),emit=defineEmits<{authenticationRequired:[]}>();
+const props=defineProps<{disabled:boolean}>(),emit=defineEmits<{authenticationRequired:[];status:[string]}>();
 type State={run_id:string;status:string;phase:string;worker_active:boolean;total_files:string;processed_files:string;total_bytes:string;processed_bytes:string;current_path:string;current_bytes:string;current_size:string;started_at_utc:string;updated_at_utc:string;retry_at_utc?:string|null;last_error:string};
 const state=ref<State|null>(null),loading=ref(false),pending=ref(false),error=ref(''),message=ref(''),observed=ref(''),collapsed=ref(false),ack=ref(false),confirmation=ref<{run:string;method:'POST'|'DELETE'}|null>(null),estimate=ref<{files:string;bytes:string}|null>(null),estimating=ref(false);
 const statuses:Record<string,string>={idle:'尚无扫描记录',running:'运行中',paused:'已暂停',failed:'失败',complete:'完成'};
 const phases:Record<string,string>={idle:'未开始',restart_required:'检查点已作废，需重新扫描',hashing:'核对文件内容',backoff:'等待重试',paused:'已暂停',failed:'失败',complete:'完成'};
+// The maintenance disclosure must not hide activity or an unreadable checkpoint.
+watch([state,error,pending],()=>{const label=state.value?statuses[state.value.status]:'读取中';emit('status',error.value?'状态读取失败'+(state.value?'（上次：'+label+'）':''):pending.value?'操作待核对':label+(state.value?.worker_active?' · 正在占用下载带宽':state.value?.last_error?' · 展开查看原因':''));},{immediate:true});
 const exact=(x:unknown)=>typeof x==='string'&&/^(0|[1-9][0-9]*)$/.test(x)&&x.length<=19&&BigInt(x)<=9223372036854775807n;
 const utc=(x:unknown)=>typeof x==='string'&&x.endsWith('Z')&&Number.isFinite(Date.parse(x));
 let active=true,generation=0,controlGeneration=0,estimateGeneration=0,controller:AbortController|undefined,estimateController:AbortController|undefined,timer:ReturnType<typeof setTimeout>|undefined,consumed=false;

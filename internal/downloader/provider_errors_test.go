@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 func TestProviderTokenErrnosParkJobsWithoutSpendingRetryBudget(t *testing.T) {

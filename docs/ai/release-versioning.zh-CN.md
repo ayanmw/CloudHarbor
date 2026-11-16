@@ -1,5 +1,13 @@
 # 版本维护规则（2026-11-04起生效）
 
+## 最新修订：正式版本收尾（2026-11-16）
+
+本节优先于下文旧启动标签规则。版本收尾必须完成源码提交、工作流验证、最终提交的 annotated tag、推送及 GitHub Release 产物检查，然后才可由用户人工确认开启下一版。新版本启动不再建立同名正式标签。版本内可多次提交和测试构建，但不自动切版。
+
+当前 v0.8.32 的旧标签为启动基线；用户明确授权本次替换为最终交付标签。先推送工作流并通过 workflow_dispatch 构建测试（只上传 Actions artifacts，不发布），再建立并推送 v0.8.32；标签触发相同门禁，先上传 draft Release，确认产物齐备后发布。后续已发布标签不自动移动，修改须明确授权。
+
+工作流：`.github/workflows/release.yml`。产物：`CloudHarbor-v版本.zip` 与外部 `SHA256SUMS.txt`，包含 Windows amd64、Linux amd64/arm64，启动脚本与内嵌前端；不包含账号数据或实际 `.env`。失败时按原测试标准修复重测，不省略门禁。每次登记提交、tag、Actions run、Release URL及已知验收限制。本次授权不改变“NAS服务与Client仅设计、暂不开发”的范围。
+
 用户2026-11-08明确要求开始下一个版本，现进入v0.8.32。当前版本由[配置](../../release/current-version.json)指定；[v0.8.32内容说明](../releases/v0.8.32.zh-CN.md)持续维护。
 
 ## 固定版本

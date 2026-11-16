@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"web_browser_baidu_onekey_upload/internal/durablefs"
+	"github.com/ayanmw/CloudHarbor/internal/durablefs"
 )
 
 func validIntakeID(id string) bool {

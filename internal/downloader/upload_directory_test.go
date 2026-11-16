@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 func TestEnsureUploadDirectoryDistinguishesExistingAndFile(t *testing.T) {

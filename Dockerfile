@@ -13,7 +13,7 @@ COPY . .
 # 构建应用
 ARG BUILD_VERSION=dev
 ARG BUILD_REVISION=unknown
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags "-X main.version=${BUILD_VERSION} -X main.revision=${BUILD_REVISION}" -o baidu-downloader .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags "-X main.version=${BUILD_VERSION} -X main.revision=${BUILD_REVISION}" -o cloudharbor .
 
 
 
@@ -26,7 +26,7 @@ RUN apk --no-cache add ca-certificates
 # 创建工作目录
 WORKDIR /app
 # 从构建阶段复制二进制文件
-COPY --from=builder /app/baidu-downloader .
+COPY --from=builder /app/cloudharbor .
 # 创建必要的目录
 RUN mkdir -p /下载
 # 暴露端口
@@ -42,4 +42,4 @@ ENV SCAN_INTERVAL="30"
 ENV SERVER_PORT="8080"
 
 # 启动应用
-CMD ["/app/baidu-downloader"]
+CMD ["/app/cloudharbor"]

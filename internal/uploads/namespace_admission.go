@@ -6,7 +6,7 @@ import (
 	"path"
 	"strings"
 	"sync"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 func (m *Manager) namespaceAdmissionGuard(item, attempt string) baiduapi.UploadNamespaceAdmissionGuard {

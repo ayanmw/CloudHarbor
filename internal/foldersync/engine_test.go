@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/durablefs"
+	"github.com/ayanmw/CloudHarbor/internal/durablefs"
 )
 
 type fixtureRemote struct {

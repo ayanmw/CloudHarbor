@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 var ErrAuthenticationWaiting = errors.New("等待百度账号授权或续期")

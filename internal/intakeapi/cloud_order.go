@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/url"
 
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
 )
 
 func cloudOrder(query url.Values) (baiduapi.DirectoryOrder, error) {

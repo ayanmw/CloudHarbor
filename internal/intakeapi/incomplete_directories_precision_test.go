@@ -4,7 +4,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 func TestIncompleteDirectoryExactResponseKeepsGenerationAndFilters(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 type uploadWork struct{ item, batch, relative, target, attempt string }

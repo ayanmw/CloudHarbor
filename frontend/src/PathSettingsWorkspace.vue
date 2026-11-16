@@ -65,7 +65,7 @@ async function load(){
  finally{if(request===generation)loading.value=false;}
 }
 function resume(event:PageTransitionEvent){if(event.persisted&&!authenticationRequired.value){active.value=true;load();}}
-onMounted(()=>{document.title='路径与存储 · NAS Downloader';window.addEventListener('pagehide',stop);window.addEventListener('pageshow',resume);load();});
+onMounted(()=>{document.title='路径与存储 · CloudHarbor';window.addEventListener('pagehide',stop);window.addEventListener('pageshow',resume);load();});
 onUnmounted(()=>{stop();window.removeEventListener('pagehide',stop);window.removeEventListener('pageshow',resume);});
 </script>
 <template>

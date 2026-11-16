@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/durablefs"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/durablefs"
 )
 
 const stateDirectory = ".nas-downloader"

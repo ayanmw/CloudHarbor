@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$AccessToken = $env:BAIDU_ACCESS_TOKEN,
     [string]$RefreshToken = $env:BAIDU_REFRESH_TOKEN,
     [string]$AppID = $env:BAIDU_APP_ID,
@@ -36,7 +36,7 @@ $env:SERVER_HOST = '127.0.0.1'
 Write-Host "Preview: http://127.0.0.1:$Port ; manage paths at /cloud unless .env or launch parameters set them"
 Push-Location $PSScriptRoot
 try {
-    & (Join-Path $PSScriptRoot 'bin/windows-amd64/baidu-downloader.exe')
+    & (Join-Path $PSScriptRoot 'bin/windows-amd64/cloudharbor.exe')
     $exitCode = $LASTEXITCODE
 } finally {
     Pop-Location

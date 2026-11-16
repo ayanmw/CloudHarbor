@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 const sessionEvidencePrefix = "upload_session_evidence_v1:"

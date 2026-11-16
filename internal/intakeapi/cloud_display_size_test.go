@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/downloader"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/downloader"
 )
 
 type displaySizeBackend struct {

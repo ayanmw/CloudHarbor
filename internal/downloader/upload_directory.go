@@ -5,7 +5,7 @@ import (
 	"errors"
 	"path"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 // Upload and download state share one bound account directory. Upload startup

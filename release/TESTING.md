@@ -1,8 +1,8 @@
-# 百度网盘管理工作台运行与验证说明（版本见 BUILD-INFO.txt）
+# 泊云 CloudHarbor运行与验证说明（版本见 BUILD-INFO.txt）
 
-## 当前活动版本 v0.8.31
+## 当前活动版本 v0.8.32
 
-本版内容以随包VERSION-NOTES.zh-CN.md为准，构建提交/内容快照/UTC见BUILD-INFO.txt和SOURCE-SNAPSHOT.txt。同版本更新只替换程序白名单，保留.nas-downloader、.env、downloads和用户文件；用户明确切版前不递增preview号。v0.8.31承接已验证的.166功能，产品完善路线尚未全部实施。以下为历史功能与测试记录，不代表新的版本切换。
+本版内容以随包VERSION-NOTES.zh-CN.md为准，构建提交/内容快照/UTC见BUILD-INFO.txt和SOURCE-SNAPSHOT.txt。同版本更新只替换程序白名单，保留.nas-downloader、.env、downloads和用户文件；用户明确切版前不递增preview号。v0.8.32承接v0.8.31，新增整理入口、两目录比较和浏览位置衔接；v0.8.31验收反馈收到后同版修复。产品完善路线尚未全部实施。以下为历史功能与测试记录，不代表新的版本切换。
 
 
 ## v0.8.30-preview.166 网盘浏览、入队与批量上传
@@ -314,13 +314,13 @@ $env:BAIDU_ACCESS_TOKEN = '你的 Access Token'
 (Get-Content .\downloads\.nas-downloader\queue\admin-key.json -Raw | ConvertFrom-Json).key
 ```
 
-也可以在启动前设置至少 10 字节的 `$env:ADMIN_PASSWORD`。不要发送这个密码或 admin-key.json。登录表单会创建跨服务重启有效、无自动过期的浏览器会话；点击“退出登录”会撤销当前会话。若设备丢失，请停止服务后运行 `baidu-downloader.exe -revoke-admin-sessions` 撤销全部网页会话。浏览器可能按自身策略限制持久 Cookie 的寿命。自定义目录：
+也可以在启动前设置至少 10 字节的 `$env:ADMIN_PASSWORD`。不要发送这个密码或 admin-key.json。登录表单会创建跨服务重启有效、无自动过期的浏览器会话；点击“退出登录”会撤销当前会话。若设备丢失，请停止服务后运行 `cloudharbor.exe -revoke-admin-sessions` 撤销全部网页会话。浏览器可能按自身策略限制持久 Cookie 的寿命。自定义目录：
 
 ```powershell
 .\Start.ps1 -DownloadDir 'D:\NAS-preview-downloads' -Port 18090
 ```
 
-Ctrl+C 停止；再次执行同一命令恢复。不要把 Token 写到提交文件或发送到反馈中。也可以直接运行 bin/windows-amd64/baidu-downloader.exe；其他运行设置从进程环境变量读取，百度应用凭证也会读取当前工作目录 `.env` 中的四个 `BAIDU_APP_*` / `BAIDU_SECRET_KEY` / `BAIDU_SIGN_KEY` 值。启动不强制要求 Token 或应用凭证；未授权时可以进入管理页面，但扫描和下载暂停。
+Ctrl+C 停止；再次执行同一命令恢复。不要把 Token 写到提交文件或发送到反馈中。也可以直接运行 bin/windows-amd64/cloudharbor.exe；其他运行设置从进程环境变量读取，百度应用凭证也会读取当前工作目录 `.env` 中的四个 `BAIDU_APP_*` / `BAIDU_SECRET_KEY` / `BAIDU_SIGN_KEY` 值。启动不强制要求 Token 或应用凭证；未授权时可以进入管理页面，但扫描和下载暂停。
 
 ## 网页授权与自动续期
 
@@ -388,7 +388,7 @@ docker compose -f compose.yml logs -f
 
 | 操作 | 预期 |
 |---|---|
-| 查看 `baidu-downloader --version` 或 `/api/health` | 显示此版本和源码 revision |
+| 查看 `cloudharbor --version` 或 `/api/health` | 显示此版本和源码 revision |
 | 队列放一个小文件、中文文件名和空文件 | 下载内容正确，完成后只标记顶层云端项 |
 | 放一个多层目录 | 本地层级正确，全部成功后只标记顶层目录 |
 | 下载较大文件时 Ctrl+C / 重启容器 | 保留临时文件；重新启动后尝试续传，不产生重复拼接 |

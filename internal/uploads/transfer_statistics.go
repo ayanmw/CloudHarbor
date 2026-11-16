@@ -3,7 +3,7 @@ package uploads
 import (
 	"encoding/json"
 	"errors"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 type uploadTransferEvidence struct {

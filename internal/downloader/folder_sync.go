@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/foldersync"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/foldersync"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 // FolderSyncRemote deliberately reuses management writes and upload admission;

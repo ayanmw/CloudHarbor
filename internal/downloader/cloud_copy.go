@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 func (d *Downloader) observeConfirmedCopy(client *baiduapi.Client, request CloudMutationRequest, target, operationID string) error {

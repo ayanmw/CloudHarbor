@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 // Raw recorder fixtures rebuild ownership after a required process restart.

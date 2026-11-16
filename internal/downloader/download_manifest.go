@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
-	"web_browser_baidu_onekey_upload/internal/taskstore"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/taskstore"
 )
 
 // Only the small pending batch is retained here. The preparation traversal has

@@ -677,11 +677,15 @@ test('failed record clearing preserves the task and requires another explicit co
 test('download overview and file detail allocate every column in a keyboard scroll region',async()=>{
  const {dom}=await render();try{const d=dom.window.document;
  const check=(count,label)=>{const table=d.querySelector('.table-scroll table');assert.equal(table.querySelectorAll('thead th').length,count);const cols=[...table.querySelectorAll('colgroup col')];assert.equal(cols.length,count);assert.ok(cols.every(c=>parseFloat(c.style.width)>0));assert.equal(cols.reduce((sum,c)=>sum+parseFloat(c.style.width),0),100);const region=table.parentElement;assert.equal(region.getAttribute('role'),'region');assert.equal(region.getAttribute('aria-label'),label);assert.equal(region.tabIndex,0);};
- check(7,'下载任务列表');d.querySelector('.file-name').click();await tick();await tick();check(5,'任务文件列表');
+ check(5,'下载任务列表');d.querySelector('.file-name').click();await tick();await tick();check(5,'任务文件列表');
  }finally{dom.window.close();}
 });
 test('missing historical destination is not presented as a directory currently being prepared',async()=>{
  for(const [status,prepared,expected] of [['source_unknown',false,'未记录本地路径'],['done',true,'未记录本地路径'],['downloading',false,'正在准备本地目录']]){
  const {dom}=await render({status,prepared,local_path:''},{},{url:'http://localhost/?task='+root.id});try{assert.ok(dom.window.document.querySelector('.summary-main').textContent.includes(expected));}finally{dom.window.close();}
  }
+});
+
+test('download overview keeps five essential columns and visible measured statistics',async()=>{
+ const {dom}=await render({transfer_statistics:{active_ns:65000000000,network_bytes:6656000}});try{const d=dom.window.document,table=d.querySelector('.download-overview-table');assert.equal(table.querySelectorAll('thead th').length,5);assert.equal(table.querySelector('thead th:last-child').textContent.trim(),'操作');assert.equal(table.querySelector('tbody tr').children.length,5);const summary=table.querySelector('[data-testid=download-transfer-summary]');assert.match(summary.textContent,/用时.*1分05秒/);assert.match(summary.textContent,/平均.*100 KiB\/s/);assert.ok(table.querySelector('button[aria-label="查看详情"]'));}finally{dom.window.close()}
 });

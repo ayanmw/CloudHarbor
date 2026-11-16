@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
-	"web_browser_baidu_onekey_upload/internal/baiduapi"
+	"github.com/ayanmw/CloudHarbor/internal/baiduapi"
 )
 
 const precreateEvidencePrefix = "upload_precreate_evidence_v1:"
