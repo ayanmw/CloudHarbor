@@ -24,9 +24,13 @@ func reply(w http.ResponseWriter, status int, v any) {
 }
 func status(err error) int {
 	switch {
+	case errors.Is(err, errors.ErrUnsupported):
+		return http.StatusUnprocessableEntity
+	case errors.Is(err, os.ErrPermission):
+		return http.StatusForbidden
 	case errors.Is(err, ErrUnsafe):
 		return http.StatusBadRequest
-	case errors.Is(err, ErrConflict), errors.Is(err, ErrBusy), errors.Is(err, ErrUnconfigured):
+	case errors.Is(err, ErrConflict), errors.Is(err, ErrBusy), errors.Is(err, ErrUnconfigured), errors.Is(err, ErrUncertain), errors.Is(err, os.ErrExist):
 		return http.StatusConflict
 	case errors.Is(err, ErrChanged):
 		return http.StatusPreconditionFailed
@@ -52,6 +56,10 @@ func (m *Manager) Handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	switch r.URL.Path {
+	case "/api/library/operations":
+		m.handleOperations(w, r)
+	case "/api/library/upload":
+		m.handleUpload(w, r)
 	case "/api/library/config":
 		switch r.Method {
 		case http.MethodGet:

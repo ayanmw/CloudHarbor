@@ -839,6 +839,8 @@ func applicationHandler(gate *management.Gate, authorizationHTTP *authorization.
 	mux.HandleFunc("/api/monitor-scans/{id}/export", intakeHTTP.HandleQueueMonitorScanExport)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/build-info", handleBuildInfo)
+	mux.HandleFunc("/api/library/operations", handleLocalLibrary)
+	mux.HandleFunc("/api/library/upload", handleLocalLibrary)
 	mux.HandleFunc("/api/library/config", handleLocalLibrary)
 	mux.HandleFunc("/api/library/entries", handleLocalLibrary)
 	mux.HandleFunc("/api/library/content", handleLocalLibrary)

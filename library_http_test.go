@@ -26,7 +26,7 @@ func TestLocalLibraryRoutesAreAuthenticatedAndIndependentOfBaidu(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := applicationHandler(gate, nil)
-	for _, p := range []string{"/api/library/config", "/api/library/entries", "/api/library/content?path=x&revision=y"} {
+	for _, p := range []string{"/api/library/operations", "/api/library/upload", "/api/library/config", "/api/library/entries", "/api/library/content?path=x&revision=y"} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", "http://example.com"+p, nil))
 		if w.Code != 401 {
@@ -60,4 +60,22 @@ func TestLocalLibraryRoutesAreAuthenticatedAndIndependentOfBaidu(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "read.txt") {
 		t.Fatalf("list without Baidu=%d %s", w.Code, w.Body.String())
 	}
+	for _, endpoint := range []string{"operations", "upload"} {
+		request := httptest.NewRequest("POST", "http://example.com/api/library/"+endpoint, strings.NewReader("{}"))
+		request.Header.Set("Authorization", "Bearer fixture-library-admin")
+		request.Header.Set("Origin", "https://other.example")
+		result := httptest.NewRecorder()
+		h.ServeHTTP(result, request)
+		if result.Code != 403 {
+			t.Fatalf("cross-origin write %s=%d", endpoint, result.Code)
+		}
+		request = httptest.NewRequest("POST", "http://example.com/api/library/"+endpoint, strings.NewReader("{}"))
+		request.Header.Set("Authorization", "Bearer fixture-library-admin")
+		result = httptest.NewRecorder()
+		h.ServeHTTP(result, request)
+		if result.Code != 400 {
+			t.Fatalf("authenticated route not dispatched %s=%d", endpoint, result.Code)
+		}
+	}
+
 }

@@ -48,6 +48,10 @@ func TestConfigurationCannotChangeDuringDownload(t *testing.T) {
 	if _, err = m.Configure(c.Root, c.Revision); !errors.Is(err, ErrBusy) {
 		t.Fatalf("in-flight config was not rejected: %v", err)
 	}
+	if _, err = m.Write(context.Background(), WriteRequest{ID: opID('a'), Kind: "mkdir", RootRevision: c.Revision, Target: "during-download", ParentID: c.RootID}, nil); !errors.Is(err, ErrBusy) {
+		t.Fatalf("write during download was not rejected: %v", err)
+	}
+
 }
 
 func TestPrivateCaseVariantContentCannotBeDownloaded(t *testing.T) {

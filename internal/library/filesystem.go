@@ -16,7 +16,7 @@ func privateName(name string) bool {
 	// Windows aliases case variants to the same private files; keep the public
 	// namespace consistent on all supported platforms as well.
 	name = strings.ToLower(name)
-	return name == ".nas-downloader" || name == ".env" || name == ".git" || name == ".nas-sync-history"
+	return name == ".nas-downloader" || name == ".env" || name == ".git" || name == ".nas-sync-history" || name == ".cloudharbor-library"
 }
 func validRelative(p string) error {
 	if p == "" {
@@ -133,7 +133,11 @@ func (m *Manager) scan(ctx context.Context, c Config, p string) (Listing, error)
 	if !before.IsDir() {
 		return Listing{}, ErrUnsafe
 	}
-	l := Listing{Path: p, RootRevision: c.Revision, Entries: []Entry{}}
+	dirID, err := identity(f)
+	if err != nil {
+		return Listing{}, err
+	}
+	l := Listing{DirectoryID: dirID, Path: p, RootRevision: c.Revision, Entries: []Entry{}}
 	count := 0
 	for {
 		batch, readErr := f.ReadDir(256)

@@ -1,4 +1,4 @@
-// Package library exposes one explicitly configured, read-only local file library.
+// Package library exposes one explicitly configured local file library with guarded writes.
 // It has no Baidu credentials or provider dependency.
 package library
 
@@ -22,9 +22,10 @@ var (
 	ErrUnsafe       = errors.New("文件库路径不允许访问")
 	ErrUnavailable  = errors.New("文件库目录离线、不可读或身份已变化，请核对原目录")
 	ErrConflict     = errors.New("文件库配置已变化，请刷新后重试")
-	ErrBusy         = errors.New("文件库正在读取或下载，请结束后再修改配置")
+	ErrBusy         = errors.New("文件库正忙，请结束当前读取、下载或写操作后重试")
 	ErrUnconfigured = errors.New("尚未配置本站文件库")
 	ErrChanged      = errors.New("文件或目录在读取期间变化，请刷新后重试")
+	ErrUncertain    = errors.New("文件库存在结果未知的操作，已隔离写操作，请先核对操作记录")
 )
 
 type Config struct {
@@ -43,6 +44,7 @@ type Entry struct {
 	Revision   string `json:"revision"` // Metadata observation, not a content checksum.
 }
 type Listing struct {
+	DirectoryID  string  `json:"directory_identity"`
 	Path         string  `json:"path"`
 	Entries      []Entry `json:"entries"`
 	Total        int     `json:"total"`
@@ -80,6 +82,10 @@ func Open(stateDir string, forbidden func() []string) (*Manager, error) {
 		return nil, err
 	}
 	m := &Manager{db: db, stateDir: abs, forbidden: forbidden}
+	if err = m.initOperations(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err = m.config(); err != nil {
 		db.Close()
 		return nil, err
@@ -110,6 +116,9 @@ func (m *Manager) Configure(root, expected string) (Config, error) {
 	defer m.mu.Unlock()
 	if m.closed {
 		return Config{}, os.ErrClosed
+	}
+	if err := m.checkUncertain(); err != nil {
+		return Config{}, err
 	}
 	current, err := m.config()
 	if err != nil {
